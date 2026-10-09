@@ -111,8 +111,8 @@ describe("npm 发布包", () => {
     await chmod(packageDir, 0o555);
     const dataDir = join(smokeRoot, "runtime-data");
     await import("node:fs/promises").then(({mkdir}) => mkdir(dataDir, {recursive: true}));
-    const helperPath = join(smokeRoot, "echo-token.sh");
-    await writeFile(helperPath, "#!/bin/sh\nprintf 'bundle-token\\n'\n", "utf8");
+    const helperPath = join(smokeRoot, "echo-token.mjs");
+    await writeFile(helperPath, "#!/usr/bin/env node\nprocess.stdout.write('bundle-token\\n');\n", "utf8");
     await chmod(helperPath, 0o755);
     const upstream = createServer((request, response) => {
       response.writeHead(200, {"content-type": "application/json"});

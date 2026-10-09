@@ -26,10 +26,10 @@ let sharedEchoHelperPath: string | undefined;
 async function credentialHelperPath(): Promise<string> {
   if (sharedEchoHelperPath) return sharedEchoHelperPath;
   const root = await mkdtemp(join(tmpdir(), "proxy-timeout-helper-"));
-  const path = join(root, "echo-token.sh");
+  const path = join(root, "echo-token.mjs");
   await writeFile(
     path,
-    "#!/bin/sh\nprintf 'test-token\\n'\n",
+    "#!/usr/bin/env node\nprocess.stdout.write('test-token\\n');\n",
     "utf8",
   );
   await chmod(path, 0o755);

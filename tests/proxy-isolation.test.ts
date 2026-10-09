@@ -84,19 +84,17 @@ describe("Node 代理进程隔离", () => {
     }
   });
 
-  // Windows 跳过：token-resolver 直接 spawn 凭据 helper 脚本（.sh/.mjs）在 Windows
-  // 无法执行（spawn EFTYPE），代理凭据注入的 Windows 支持与 README「Windows 未验收」
-  // 同口径，待 token-resolver 增加经 process.execPath 启动后解除。
-  test.skipIf(process.platform === "win32")("没有 .next 时独立产物仍可启动并转发", async () => {
+  test("没有 .next 时独立产物仍可启动并转发", async () => {
     await execFileAsync(process.execPath, ["scripts/build-proxy.mjs"], {
       cwd: rootDir,
       env: {...process.env, PROXY_BUILD_SKIP_SMOKE: "1"},
     });
     const runtimeDir = await mkdtemp(join(tmpdir(), "deepaa-proxy-bundle-"));
     const dataDir = join(runtimeDir, "runtime-data");
-    const helperPath = join(runtimeDir, "echo-token.sh");
+    // node 脚本 + shebang：POSIX 直接执行，Windows 由 token-resolver 经 process.execPath 启动。
+    const helperPath = join(runtimeDir, "echo-token.mjs");
     await mkdir(dataDir, {recursive: true});
-    await writeFile(helperPath, "#!/bin/sh\nprintf 'bundle-token\\n'\n", "utf8");
+    await writeFile(helperPath, "#!/usr/bin/env node\nprocess.stdout.write('bundle-token\\n');\n", "utf8");
     await chmod(helperPath, 0o755);
     const upstream = createServer((request, response) => {
       response.writeHead(200, {"content-type": "application/json"});

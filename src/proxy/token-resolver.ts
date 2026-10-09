@@ -49,9 +49,15 @@ function runHelper(
   options: {checkOnly?: boolean} = {},
 ): Promise<string> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(helperPath, args, {
-      stdio: ["ignore", options.checkOnly ? "ignore" : "pipe", "ignore"],
-    });
+    // Windows 无法直接执行带 shebang 的 .mjs 脚本（spawn EFTYPE），统一经 process.execPath 启动。
+    const win32 = process.platform === "win32";
+    const child = spawn(
+      win32 ? process.execPath : helperPath,
+      win32 ? [helperPath, ...args] : args,
+      {
+        stdio: ["ignore", options.checkOnly ? "ignore" : "pipe", "ignore"],
+      },
+    );
     let stdout = "";
     if (!options.checkOnly) child.stdout?.on("data", chunk => { stdout += chunk.toString("utf8"); });
     child.once("error", reject);
