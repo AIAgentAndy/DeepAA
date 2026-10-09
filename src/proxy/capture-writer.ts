@@ -148,11 +148,24 @@ function assertExchange(exchange: RawCapturedExchangeV2): void {
   }
 }
 
+/**
+ * 截断一律经独立 "r+" 句柄执行：Windows 对 append 句柄（"a+"）执行 ftruncate
+ * 会报 EPERM（errno -4048），POSIX 行为等价。正常写入仍走 append 句柄保持原子追加。
+ */
+async function truncateCaptureFile(filePath: string, byteOffset: number): Promise<void> {
+  const fix = await open(filePath, "r+");
+  try {
+    await fix.truncate(byteOffset);
+  } finally {
+    await fix.close();
+  }
+}
+
 async function recoverPoisonedOffset(handle: FileHandle, filePath: string): Promise<void> {
   const byteOffset = poisonedOffsets.get(filePath);
   if (byteOffset === undefined) return;
   try {
-    await handle.truncate(byteOffset);
+    await truncateCaptureFile(filePath, byteOffset);
   } catch (error) {
     throw new Error(
       `v2 raw capture recovery to byte offset ${byteOffset} failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -169,12 +182,12 @@ async function verifiedAppendOffset(handle: FileHandle, filePath: string): Promi
     rememberVerifiedOffset(filePath, verified);
     return verified;
   }
-  const repaired = await repairPartialTail(handle);
+  const repaired = await repairPartialTail(handle, filePath);
   rememberVerifiedOffset(filePath, repaired);
   return repaired;
 }
 
-async function repairPartialTail(handle: FileHandle): Promise<number> {
+async function repairPartialTail(handle: FileHandle, filePath: string): Promise<number> {
   const fileSize = (await handle.stat()).size;
   let scanEnd = fileSize;
   while (scanEnd > 0) {
@@ -190,12 +203,12 @@ async function repairPartialTail(handle: FileHandle): Promise<number> {
     const newline = block.lastIndexOf(0x0a);
     if (newline >= 0) {
       const cleanOffset = scanStart + newline + 1;
-      if (cleanOffset !== fileSize) await handle.truncate(cleanOffset);
+      if (cleanOffset !== fileSize) await truncateCaptureFile(filePath, cleanOffset);
       return cleanOffset;
     }
     scanEnd = scanStart;
   }
-  if (fileSize > 0) await handle.truncate(0);
+  if (fileSize > 0) await truncateCaptureFile(filePath, 0);
   return 0;
 }
 
@@ -258,7 +271,7 @@ async function appendBatch(queue: FileAppendQueue, batch: PendingAppend[]): Prom
       rememberVerifiedOffset(queue.filePath, batchOffset + payload.length);
     } catch (error) {
       try {
-        await handle.truncate(batchOffset);
+        await truncateCaptureFile(queue.filePath, batchOffset);
         rememberVerifiedOffset(queue.filePath, batchOffset);
       } catch (rollbackError) {
         poisonedOffsets.set(queue.filePath, batchOffset);

@@ -165,7 +165,7 @@ export class ReplayBodyStore {
           if (remainingInFile > 0) {
             if (!fileReader) {
               try {
-                fileReader = createReadStream(store.tempFilePath, {start: store.memoryBytes});
+                fileReader = createReadStream(store.tempFilePath, {start: store.memoryBytes + fileBytesConsumed});
                 fileReader.once("error", error => {
                   source.destroy(error instanceof Error ? error : new Error("REPLAY_FILE_READ_FAILED"));
                 });
@@ -179,6 +179,13 @@ export class ReplayBodyStore {
               const data = chunk as Buffer;
               fileBytesConsumed += data.length;
               if (!source.push(data)) return;
+              continue;
+            }
+            // fs 读流不跟随文件增长：写回调刷盘慢时（Windows 尤甚）读流会在逻辑
+            // 长度内命中中间 EOF 并永久结束（read() 恒 null），从已消费偏移重开读流继续追。
+            if (fileReader.readableEnded) {
+              fileReader.destroy();
+              fileReader = undefined;
               continue;
             }
             // 写流尚未把字节刷到磁盘：短暂让步后重试（写入是持续刷盘的，窗口极小）。

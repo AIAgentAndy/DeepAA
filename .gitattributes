@@ -1,0 +1,7 @@
+# 统一 LF 检出：GitHub Windows runner 默认 core.autocrlf=true 会把文本文件
+# 检出为 CRLF，导致逐字节/逐行匹配 \n 的测试断言在 Windows CI 全体失败。
+* text=auto eol=lf
+
+# 二进制资源显式声明（text=auto 已能识别，双保险并自文档化）。
+*.png binary
+*.ico binary
