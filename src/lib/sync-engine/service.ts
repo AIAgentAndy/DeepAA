@@ -1479,9 +1479,15 @@ export class SyncService {
 
   private spawnCredential(args: string[], secret?: string): Promise<string> {
     return new Promise((resolvePromise, reject) => {
-      const child = spawn(this.credentialHelperPath, args, {
-        stdio: [secret === undefined ? "ignore" : "pipe", "pipe", "ignore"],
-      });
+      // Windows 无法直接执行带 shebang 的 .mjs 脚本（spawn EFTYPE），统一经 process.execPath 启动。
+      const win32 = process.platform === "win32";
+      const child = spawn(
+        win32 ? process.execPath : this.credentialHelperPath,
+        win32 ? [this.credentialHelperPath, ...args] : args,
+        {
+          stdio: [secret === undefined ? "ignore" : "pipe", "pipe", "ignore"],
+        },
+      );
       let stdout = "";
       const timer = setTimeout(() => {
         child.kill();

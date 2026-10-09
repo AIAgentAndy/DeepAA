@@ -154,6 +154,8 @@ describe("OpenCode / dsh configuration resolution", () => {
   test("OpenCode 项目配置覆盖全局配置，JSONC 注释不影响解析", async () => {
     const { homeDir, projectDir } = await fixture();
     vi.stubEnv("OPENCODE_CONFIG", "");
+    // 显式指向夹具目录：runner 预设的 XDG_CONFIG_HOME/APPDATA 与平台默认路径差异不再影响解析。
+    vi.stubEnv("OPENCODE_CONFIG_DIR", join(homeDir, ".config", "opencode"));
     await write(join(homeDir, ".config", "opencode", "opencode.jsonc"), `{
   // 全局注释
   "model": "global-provider/global-model",
@@ -177,6 +179,7 @@ describe("OpenCode / dsh configuration resolution", () => {
   test("OpenCode 缺少配置时返回 unset，不把解析失败当模型", async () => {
     const { homeDir, projectDir } = await fixture();
     vi.stubEnv("OPENCODE_CONFIG", "");
+    vi.stubEnv("OPENCODE_CONFIG_DIR", join(homeDir, ".config", "opencode"));
     const result = await resolveOpenCodeConfiguration({ homeDir, projectDir });
     expect(result.model).toEqual({ source: "unset", overridable: true });
     expect(result.warnings).toEqual([]);

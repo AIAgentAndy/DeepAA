@@ -13,3 +13,8 @@ const sandbox = mkdtempSync(join(tmpdir(), "deepaa-vitest-home-"));
 process.env.HOME = sandbox;
 process.env.DSH_HOME ??= join(sandbox, ".dsh");
 process.env.DEEPAA_DATA_DIR ??= join(sandbox, ".deepaa");
+// CI runner 会预设 XDG_CONFIG_HOME（ubuntu）/APPDATA（Windows）指向真实用户目录，
+// 配置解析若优先读它们就会逃出沙箱/测试夹具的 homeDir（2026-10-10 CI 事故：
+// OpenCode 全局配置解析因此读不到夹具文件）。与 HOME 同理删除，保证 homeDir 回退语义。
+delete process.env.XDG_CONFIG_HOME;
+delete process.env.APPDATA;

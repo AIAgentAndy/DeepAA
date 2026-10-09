@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, test } from "vitest";
+import { expectPosixFileMode } from "./helpers/posix-permissions.js";
 import { prepareTerminalLaunchPlan } from "../src/lib/development-launch/terminal-launch-plan.js";
 
 const RESUME_SESSION_ID = "019fa355-e50d-7731-8a60-c29dbd506666";
@@ -25,8 +26,8 @@ afterEach(async () => {
 describe("development launch helper", () => {
   test("私有计划领取后先删除文件，再以原始 argv 启动 Codex", async () => {
     const fixture = await planFixture();
-    expect((await stat(fixture.prepared.runtimeDirectory)).mode & 0o777).toBe(0o700);
-    expect((await stat(fixture.prepared.planPath)).mode & 0o777).toBe(0o600);
+    expectPosixFileMode((await stat(fixture.prepared.runtimeDirectory)).mode & 0o777, 0o700);
+    expectPosixFileMode((await stat(fixture.prepared.planPath)).mode & 0o777, 0o600);
     const helper = await import("../bin/development-launch.mjs");
     const launches: Array<{ command: string; args: string[] }> = [];
 

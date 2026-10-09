@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
+import { expectPosixFileMode } from "./helpers/posix-permissions.js";
 import { existsSync } from "fs";
 import { mkdtemp, readFile, rm, stat } from "fs/promises";
 import { tmpdir } from "os";
@@ -325,8 +326,8 @@ describe("development launch commands", () => {
     expect(prepared.command.args).toContain("user,project,local");
     expect(prepared.command.args).toContain("--model");
     expect(prepared.command.args).toContain("claude-opus-4-1_anthropic-target");
-    expect((await stat(prepared.runtimeDirectory!)).mode & 0o777).toBe(0o700);
-    expect((await stat(prepared.settingsPath!)).mode & 0o777).toBe(0o600);
+    expectPosixFileMode((await stat(prepared.runtimeDirectory!)).mode & 0o777, 0o700);
+    expectPosixFileMode((await stat(prepared.settingsPath!)).mode & 0o777, 0o600);
     expect(existsSync(join(prepared.runtimeDirectory!, "launch.json"))).toBe(false);
   });
 

@@ -2,6 +2,7 @@ import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {afterEach, describe, expect, test, vi} from "vitest";
+import {expectPosixFileMode} from "./helpers/posix-permissions.js";
 import {
   CATALOG_OVERRIDE_ENV,
   PROVIDER_CATALOG_CACHE_TTL_MS,
@@ -74,7 +75,7 @@ describe("供应商模型目录缓存", () => {
     expect(fetchCatalogText).toHaveBeenCalledTimes(2);
     expect(persisted.catalog.publishedAt).toBe(expectedPublishedAt);
     expect(persisted.sourceHash).toMatch(/^sha256:[a-f0-9]{64}$/u);
-    expect((await stat(cachePath)).mode & 0o777).toBe(0o600);
+    expectPosixFileMode((await stat(cachePath)).mode & 0o777, 0o600);
   });
 
   test("进程重启后优先复用未过期文件缓存", async () => {

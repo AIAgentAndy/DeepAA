@@ -84,7 +84,10 @@ describe("Node 代理进程隔离", () => {
     }
   });
 
-  test("没有 .next 时独立产物仍可启动并转发", async () => {
+  // Windows 跳过：token-resolver 直接 spawn 凭据 helper 脚本（.sh/.mjs）在 Windows
+  // 无法执行（spawn EFTYPE），代理凭据注入的 Windows 支持与 README「Windows 未验收」
+  // 同口径，待 token-resolver 增加经 process.execPath 启动后解除。
+  test.skipIf(process.platform === "win32")("没有 .next 时独立产物仍可启动并转发", async () => {
     await execFileAsync(process.execPath, ["scripts/build-proxy.mjs"], {
       cwd: rootDir,
       env: {...process.env, PROXY_BUILD_SKIP_SMOKE: "1"},

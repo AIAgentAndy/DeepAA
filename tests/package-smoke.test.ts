@@ -182,7 +182,13 @@ describe("npm 发布包", () => {
 
 function run(command: string, args: string[], options: {cwd: string; env: NodeJS.ProcessEnv}, timeoutMs = 30_000) {
   return new Promise<{code: number; stdout: string; stderr: string}>((resolvePromise, reject) => {
-    const child = spawn(command, args, {...options, stdio: ["ignore", "pipe", "pipe"]});
+    // Windows 的 npm 只能经 npm.cmd 执行，而新版 Node 出于安全（CVE-2024-27980）
+    // 禁止无 shell 直接 spawn .cmd/.bat（EINVAL）；本测试 args 无空格（临时目录为短路径），join 安全。
+    const child = spawn(command, args, {
+      ...options,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: process.platform === "win32",
+    });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {

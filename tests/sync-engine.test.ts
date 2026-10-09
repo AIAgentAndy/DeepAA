@@ -1,8 +1,9 @@
 import {afterEach, describe, expect, test} from "vitest";
-import {mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
+import {mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {chmod} from "node:fs/promises";
+import {expectPosixFileMode} from "./helpers/posix-permissions.js";
 import {openDeepaaDatabase} from "../src/lib/db/connection.js";
 import {
   NewApiAdapter,
@@ -858,8 +859,8 @@ describe("sync engine console credentials", () => {
     });
     const raw = await import("node:fs/promises").then(fs => fs.readFile(filePath, "utf8"));
     expect(raw).toContain("plain-secret");
-    const mode = (await import("node:fs/promises")).stat(filePath).then(info => info.mode & 0o777);
-    await expect(mode).resolves.toBe(0o600);
+    const mode = (await stat(filePath)).mode & 0o777;
+    expectPosixFileMode(mode, 0o600);
     expect((await repository.find("t1"))?.password).toBe("plain-secret");
     await repository.remove("t1");
     expect(await repository.find("t1")).toBeUndefined();
