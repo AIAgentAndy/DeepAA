@@ -1,0 +1,171 @@
+{
+  "version": 2,
+  "currency": "USD",
+  "unit": "per_million_tokens",
+  "sourceCheckedAt": "2026-07-08",
+  "models": [
+    {
+      "id": "deepseek-v4-flash",
+      "vendor": "DeepSeek",
+      "match": "deepseek-v4-flash",
+      "patterns": ["deepseek-v4-flash", "deepseek-chat"],
+      "pricing": { "input": 0.14, "output": 0.28, "cachedInput": 0.0028 },
+      "currency": "USD",
+      "confidence": "official",
+      "sourceUrl": "https://api-docs.deepseek.com/quick_start/pricing",
+      "sourceCheckedAt": "2026-07-08",
+      "notes": "DeepSeek 官方价：cache miss input $0.14/M，cache hit input $0.0028/M，output $0.28/M。deepseek-chat 兼容映射到 v4-flash 非 thinking 模式。"
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "vendor": "DeepSeek",
+      "match": "deepseek-v4-pro",
+      "patterns": ["deepseek-v4-pro"],
+      "pricing": { "input": 0.435, "output": 0.87, "cachedInput": 0.003625 },
+      "currency": "USD",
+      "confidence": "official",
+      "sourceUrl": "https://api-docs.deepseek.com/quick_start/pricing",
+      "sourceCheckedAt": "2026-07-08",
+      "notes": "DeepSeek 官方价：cache miss input $0.435/M，cache hit input $0.003625/M，output $0.87/M。"
+    },
+    {
+      "id": "deepseek-reasoner",
+      "vendor": "DeepSeek",
+      "match": "deepseek-reasoner",
+      "patterns": ["deepseek-reasoner"],
+      "pricing": { "input": 0.14, "output": 0.28, "cachedInput": 0.0028 },
+      "currency": "USD",
+      "confidence": "official",
+      "sourceUrl": "https://api-docs.deepseek.com/quick_start/pricing",
+      "sourceCheckedAt": "2026-07-08",
+      "notes": "DeepSeek 官方说明 deepseek-reasoner 兼容映射为 deepseek-v4-flash thinking 模式。"
+    },
+    {
+      "id": "kimi-k2.7-code-highspeed",
+      "vendor": "Moonshot",
+      "match": "kimi-k2.7-code-highspeed",
+      "patterns": ["kimi-k2.7-code-highspeed"],
+      "pricing": { "input": 1.9, "output": 8, "cachedInput": 0.38 },
+      "currency": "USD",
+      "confidence": "official",
+      "sourceUrl": "https://platform.kimi.ai/docs/pricing/chat-k27-code.md",
+      "sourceCheckedAt": "2026-07-08",
+      "notes": "Kimi 官方价：cache miss input $1.90/M，cache hit input $0.38/M，output $8.00/M。"
+    },
+    {
+      "id": "kimi-k2.7-code",
+      "vendor": "Moonshot",
+      "match": "kimi-k2.7-code",
+      "patterns": ["kimi-k2.7-code"],
+      "pricing": { "input": 0.95, "output": 4, "cachedInput": 0.19 },
+      "currency": "USD",
+      "confidence": "official",
+      "sourceUrl": "https://platform.kimi.ai/docs/pricing/chat-k27-code.md",
+      "sourceCheckedAt": "2026-07-08"
+    },
+    {
+      "id": "kimi-k2.6",
+      "vendor": "Moonshot",
+      "match": "kimi-k2.6",
+      "patterns": ["kimi-k2.6"],
+      "pricing": { "input": 0.95, "output": 4, "cachedInput": 0.16 },
+      "currency": "USD",
+      "confidence": "official",
+      "sourceUrl": "https://platform.kimi.ai/docs/pricing/chat-k26.md",
+      "sourceCheckedAt": "2026-07-08"
+    },
+    {
+      "id": "moonshot-v1-128k",
+      "vendor": "Moonshot",
+      "match": "moonshot-v1-128k",
+      "patterns": ["moonshot-v1-128k"],
+      "pricing": { "input": 2, "output": 5 },
+      "currency": "USD",
+      "confidence": "official",
+      "sourceUrl": "https://platform.kimi.ai/docs/pricing/chat-v1.md",
+      "sourceCheckedAt": "2026-07-08"
+    },
+    {
+      "id": "moonshot-v1-32k",
+      "vendor": "Moonshot",
+      "match": "moonshot-v1-32k",
+      "patterns": ["moonshot-v1-32k"],
+      "pricing": { "input": 1, "output": 3 },
+      "currency": "USD",
+      "confidence": "official",
+      "sourceUrl": "https://platform.kimi.ai/docs/pricing/chat-v1.md",
+      "sourceCheckedAt": "2026-07-08"
+    },
+    {
+      "id": "moonshot-v1-8k",
+      "vendor": "Moonshot",
+      "match": "moonshot-v1",
+      "patterns": ["moonshot-v1-8k", "moonshot-v1"],
+      "pricing": { "input": 0.2, "output": 2 },
+      "currency": "USD",
+      "confidence": "official",
+      "sourceUrl": "https://platform.kimi.ai/docs/pricing/chat-v1.md",
+      "sourceCheckedAt": "2026-07-08"
+    },
+    {
+      "id": "claude-sonnet-4",
+      "vendor": "Anthropic",
+      "match": "claude-sonnet",
+      "patterns": ["claude-sonnet-4", "claude-sonnet"],
+      "currency": "USD",
+      "confidence": "unverified",
+      "notes": "官方逐 token API 价格待二次核验，默认不参与计价；如使用中转站或已确认协议价，请配置 targetOverrides。"
+    },
+    {
+      "id": "gpt-5",
+      "vendor": "OpenAI",
+      "match": "gpt-5",
+      "patterns": ["gpt-5"],
+      "currency": "USD",
+      "confidence": "unverified",
+      "notes": "官方逐 token API 价格待二次核验，默认不参与计价；如使用中转站或已确认协议价，请配置 targetOverrides。"
+    },
+    {
+      "id": "glm-5.2",
+      "vendor": "Zhipu",
+      "match": "glm-5.2",
+      "patterns": ["glm-5.2"],
+      "currency": "USD",
+      "confidence": "unverified",
+      "sourceUrl": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2",
+      "sourceCheckedAt": "2026-07-08",
+      "notes": "模型存在已确认，逐 token API 价格待官方价格页二次确认。"
+    },
+    {
+      "id": "qwen3.7-max",
+      "vendor": "AlibabaCloud",
+      "match": "qwen3.7-max",
+      "patterns": ["qwen3.7-max"],
+      "currency": "USD",
+      "confidence": "unverified",
+      "sourceUrl": "https://help.aliyun.com/zh/model-studio/models",
+      "sourceCheckedAt": "2026-07-08"
+    },
+    {
+      "id": "gemini",
+      "vendor": "Google",
+      "match": "gemini",
+      "patterns": ["gemini"],
+      "currency": "USD",
+      "confidence": "unverified",
+      "sourceUrl": "https://ai.google.dev/gemini-api/docs/pricing",
+      "sourceCheckedAt": "2026-07-08"
+    },
+    {
+      "id": "minimax-m3",
+      "vendor": "MiniMax",
+      "match": "minimax",
+      "patterns": ["minimax-m3", "minimax"],
+      "currency": "USD",
+      "confidence": "unverified",
+      "sourceUrl": "https://platform.minimaxi.com/docs/pricing/overview",
+      "sourceCheckedAt": "2026-07-08"
+    }
+  ],
+  "targetOverrides": []
+}

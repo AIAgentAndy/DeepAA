@@ -1,0 +1,137 @@
+/* 与供应商管理 dialogBackdrop/dialog 同视觉语言的最小弹窗样式（2026-09-28）。 */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.48);
+}
+
+.dialog {
+  width: min(560px, 100%);
+  max-height: calc(100dvh - 36px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.28));
+  border-radius: 15px;
+  background: var(--surface, #fff);
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.28);
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 15px 17px;
+  border-bottom: 1px solid var(--border, rgba(127, 127, 127, 0.22));
+}
+
+.iconBadge {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  background: var(--success-soft, rgba(30, 142, 90, 0.12));
+  color: var(--success, #1e8e5a);
+  flex: none;
+}
+
+.iconBadge.danger {
+  background: var(--warning-soft, rgba(200, 140, 0, 0.12));
+  color: var(--warning, #a80);
+}
+
+.headerText {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.headerText h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.headerText p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.closeButton {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex: none;
+}
+
+.closeButton:hover {
+  background: var(--background-alt, rgba(127, 127, 127, 0.12));
+  color: inherit;
+}
+
+.body {
+  padding: 15px 17px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+.footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 13px 17px;
+  border-top: 1px solid var(--border, rgba(127, 127, 127, 0.22));
+}
+
+.footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 8px 13px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.footer .secondary {
+  border-color: var(--border, rgba(127, 127, 127, 0.3));
+  background: var(--surface, #fff);
+  color: inherit;
+}
+
+.footer .secondary:hover {
+  border-color: var(--success, #1e8e5a);
+  color: var(--success, #1e8e5a);
+}
+
+.footer .primary {
+  background: var(--success, #1e8e5a);
+  color: #fff;
+}
+
+.footer .primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.footer .danger {
+  background: var(--warning, #a80);
+  color: #fff;
+}

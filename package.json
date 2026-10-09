@@ -1,0 +1,95 @@
+{
+  "name": "deepaa",
+  "version": "1.0.0",
+  "description": "Deep Agent Analytics — 本地优先的 AI Agent API 调用透视与证据分析工具",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AIAgentAndy/DeepAA.git"
+  },
+  "homepage": "https://github.com/AIAgentAndy/DeepAA#readme",
+  "bugs": {
+    "url": "https://github.com/AIAgentAndy/DeepAA/issues"
+  },
+  "bin": {
+    "deepaa": "./bin/deepaa.mjs"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "files": [
+    "bin",
+    "dist/proxy",
+    ".next",
+    "!.next/cache",
+    "!.next/dev",
+    "scripts/build-proxy.mjs",
+    "scripts/normalize-next-trace.mjs",
+    "scripts/verify-next-trace.mjs",
+    "src",
+    "public/agent-logos",
+    "public/deepaa-mark.png",
+    "data/defaults/litellm-model-prices.snapshot.json",
+    "data/defaults/llm_catalog.jsonl",
+    "README.md",
+    "README_cn.md",
+    "LICENSE",
+    "next.config.ts",
+    "tsconfig.json"
+  ],
+  "scripts": {
+    "start": "node ./bin/deepaa.mjs",
+    "open": "node ./bin/deepaa.mjs open",
+    "dev": "node ./bin/deepaa.mjs dev",
+    "dev:web": "node ./bin/deepaa.mjs dev web",
+    "dev:proxy": "node ./bin/deepaa.mjs dev proxy",
+    "proxy": "node ./bin/deepaa.mjs proxy",
+    "web": "node ./bin/deepaa.mjs web",
+    "stop": "node ./bin/deepaa.mjs stop",
+    "status": "node ./bin/deepaa.mjs status",
+    "service": "node ./bin/deepaa.mjs service",
+    "postinstall": "node ./bin/deepaa-postinstall.mjs",
+    "build": "pnpm build:proxy && pnpm build:catalog-parser && next build && pnpm normalize:next-trace && pnpm verify:next-trace",
+    "build:proxy": "node ./scripts/build-proxy.mjs",
+    "build:catalog-parser": "node ./scripts/build-catalog-parser.mjs",
+    "pricing:snapshot": "tsx scripts/update-litellm-snapshot.ts",
+    "proxy:soak": "node ./scripts/proxy-soak.mjs",
+    "data:reset": "tsx ./scripts/data-reset.ts",
+    "test": "pnpm test:vitest && pnpm test:sqlite",
+    "prepublishOnly": "pnpm build && pnpm test:package",
+    "test:vitest": "vitest run",
+    "test:package": "node ./scripts/test-package-smoke.mjs",
+    "test:sqlite": "tsx --test tests/sqlite-schema.test.ts tests/raw-source-reader.test.ts tests/sqlite-derivation.test.ts tests/sqlite-worker.test.ts tests/sqlite-retention-window.test.ts tests/sqlite-auto-purge-scheduler.test.ts tests/sqlite-workbench-queries.test.ts tests/sqlite-workbench-search.test.ts tests/sqlite-export-conversation.test.ts tests/export-content-stream.test.ts tests/sqlite-token-pricing.test.ts tests/sqlite-large-data.test.ts tests/catalog-notification-store.test.ts tests/sqlite-harness-snapshot.test.ts tests/sqlite-harness-backfill.test.ts tests/sqlite-step-evidence-p1.test.ts tests/sqlite-agent-local-import.test.ts tests/sqlite-dsh-local-import.test.ts tests/sqlite-codex-local-import.test.ts tests/sqlite-legacy-identity-repair.test.ts tests/export-list-rows.test.ts tests/export-deep-link.test.ts",
+    "repair:legacy-sessions": "tsx ./scripts/reproject-legacy-identity-sessions.ts",
+    "typecheck": "next typegen && tsc --noEmit",
+    "normalize:next-trace": "node ./scripts/normalize-next-trace.mjs",
+    "verify:node-only": "node ./scripts/verify-node-only.mjs",
+    "verify:next-trace": "node ./scripts/verify-next-trace.mjs"
+  },
+  "dependencies": {
+    "fzstd": "^0.1.1",
+    "gpt-tokenizer": "^3.4.0",
+    "jsonc-parser": "^3.3.1",
+    "lucide-react": "1.17.0",
+    "next": "16.2.6",
+    "playwright": "^1.55.0",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
+    "smol-toml": "^1.7.0",
+    "stream-json": "^3.5.0",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/react": "19.2.15",
+    "@types/react-dom": "19.2.3",
+    "esbuild": "^0.28.1",
+    "tsx": "^4.23.1",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.10"
+  }
+}

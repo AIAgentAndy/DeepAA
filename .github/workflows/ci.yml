@@ -1,0 +1,49 @@
+name: Node 验证
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22.x, 24.x]
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查
+        run: pnpm typecheck
+
+      - name: 全量测试
+        run: pnpm test
+
+      - name: 生产构建
+        run: pnpm build
+
+      - name: 验证 Node-only 运行时
+        run: pnpm verify:node-only
+
+      - name: 验证发布包
+        if: matrix.node == '22.x'
+        run: pnpm test:package

@@ -1,0 +1,45 @@
+# ─── Dependencies ─────────────────────────────
+node_modules/
+
+# ─── Build output ─────────────────────────────
+dist/
+.next/
+tsconfig.tsbuildinfo
+
+# ─── Runtime data (contains API keys in headers!) ──
+data/*
+!data/defaults/
+data/defaults/*
+!data/defaults/litellm-model-prices.snapshot.json
+!data/defaults/llm_catalog.jsonl
+
+# ─── OS / Editor ──────────────────────────────
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# ─── Logs ─────────────────────────────────────
+*.log
+
+# ─── Tool caches / reports ───────────────────
+.turbo/
+.vercel/
+.superpowers/
+.worktrees/
+coverage/
+playwright-report/
+test-results/
+
+# ─── Temp files ───────────────────────────────
+ftp_upload_path.txt
+incremental_lines.txt
+
+# ─── Local agent workspace artifacts ─────────
+.omo/
+.zcode/
+
+# 隔离验证实例的 Next 构建产物（DEEPAA_NEXT_DIST_DIR）
+.next-verify/

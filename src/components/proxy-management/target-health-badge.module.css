@@ -1,0 +1,41 @@
+/* 供应商健康徽标（侧栏与仪表盘供应商卡共用同一份视觉）。 */
+
+.healthBadge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid #f0d39a;
+  border-radius: 999px;
+  background: #fff8e8;
+  color: #92400e;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* 红（severe）：配置缺口 / 连续自动同步失败 / 倍率无从校验 —— 比普通黄标更显眼。 */
+.healthBadgeSevere {
+  border-color: #f0a58a;
+  background: #fff1e8;
+  color: #9a3412;
+  box-shadow: 0 0 0 2px rgba(234, 88, 12, 0.12);
+}
+
+:global(html[data-theme="dark"]) .healthBadge {
+  /* 对齐墨玉深林警告令牌（2026-09-30）：与全站 warning 族同色相、同透明度体系。 */
+  border-color: var(--warning-line);
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+:global(html[data-theme="dark"]) .healthBadgeSevere {
+  border-color: rgba(251, 146, 60, 0.5);
+  background: rgba(251, 146, 60, 0.18);
+  color: #fdba74;
+  box-shadow: 0 0 0 2px rgba(251, 146, 60, 0.14);
+}

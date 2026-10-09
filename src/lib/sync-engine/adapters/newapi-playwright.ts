@@ -1,0 +1,121 @@
+import type {SyncInput} from "../types";
+import {SyncAuthRequiredError} from "../types";
+import type {NewApiPayloads} from "./newapi";
+
+const LOGIN_TIMEOUT_MS = 30_000;
+const TOKEN_WAIT_TIMEOUT_MS = 20_000;
+
+/**
+ * New API Playwright 登录器：只负责打开控制台、自动填用户名密码完成登录，
+ * 数据一律在页面内同源 fetch 面板自带 API（/api/user/self、/api/token/、/api/pricing），
+ * 解析层与 HTTP 主链路共用（parseNewApiPayloads）。
+ * 验证码 / 2FA / OIDC 场景下首次登录需要用户人工完成一次。
+ */
+export async function newApiSyncViaPlaywright(
+  input: SyncInput,
+): Promise<NewApiPayloads> {
+  // playwright 是可选运行时依赖：通过动态 import 加载，未安装时给出明确提示。
+  // 使用 new Function 包装以避免静态解析把可选依赖打进代理/业务产物。
+  const playwright = await loadPlaywright();
+
+  const channel = process.env.SYNC_BROWSER_CHANNEL?.trim() || undefined;
+  const browser = await playwright.chromium.launch({
+    headless: true,
+    ...(channel ? {channel} : {}),
+  });
+  try {
+    const page = await browser.newPage();
+    await page.goto(input.consoleBaseUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: LOGIN_TIMEOUT_MS,
+    });
+
+    const passwordInput = page.locator('input[type="password"]');
+    if (await passwordInput.count() > 0) {
+      const usernameInput = page.locator(
+        'input[type="text"], input[name="username"], input[name="email"], input[type="email"]',
+      ).first();
+      if (await usernameInput.count() > 0) {
+        await usernameInput.fill(input.username);
+      }
+      await passwordInput.fill(input.password);
+      await Promise.all([
+        page.waitForLoadState("networkidle", {timeout: 15_000}).catch(() => undefined),
+        passwordInput.press("Enter"),
+      ]);
+    }
+
+    await page.waitForFunction(
+      () => {
+        const token = localStorage.getItem("access_token") || localStorage.getItem("token");
+        return typeof token === "string" && token.length > 0;
+      },
+      {timeout: TOKEN_WAIT_TIMEOUT_MS},
+    ).catch(() => undefined);
+
+    const payloads = await page.evaluate(async () => {
+      const token = localStorage.getItem("access_token") || localStorage.getItem("token") || "";
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+        ...(token ? {authorization: `Bearer ${token}`} : {}),
+      };
+      const grab = async (path: string): Promise<unknown> => {
+        try {
+          const response = await fetch(path, {
+            headers,
+            credentials: "same-origin",
+          });
+          return response.ok ? await response.json() : null;
+        } catch {
+          return null;
+        }
+      };
+      return {
+        self: await grab("/api/user/self"),
+        tokens: await grab("/api/token/"),
+        pricing: await grab("/api/pricing"),
+      };
+    });
+
+    const selfData = payloads && typeof payloads === "object" && "self" in payloads
+      ? (payloads as NewApiPayloads)
+      : undefined;
+    if (!selfData) throw new SyncAuthRequiredError("SYNC_PLAYWRIGHT_PAYLOAD_INVALID");
+    return selfData;
+  } finally {
+    await browser.close().catch(() => undefined);
+  }
+}
+
+async function loadPlaywright(): Promise<{
+  chromium: {launch(options?: Record<string, unknown>): Promise<BrowserLike>};
+}> {
+  try {
+    return await new Function("return import('playwright')")() as never;
+  } catch {
+    throw new Error(
+      "PLAYWRIGHT_NOT_INSTALLED：需要先执行 pnpm install 并安装 chromium（pnpm exec playwright install chromium），"
+      + "或设置 SYNC_BROWSER_CHANNEL=chrome 复用系统 Chrome",
+    );
+  }
+}
+
+interface BrowserLike {
+  newPage(): Promise<PageLike>;
+  close(): Promise<void>;
+}
+
+interface PageLike {
+  goto(url: string, options?: Record<string, unknown>): Promise<unknown>;
+  locator(selector: string): LocatorLike;
+  waitForLoadState(state: string, options: Record<string, unknown>): Promise<void>;
+  waitForFunction(fn: () => unknown, options: Record<string, unknown>): Promise<unknown>;
+  evaluate<T>(fn: () => T): Promise<T>;
+}
+
+interface LocatorLike {
+  count(): Promise<number>;
+  fill(value: string): Promise<void>;
+  press(key: string): Promise<void>;
+  first(): LocatorLike;
+}

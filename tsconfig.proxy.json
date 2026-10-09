@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false,
+    "plugins": [],
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "src/proxy-server.ts",
+    "src/reverse-proxy.ts",
+    "src/proxy/**/*.ts",
+    "src/lib/data-paths.ts",
+    "src/lib/data-paths-runtime.mjs",
+    "src/lib/agent-registry.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
