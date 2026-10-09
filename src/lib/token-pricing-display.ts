@@ -499,7 +499,10 @@ export function zonedMinuteText(iso: string | undefined, timeZone?: string): str
     }).formatToParts(new Date(ms));
     const get = (type: Intl.DateTimeFormatPartTypes): string =>
       parts.find(part => part.type === type)?.value ?? "";
-    const offset = (get("timeZoneName") || "UTC").replace(/^GMT/, "UTC");
+    // ICU 版本差异：零偏移在旧版输出 "GMT"（省略 +0）、新版输出 "UTC+0"/"GMT+0"，统一归一为 "UTC"。
+    const offset = (get("timeZoneName") || "UTC")
+      .replace(/^GMT/, "UTC")
+      .replace(/^UTC[+-]0+(?::00)?$/, "UTC");
     return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")} ${offset}`;
   } catch {
     return `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
