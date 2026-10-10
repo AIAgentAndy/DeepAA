@@ -159,22 +159,29 @@ describe("Node 代理进程隔离", () => {
         body: JSON.stringify({model: "gpt-test_fixture.example"}),
       }).then(response => response.json()))
         .resolves.toMatchObject({path: "/v1/responses", auth: "Bearer bundle-token"});
-      const stoppedEvent = waitForJsonEvent(child, "proxy-stopped");
-      child.kill("SIGTERM");
-      const stopped = await stoppedEvent;
-      expect(stopped).toMatchObject({
-        event: "proxy-stopped",
-        capture: {
-          capturePendingBytes: 0,
-          activeFinalizers: 0,
-          queuedFinalizers: 0,
-          capturePendingTasks: 0,
-          capturePendingRecordBytes: 0,
-          captureDroppedRecords: 0,
-          captureMissingBodies: 0,
-        },
-      });
-      await once(child, "exit");
+      // Windows 无法投递真实 SIGTERM（kill 即 TerminateProcess，优雅排水与
+      // proxy-stopped 事件不会执行）；优雅停止契约只在 POSIX 矩阵验证。
+      if (process.platform !== "win32") {
+        const stoppedEvent = waitForJsonEvent(child, "proxy-stopped");
+        child.kill("SIGTERM");
+        const stopped = await stoppedEvent;
+        expect(stopped).toMatchObject({
+          event: "proxy-stopped",
+          capture: {
+            capturePendingBytes: 0,
+            activeFinalizers: 0,
+            queuedFinalizers: 0,
+            capturePendingTasks: 0,
+            capturePendingRecordBytes: 0,
+            captureDroppedRecords: 0,
+            captureMissingBodies: 0,
+          },
+        });
+        await once(child, "exit");
+      } else {
+        child.kill("SIGTERM");
+        await once(child, "exit");
+      }
     } finally {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGTERM");

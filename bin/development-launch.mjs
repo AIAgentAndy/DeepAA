@@ -39,6 +39,14 @@ export async function claimDevelopmentLaunchPlan(planPath, options = {}) {
   const tempRoot = options.tempRoot || join(tmpdir(), "deepaa-launch");
   const runtimeDirectory = validatePlanLocation(planPath, tempRoot);
   await assertPrivateRuntimeDirectory(runtimeDirectory, tempRoot);
+  // O_NOFOLLOW 仅 POSIX 存在（macOS/Linux）；Windows 的 constants.O_NOFOLLOW 为
+  // undefined，open 会跟随符号链接——退化为 open 前 lstat 拒绝符号链接。
+  if (constants.O_NOFOLLOW === undefined) {
+    const planStat = await lstat(planPath).catch(() => null);
+    if (!planStat || planStat.isSymbolicLink()) {
+      throw new Error("DEVELOPMENT_LAUNCH_PLAN_INVALID");
+    }
+  }
   let handle;
   try {
     handle = await open(

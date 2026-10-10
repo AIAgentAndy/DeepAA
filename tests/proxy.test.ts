@@ -741,7 +741,8 @@ describe("Node reverse proxy", () => {
 
     expect(Date.now() - startedAt).toBeLessThan(1500);
     expect(persisted).toBe(false);
-    await waitFor(() => persisted);
+    // 显式放宽 waitFor：持久化人为延迟 2s + 慢 CI 文件系统开销会撞默认 2s 死线。
+    await waitFor(() => persisted, 10_000);
   });
 
   test("graceful close waits for already accepted capture persistence", async () => {
