@@ -2328,7 +2328,7 @@ function canonicalPricingBasis(entry: ModelPriceEntry): string {
   return JSON.stringify({currency: entry.currency || "USD", pricing: entry.pricing});
 }
 
-function pricingModelUniqueKey(model: ModelPriceEntry): string {
+export function pricingModelUniqueKey(model: ModelPriceEntry): string {
   return [
     model.vendor.trim().toLowerCase(),
     pricingEntryRuntimeModelId(model).toLowerCase(),
@@ -2850,12 +2850,31 @@ function isFileNotFound(error: unknown): boolean {
     && (error as { code?: unknown }).code === "ENOENT";
 }
 
+/**
+ * version 缺失/未知但条目携带 v2 专属字段（confidence / 嵌套 pricing / patterns /
+ * runtimeModelId）时按 v2 处理：随包 LiteLLM 快照曾因缺 version 被误判为 v1 遗留，
+ * 整体洗成 user_override 且价格全部丢失（2026-10-11 修复）。v1 扁平条目
+ * （仅 id/match/vendor/input/output）没有这些字段，不受影响。
+ */
+function looksLikeV2ModelEntries(models: unknown): boolean {
+  if (!Array.isArray(models)) return false;
+  return models.some(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const entry = item as Partial<ModelPriceEntry>;
+    return typeof entry.confidence === "string"
+      || (!!entry.pricing && typeof entry.pricing === "object")
+      || Array.isArray(entry.patterns)
+      || typeof entry.runtimeModelId === "string";
+  });
+}
+
 export function normalizePricingConfig(value: unknown): PricingConfigV2 {
   if (!value || typeof value !== "object" || !Array.isArray((value as { models?: unknown }).models)) {
     return DEFAULT_PRICING;
   }
   const candidate = value as Partial<PricingConfigV2> & Partial<LegacyPricingConfig>;
-  if (candidate.version === 2) {
+  if (candidate.version === 2
+    || (candidate.version !== 1 && looksLikeV2ModelEntries(candidate.models))) {
     return {
       version: 2,
       currency: typeof candidate.currency === "string" ? candidate.currency : "USD",
@@ -3252,27 +3271,35 @@ function normalizeCatalogSource(value: unknown): PricingCatalogSource | undefine
   };
 }
 
+/** v1 → v2 迁移条目的 notes 标记；存量自愈据此识别历史迁移产物。 */
+export const LEGACY_PRICING_MIGRATION_NOTES = "由 v1 价格配置自动迁移。";
+
 function migrateLegacyPricingConfig(config: LegacyPricingConfig): PricingConfigV2 {
   return {
     version: 2,
     currency: typeof config.currency === "string" ? config.currency : "USD",
     unit: typeof config.unit === "string" ? config.unit : "per_million_tokens",
-    models: (config.models || []).map(entry => ({
-      id: entry.id,
-      vendor: entry.vendor,
-      match: entry.match,
-      patterns: [entry.match],
-      pricing: {
-        input: entry.input,
-        output: entry.output,
-        cachedInput: entry.cacheRead,
-        cacheWrite: entry.cacheCreation,
-      },
-      currency: config.currency || "USD",
-      confidence: "user_override",
-      sourceUrl: "local://legacy-model-pricing-v1",
-      sourceCheckedAt: OFFICIAL_CHECKED_AT,
-      notes: "由 v1 价格配置自动迁移。",
-    })),
+    // 无价格的 v1 条目不可能来自人工价格维护（人工维护必有数值），若迁移为
+    // user_override 会冒充最高保护级来源且价格为空；直接丢弃，交由目录导入补齐。
+    models: (config.models || [])
+      .filter((entry): entry is LegacyModelPriceEntry =>
+        !!entry && (Number.isFinite(entry.input) || Number.isFinite(entry.output)))
+      .map(entry => ({
+        id: entry.id,
+        vendor: entry.vendor,
+        match: entry.match,
+        patterns: [entry.match],
+        pricing: {
+          input: entry.input,
+          output: entry.output,
+          cachedInput: entry.cacheRead,
+          cacheWrite: entry.cacheCreation,
+        },
+        currency: config.currency || "USD",
+        confidence: "user_override",
+        sourceUrl: "local://legacy-model-pricing-v1",
+        sourceCheckedAt: OFFICIAL_CHECKED_AT,
+        notes: LEGACY_PRICING_MIGRATION_NOTES,
+      })),
   };
 }

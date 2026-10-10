@@ -25,6 +25,11 @@ snapshot.targetOverrides = [];
 snapshot.targetVendorPreferences = undefined;
 snapshot.models = snapshot.models.filter(model => model.confidence !== "user_override");
 if (snapshot.catalogSource) snapshot.catalogSource.modelCount = snapshot.models.length;
+// 快照缺 version 会被读取侧判为 v1 遗留配置，整体洗成 user_override 且丢失价格
+// （2026-10-11 修复的存量事故）；此处断言防止再生成时退回缺字段形态。
+if (snapshot.version !== 2) {
+  throw new Error(`LiteLLM 快照缺少 version: 2（当前 ${String(snapshot.version)}），拒绝写出。`);
+}
 
 await mkdir(join(process.cwd(), "data", "defaults"), { recursive: true });
 await writeFile(OUTPUT_PATH, `${JSON.stringify(snapshot, null, 2)}\n`, "utf-8");

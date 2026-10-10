@@ -2595,3 +2595,75 @@ describe("价格中心筛选大数据边界", () => {
       item.vendor === "openai" && item.confidence === "user_override")).toBe(true);
   });
 });
+
+describe("v1 迁移语义与 version 缺失探测（2026-10-11 误标修复）", () => {
+  test("v1 迁移：有价条目保留为手工覆盖，无价条目不再冒充人工来源", () => {
+    const migrated = normalizePricingConfig({
+      version: 1 as const,
+      currency: "USD",
+      unit: "per_million_tokens",
+      models: [
+        {id: "priced", match: "priced-model", vendor: "Test", input: 1, output: 2},
+        {id: "priceless", match: "priceless-model", vendor: "Test"},
+      ] as never,
+    });
+
+    expect(migrated.models).toHaveLength(1);
+    expect(migrated.models[0]).toMatchObject({
+      id: "priced",
+      confidence: "user_override",
+      pricing: {input: 1, output: 2},
+    });
+  });
+
+  test("version 缺失但条目为 v2 形态时按 v2 处理，不再整体洗成 user_override", () => {
+    // 复刻随包快照缺 version 的历史形态：条目带 confidence + 嵌套 pricing。
+    const normalized = normalizePricingConfig({
+      currency: "USD",
+      models: [{
+        id: "j2-light",
+        vendor: "ai21",
+        runtimeModelId: "j2-light",
+        match: "j2-light",
+        patterns: ["j2-light"],
+        pricing: {input: 3, output: 3},
+        confidence: "third_party",
+      }],
+    } as never);
+
+    expect(normalized.version).toBe(2);
+    expect(normalized.models).toHaveLength(1);
+    expect(normalized.models[0]).toMatchObject({
+      id: "j2-light",
+      confidence: "third_party",
+      pricing: {input: 3, output: 3},
+    });
+  });
+
+  test("version 缺失且条目为 v1 扁平形态时仍走 legacy 迁移", () => {
+    const migrated = normalizePricingConfig({
+      currency: "USD",
+      unit: "per_million_tokens",
+      models: [{id: "legacy", match: "legacy-model", vendor: "Test", input: 4, output: 5}] as never,
+    });
+
+    expect(migrated.models).toHaveLength(1);
+    expect(migrated.models[0]).toMatchObject({
+      id: "legacy",
+      confidence: "user_override",
+      pricing: {input: 4, output: 5},
+    });
+  });
+
+  test("LiteLLM 目录归一化输出携带 version: 2（快照再生成防回归）", () => {
+    const catalog = normalizeLiteLLMPricingCatalog({
+      "fixture-model": {
+        litellm_provider: "openai",
+        input_cost_per_token: 0.000002,
+        output_cost_per_token: 0.000003,
+      },
+    });
+    expect(catalog.version).toBe(2);
+    expect(catalog.models.every(model => model.confidence === "third_party")).toBe(true);
+  });
+});

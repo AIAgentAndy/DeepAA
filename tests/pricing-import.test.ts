@@ -5,12 +5,14 @@ import { tmpdir } from "os";
 import { join } from "path";
 import * as pricingImport from "../src/lib/pricing-import.js";
 import {
+  LEGACY_PRICING_MIGRATION_NOTES,
   readPersistedPricingConfig,
   readPricingConfig,
   withPricingConfigMutation,
   writePricingConfig,
   type PricingConfigV2,
 } from "../src/lib/pricing.js";
+import {upsertPricingSourceBaseline} from "../src/lib/pricing/source-baseline-store.js";
 import {getDeepaaDatabase, closeAllDeepaaDatabasesForTests} from "../src/lib/db/connection.js";
 
 const temporaryDirectories: string[] = [];
@@ -223,16 +225,20 @@ describe("LiteLLM 价格目录启动兜底", () => {
     const raw = await readFile("data/defaults/litellm-model-prices.snapshot.json", "utf-8");
     const snapshot = JSON.parse(raw) as PricingConfigV2;
 
+    expect(snapshot.version).toBe(2);
     expect(snapshot.catalogSource?.type).toBe("litellm");
     expect(snapshot.catalogSource?.hash).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(snapshot.models.length).toBeGreaterThan(1_000);
+    // 缺 version 的快照曾被误判为 v1 遗留并整体洗成 user_override；两项断言防回归。
+    expect(snapshot.models.some(model => model.confidence === "user_override")).toBe(false);
+    expect(snapshot.models.every(model => model.confidence === "third_party")).toBe(true);
   });
 });
 
 type RefreshFunction = (
   dataDir: string,
   options: {
-    loadBundledSnapshot: () => Promise<PricingConfigV2>;
+    loadBundledSnapshot?: () => Promise<PricingConfigV2>;
     fetchCatalogText: (sourceUrl: string) => Promise<string>;
     recordPricingRevision?: (dataDir: string, effectiveAt: string) => Promise<void>;
     now?: () => Date;
@@ -346,5 +352,183 @@ describe("LiteLLM 导入标记（价格中心版本条）", () => {
       syncedAt: "2026-07-18T10:30:00.000Z",
       modelCount: 1,
     });
+  });
+});
+
+describe("价格中心误标自愈与首启回归（2026-10-11 修复）", () => {
+  test("全新目录首启用真实随包快照初始化：全部 third_party，零手工覆盖", async () => {
+    const dataDir = await temporaryDirectory("pricing-fresh-boot-regression-");
+    const result = await requiredRefreshFunction()(dataDir, {
+      fetchCatalogText: async () => {
+        throw new Error("network unavailable");
+      },
+      recordPricingRevision: async () => undefined,
+    });
+
+    expect(result.source).toBe("snapshot");
+    const persisted = await readPersistedPricingConfig(dataDir);
+    expect(persisted?.version).toBe(2);
+    expect(persisted?.models.length).toBeGreaterThan(1_000);
+    expect(persisted?.models.every(model => model.confidence === "third_party")).toBe(true);
+    // 迁移事故形态（user_override + 空价格）必须为零。
+    expect(persisted?.models.some(model => model.confidence === "user_override")).toBe(false);
+    expect(persisted?.models.filter(model => model.pricing?.input !== undefined).length)
+      .toBeGreaterThan(3_000);
+  });
+
+  test("自愈：误标条目按底稿→随包快照恢复，无来源的丢弃，真实人工数据不动", async () => {
+    const dataDir = await temporaryDirectory("pricing-self-heal-");
+    const snapshot: PricingConfigV2 = {
+      version: 2,
+      currency: "USD",
+      unit: "per_million_tokens",
+      catalogSource: {
+        type: "litellm",
+        url: pricingImport.DEFAULT_LITELLM_PRICING_URL,
+        fetchedAt: "2026-09-29T23:08:54.095Z",
+        hash: "sha256:self-heal-snapshot",
+        modelCount: 1,
+      },
+      models: [{
+        id: "legacy-b",
+        vendor: "openai",
+        runtimeModelId: "legacy-model-b",
+        match: "legacy-model-b",
+        patterns: ["legacy-model-b"],
+        pricing: {input: 7, output: 7.5},
+        confidence: "third_party",
+      }],
+    };
+    const damaged = {
+      version: 2 as const,
+      currency: "USD",
+      unit: "per_million_tokens",
+      models: [
+        // 误标条目 A：底稿可恢复（内部 id 必须保留，供应商映射引用不失效）。
+        {id: "legacy-a", vendor: "openai", match: "legacy-model-a", patterns: ["legacy-model-a"],
+          pricing: {}, currency: "USD", confidence: "user_override" as const,
+          sourceUrl: "local://legacy-model-pricing-v1", sourceCheckedAt: "2026-07-08",
+          notes: LEGACY_PRICING_MIGRATION_NOTES},
+        // 误标条目 B：无底稿，落在随包快照内。
+        {id: "legacy-b", vendor: "openai", match: "legacy-model-b", patterns: ["legacy-model-b"],
+          pricing: {}, currency: "USD", confidence: "user_override" as const,
+          sourceUrl: "local://legacy-model-pricing-v1", sourceCheckedAt: "2026-07-08",
+          notes: LEGACY_PRICING_MIGRATION_NOTES},
+        // 误标条目 C：任何来源都没有 → 丢弃，交由后续目录导入按需补齐。
+        {id: "legacy-c", vendor: "openai", match: "legacy-model-c", patterns: ["legacy-model-c"],
+          pricing: {}, currency: "USD", confidence: "user_override" as const,
+          sourceUrl: "local://legacy-model-pricing-v1", sourceCheckedAt: "2026-07-08",
+          notes: LEGACY_PRICING_MIGRATION_NOTES},
+        // 带迁移标记但有真实价格的条目：不是误标产物，必须原样保留。
+        {id: "manual-priced", vendor: "openai", match: "manual-priced-model", patterns: ["manual-priced-model"],
+          pricing: {input: 2, output: 3}, currency: "USD", confidence: "user_override" as const,
+          sourceUrl: "local://legacy-model-pricing-v1", sourceCheckedAt: "2026-07-08",
+          notes: LEGACY_PRICING_MIGRATION_NOTES},
+        // 正常 LiteLLM 条目：不动。
+        {id: "fresh-model", vendor: "openai", runtimeModelId: "fresh-model", patterns: ["fresh-model"],
+          pricing: {input: 8, output: 9}, confidence: "third_party" as const},
+      ],
+    };
+    await writePricingConfig(dataDir, damaged);
+    upsertPricingSourceBaseline(getDeepaaDatabase(dataDir), {
+      vendor: "openai",
+      runtimeModelId: "legacy-model-a",
+      sourceKind: "litellm",
+      capturedAt: "2026-10-10T19:53:28.202Z",
+      entry: {
+        id: "litellm-legacy-a",
+        vendor: "openai",
+        runtimeModelId: "legacy-model-a",
+        match: "legacy-model-a",
+        patterns: ["legacy-model-a"],
+        pricing: {input: 5, output: 6},
+        confidence: "third_party",
+      },
+    });
+
+    const refresh = requiredRefreshFunction();
+    const result = await refresh(dataDir, {
+      loadBundledSnapshot: async () => snapshot,
+      recordPricingRevision: async () => undefined,
+      fetchCatalogText: async () => {
+        throw new Error("network unavailable");
+      },
+    });
+
+    expect(result.source).toBe("local");
+    const persisted = await readPricingConfig(dataDir);
+    expect(persisted.models).toHaveLength(4);
+    const byId = new Map(persisted.models.map(model => [model.id, model]));
+    // A：底稿恢复，保留内部 id，价格来自底稿。
+    expect(byId.get("legacy-a")).toMatchObject({
+      vendor: "openai",
+      confidence: "third_party",
+      pricing: {input: 5, output: 6},
+    });
+    // B：随包快照恢复。
+    expect(byId.get("legacy-b")).toMatchObject({
+      confidence: "third_party",
+      pricing: {input: 7, output: 7.5},
+    });
+    // C：无来源 → 丢弃。
+    expect(byId.has("legacy-c")).toBe(false);
+    // 带价标记条目与正常条目原样保留。
+    expect(byId.get("manual-priced")).toMatchObject({confidence: "user_override", pricing: {input: 2, output: 3}});
+    expect(byId.get("fresh-model")).toMatchObject({confidence: "third_party", pricing: {input: 8, output: 9}});
+    // 自愈后不再存在“迁移标记 + 空价格”条目（幂等基线）。
+    expect(persisted.models.some(model =>
+      model.notes === LEGACY_PRICING_MIGRATION_NOTES && Object.keys(model.pricing || {}).length === 0
+      && !model.pricing?.input && !model.pricing?.output)).toBe(false);
+
+    // 幂等：再次刷新不再产生任何变化。
+    await refresh(dataDir, {
+      loadBundledSnapshot: async () => snapshot,
+      recordPricingRevision: async () => undefined,
+      fetchCatalogText: async () => {
+        throw new Error("network unavailable");
+      },
+    });
+    const rerun = await readPricingConfig(dataDir);
+    expect(rerun.models.map(model => [model.id, model.confidence, model.pricing]))
+      .toEqual(persisted.models.map(model => [model.id, model.confidence, model.pricing]));
+  });
+
+  test("自愈：同身份更高优先级存量条目已存在时丢弃误标条目而不重复", async () => {
+    const dataDir = await temporaryDirectory("pricing-self-heal-existing-");
+    const snapshot: PricingConfigV2 = {
+      version: 2,
+      currency: "USD",
+      unit: "per_million_tokens",
+      models: [],
+    };
+    // writePricingConfig 带唯一性断言，同身份冲突写不进去；只有绕过应用的
+    // 手工改写才可能造出这种损坏形态，这里直接落原始 JSON 模拟。
+    const configDir = join(dataDir, "config");
+    await mkdir(configDir, {recursive: true});
+    await writeFile(join(configDir, "model-pricing.json"), JSON.stringify({
+      version: 2,
+      currency: "USD",
+      unit: "per_million_tokens",
+      models: [
+        {id: "zombie", vendor: "openai", match: "dup-model", patterns: ["dup-model"],
+          pricing: {}, currency: "USD", confidence: "user_override",
+          sourceUrl: "local://legacy-model-pricing-v1", sourceCheckedAt: "2026-07-08",
+          notes: LEGACY_PRICING_MIGRATION_NOTES},
+        {id: "official-dup", vendor: "openai", runtimeModelId: "dup-model", patterns: ["dup-model"],
+          pricing: {input: 4, output: 4}, confidence: "official"},
+      ],
+    }), "utf8");
+
+    await requiredRefreshFunction()(dataDir, {
+      loadBundledSnapshot: async () => snapshot,
+      recordPricingRevision: async () => undefined,
+      fetchCatalogText: async () => {
+        throw new Error("network unavailable");
+      },
+    });
+
+    const persisted = await readPricingConfig(dataDir);
+    expect(persisted.models).toHaveLength(1);
+    expect(persisted.models[0]).toMatchObject({id: "official-dup", confidence: "official"});
   });
 });
