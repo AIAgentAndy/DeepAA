@@ -135,19 +135,32 @@ export async function syncCliConfigs(
     }
 
     // 凭据存在性预检：不改变上游状态码与保存结果，只补充 warning。
-    const resolver = new GatewayTokenResolver({credentialHelperPath: options.credentialHelperPath});
-    for (const target of config.targets) {
-      if (!target.enabled) continue;
-      for (const agent of KNOWN_AGENT_IDS) {
-        const credentialId = target.development?.defaultCredentials?.[agent];
-        if (!credentialId || !config.agentConnections[agent]) continue;
-        if (!(await resolver.exists(credentialId))) {
-          report.warnings.push({
-            targetId: target.id,
-            code: "CREDENTIAL_MISSING",
-            message: `${target.name} 的 ${registryAgentLabel(agent)} 默认系统凭据不存在`,
-          });
+    // 定向同步（options.agents 非空：开发启动链、目录能力跟随）不执行预检——
+    // 预检需按「目标 × Agent」逐个 spawn 凭据 helper（本机实测 ~0.3s/次，
+    // 12 目标 × 5 Agent 的默认凭据引用串行可达 9s），而定向消费方均不消费
+    // CREDENTIAL_MISSING（启动链只透出 LAUNCH_PREFERENCE_EFFORT_UNSUPPORTED，
+    // 能力跟随只看 report.ok）；全量同步（供应商管理「立即同步」）保持既有行为。
+    if (!options.agents) {
+      const checks: Array<{targetId: string; targetName: string; agent: AgentId; credentialId: string}> = [];
+      for (const target of config.targets) {
+        if (!target.enabled) continue;
+        for (const agent of KNOWN_AGENT_IDS) {
+          const credentialId = target.development?.defaultCredentials?.[agent];
+          if (!credentialId || !config.agentConnections[agent]) continue;
+          checks.push({targetId: target.id, targetName: target.name, agent, credentialId});
         }
+      }
+      const missing = await findMissingCredentials(
+        checks.map(check => check.credentialId),
+        options.credentialHelperPath,
+      );
+      for (const check of checks) {
+        if (!missing.has(check.credentialId)) continue;
+        report.warnings.push({
+          targetId: check.targetId,
+          code: "CREDENTIAL_MISSING",
+          message: `${check.targetName} 的 ${registryAgentLabel(check.agent)} 默认系统凭据不存在`,
+        });
       }
     }
   } catch (error) {
@@ -159,6 +172,61 @@ export async function syncCliConfigs(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+// ———————————————— 凭据存在性预检（全量同步专用） ————————————————
+
+/**
+ * 存在性探测缓存（web 进程内模块级共享）：每次探测 = spawn credential-helper
+ * 子进程（node 启动 + 系统凭据库查询，本机实测 ~0.3s/次），全量同步按
+ * 「目标 × Agent」逐个探测时缓存把重复探测降为零。凭据写操作后经
+ * invalidateCredentialExistenceCache 主动失效（见 development-launch service）。
+ * exists 的退出码无法区分「确认不存在」与「探测异常」，失败结果用短 TTL，
+ * 瞬时故障（如 Keychain 锁定）30s 内自愈；成功结果（大多数）享受长 TTL。
+ */
+const CREDENTIAL_EXISTS_SUCCESS_TTL_MS = 5 * 60_000;
+const CREDENTIAL_EXISTS_FAILURE_TTL_MS = 30_000;
+/** 并发 spawn 上限：保留并行收益的同时避免一次性派出几十个子进程。 */
+const CREDENTIAL_PROBE_CONCURRENCY = 8;
+const credentialExistsCache = new Map<string, {ok: boolean; expiresAt: number}>();
+
+/** 凭据写操作（新增/覆盖/删除）后主动失效；不传 id 时清空全部缓存。 */
+export function invalidateCredentialExistenceCache(credentialId?: string): void {
+  if (credentialId === undefined) credentialExistsCache.clear();
+  else credentialExistsCache.delete(credentialId);
+}
+
+async function probeCredentialExists(
+  resolver: GatewayTokenResolver,
+  credentialId: string,
+): Promise<boolean> {
+  const cached = credentialExistsCache.get(credentialId);
+  if (cached && cached.expiresAt > Date.now()) return cached.ok;
+  const ok = await resolver.exists(credentialId);
+  credentialExistsCache.set(credentialId, {
+    ok,
+    expiresAt: Date.now() + (ok ? CREDENTIAL_EXISTS_SUCCESS_TTL_MS : CREDENTIAL_EXISTS_FAILURE_TTL_MS),
+  });
+  return ok;
+}
+
+/** 批量存在性探测（去重 + 有界并发），返回不存在的 credentialId 集合。 */
+async function findMissingCredentials(
+  credentialIds: readonly string[],
+  credentialHelperPath: string,
+): Promise<Set<string>> {
+  const unique = [...new Set(credentialIds)];
+  if (unique.length === 0) return new Set();
+  const resolver = new GatewayTokenResolver({credentialHelperPath});
+  const missing = new Set<string>();
+  for (let offset = 0; offset < unique.length; offset += CREDENTIAL_PROBE_CONCURRENCY) {
+    const batch = unique.slice(offset, offset + CREDENTIAL_PROBE_CONCURRENCY);
+    const results = await Promise.all(batch.map(id => probeCredentialExists(resolver, id)));
+    batch.forEach((id, index) => {
+      if (!results[index]) missing.add(id);
+    });
+  }
+  return missing;
 }
 
 /**

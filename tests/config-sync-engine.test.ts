@@ -3,7 +3,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {expect, test} from "vitest";
 import type {CatalogTemplate} from "../src/lib/config-sync/catalog-template.js";
-import {syncCliConfigs, type CliSyncPaths} from "../src/lib/config-sync/sync-manager.js";
+import {syncCliConfigs, invalidateCredentialExistenceCache, type CliSyncPaths} from "../src/lib/config-sync/sync-manager.js";
 import type {AgentId, ProxyConfig, ProxyTarget, WireApi} from "../src/types.js";
 
 const template: CatalogTemplate = {
@@ -243,4 +243,92 @@ test("dsh 链路瞬时不合格跳过写入保留现状；显式关闭同步才�
   const cleaned = await readFile(paths.dshSettingsPath, "utf8");
   expect(cleaned).toContain("custom-section:");
   expect(cleaned).not.toContain("deepaa-gateway:");
+});
+
+test("凭据预检：全量探测缓存去重、定向同步零 spawn（2026-10-10 B1/B2）", async () => {
+  const root = await mkdtemp(join(tmpdir(), "config-sync-probe-"));
+  await Promise.all([
+    mkdir(join(root, "codex"), {recursive: true}),
+    mkdir(join(root, "claude"), {recursive: true}),
+    mkdir(join(root, "opencode"), {recursive: true}),
+    mkdir(join(root, "dsh"), {recursive: true}),
+    mkdir(join(root, "zcode", "v2"), {recursive: true}),
+  ]);
+  // 计数 helper：记录被探测的 credentialId；probe-missing 模拟凭据不存在。
+  const probeLog = join(root, "probe.log");
+  const helperPath = join(root, "credential-helper-counter.sh");
+  await writeFile(helperPath, [
+    "#!/bin/sh",
+    `printf '%s\\n' "$2" >> ${JSON.stringify(probeLog)}`,
+    'case "$2" in probe-missing) exit 1 ;; *) exit 0 ;; esac',
+    "",
+  ].join("\n"), {mode: 0o755});
+  const paths: CliSyncPaths = {
+    codexConfigPath: join(root, "codex", "config.toml"),
+    codexCatalogPath: join(root, "codex", "catalogs", "all.json"),
+    claudeUserSettingsPath: join(root, "claude", "settings.json"),
+    claudeProjectSettingsPaths: {},
+    opencodeConfigPath: join(root, "opencode", "opencode.jsonc"),
+    dshSettingsPath: join(root, "dsh", "settings.yaml"),
+    dshCredentialsPath: join(root, "dsh", ".credentials.yaml"),
+    zcodeConfigPath: join(root, "zcode", "v2", "config.json"),
+    zcodeStatePath: join(root, "zcode", "v2", "deepaa", "gateway-state.json"),
+    gatewayBaseUrl: "http://localhost:3211",
+    gatewayBearerToken: "deepaa-gateway",
+  };
+  // 独立凭据 id 防止与其它用例共享的模块级缓存串扰；用例边界显式清缓存。
+  invalidateCredentialExistenceCache();
+  const probeConfig: ProxyConfig = {
+    ...config(),
+    targets: [target({
+      id: "shared-provider",
+      development: {
+        defaultModels: {
+          codex: "deepseek-v4-flash",
+          claude: "deepseek-v4-flash",
+          opencode: "deepseek-v4-flash",
+          dsh: "deepseek-v4-flash",
+        },
+        defaultCredentials: {
+          codex: "probe-codex",
+          claude: "probe-missing",
+          opencode: "probe-opencode",
+          dsh: "probe-dsh",
+        },
+      },
+    })],
+  };
+  const probedIds = async () => (await readFile(probeLog, "utf8").catch(() => ""))
+    .split("\n").filter(Boolean).sort();
+
+  try {
+    // 1) 全量同步：4 个默认凭据引用各探测一次，probe-missing 产出警告。
+    const first = await syncCliConfigs(probeConfig, {paths, credentialHelperPath: helperPath});
+    expect(first.ok).toBe(true);
+    expect(await probedIds()).toEqual(["probe-codex", "probe-dsh", "probe-missing", "probe-opencode"]);
+    expect(first.warnings).toContainEqual({
+      targetId: "shared-provider",
+      code: "CREDENTIAL_MISSING",
+      message: "shared-provider 的 Claude Code 默认系统凭据不存在",
+    });
+
+    // 2) 再次全量：全部命中缓存，零新增 spawn。
+    await syncCliConfigs(probeConfig, {paths, credentialHelperPath: helperPath});
+    expect((await probedIds()).length).toBe(4);
+
+    // 3) 失效单个 id 后重新全量：只重新探测该 id（probe-missing 累计出现两次）。
+    invalidateCredentialExistenceCache("probe-missing");
+    await syncCliConfigs(probeConfig, {paths, credentialHelperPath: helperPath});
+    expect((await probedIds()).length).toBe(5);
+    expect((await readFile(probeLog, "utf8")).split("\n").filter(id => id === "probe-missing").length).toBe(2);
+
+    // 4) 定向同步（开发启动链/能力跟随形态）：零 spawn、零凭据警告。
+    const before = (await readFile(probeLog, "utf8")).split("\n").filter(Boolean).length;
+    const targeted = await syncCliConfigs(probeConfig, {paths, credentialHelperPath: helperPath, agents: ["codex"]});
+    expect(targeted.ok).toBe(true);
+    expect((await readFile(probeLog, "utf8")).split("\n").filter(Boolean).length).toBe(before);
+    expect(targeted.warnings.some(item => item.code === "CREDENTIAL_MISSING")).toBe(false);
+  } finally {
+    invalidateCredentialExistenceCache();
+  }
 });

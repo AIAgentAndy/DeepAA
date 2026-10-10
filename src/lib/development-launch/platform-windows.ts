@@ -110,8 +110,12 @@ export class WindowsDevelopmentPlatformAdapter implements DevelopmentPlatformAda
     this.homeDir = options.homeDir || homedir();
   }
 
-  /** 探测结果进程级缓存：Windows 可执行查找较重，60s 内复用。 */
-  private static readonly PROBE_TTL_MS = 60_000;
+  /**
+   * 探测结果进程级缓存：与 macOS 同规则——成功长缓存（安装位置低频变化），
+   * 失败短缓存（用户装好 CLI 后重开弹窗即可见）。
+   */
+  private static readonly PROBE_SUCCESS_TTL_MS = 30 * 60_000;
+  private static readonly PROBE_FAILURE_TTL_MS = 60_000;
   private executableProbeCache = new Map<DevelopmentCli, {value: string | null; expires: number}>();
 
   async detectCapabilities(): Promise<PlatformCapabilities> {
@@ -174,7 +178,12 @@ export class WindowsDevelopmentPlatformAdapter implements DevelopmentPlatformAda
     const cached = this.executableProbeCache.get(cli);
     if (cached && Date.now() < cached.expires) return cached.value;
     const value = await this.resolveExecutableUncached(cli);
-    this.executableProbeCache.set(cli, {value, expires: Date.now() + WindowsDevelopmentPlatformAdapter.PROBE_TTL_MS});
+    this.executableProbeCache.set(cli, {
+      value,
+      expires: Date.now() + (value
+        ? WindowsDevelopmentPlatformAdapter.PROBE_SUCCESS_TTL_MS
+        : WindowsDevelopmentPlatformAdapter.PROBE_FAILURE_TTL_MS),
+    });
     return value;
   }
 

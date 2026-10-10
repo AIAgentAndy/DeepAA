@@ -92,7 +92,9 @@ describe("development launch UI source", () => {
       "utf-8",
     );
 
-    expect(source).toContain('return runPreflight("", loaded.nonce)');
+    // 2026-10-10 E：首请求携带 prop 的上次目录（显式传递 capabilities nonce）；
+    // 递归预填（prop 无值场景）沿用响应内新签发的 nonce。
+    expect(source).toContain("await runPreflight(initialProjectDir, loaded.nonce)");
     expect(source).toContain("runPreflight(body.lastProjectDir, body.nonce, resetModel)");
   });
 
@@ -217,8 +219,10 @@ describe("development launch UI source", () => {
     expect(source).toContain("最新的供应商与模型列表会自动加载");
     // 2026-10-06 用户实测确认：dsh 免重启（profile/凭据按请求解析），不再要求重启。
     expect(source).toContain("下一请求即生效");
-    // 2026-10-08：挂载以空目录预检，由响应 lastProjectDir 统一回填显示（见专项回归测试）。
-    expect(source).toContain('return runPreflight("", loaded.nonce)');
+    // 2026-10-10 E：挂载首请求直接带 prop 的上次启动目录（命中时一次预检完成
+    // 校验+回填）；prop 无值/失效时经递归或空目录回退路径（见专项回归测试）。
+    expect(source).toContain("const initialProjectDir = (requiresProjectDir || cli === \"zcode\") && cli !== \"codex\"");
+    expect(source).toContain("await runPreflight(initialProjectDir, loaded.nonce)");
     expect(source).toContain("body.lastProjectDir");
     // 「来源：本次手动设置」等冗余文案已移除。
     expect(source).not.toContain("来源：");
@@ -266,6 +270,35 @@ describe("development launch UI source", () => {
     expect(switchBody).toContain("setTerminal(current => SPECIAL_LAUNCH_TERMINAL_IDS.has(current) ? current : \"\")");
     // 预检回填路径对特殊形态值的保护保持不变。
     expect(source).toContain("if (preferred && SPECIAL_LAUNCH_TERMINAL_IDS.has(preferred)) return preferred;");
+  });
+
+  test("启动进度按真实边界推进：形态切换完成置 done、请求期间 syncing active（2026-10-10 C1）", async () => {
+    const source = await readFile("src/components/development-launch-dialog.tsx", "utf8");
+    // 阶段只绑定真实可观测边界：点击进入 switching（仅形态不符时）→ onSetCliForm
+    // 完成进入 syncing → 响应返回整体结束；不做请求内的模拟进度。
+    expect(source).toContain('setLaunchPhase(formMismatch ? "switching" : "syncing")');
+    expect(source).toContain('setLaunchPhase("syncing");');
+    // 切换成功后 formMismatch 实时复位，步骤行渲染必须用点击时快照而非实时值。
+    expect(source).toContain("setLaunchSwitchedForm(formMismatch);");
+    expect(source).toContain("{launchSwitchedForm ?");
+    expect(source).toContain('className={launchPhase === "switching" ? "active" : "done"}');
+    expect(source).toContain('className={launchPhase === "syncing" ? "active" : "pending"}');
+    // 静态 stepper（首步永远 active、其余永远 pending）不得回流。
+    expect(source).not.toContain('<li className="pending"><span>同步 CLI 配置</span></li>');
+  });
+
+  test("弹窗挂载首请求直接携带上次启动目录，失效时回退空目录预检（2026-10-10 E）", async () => {
+    const source = await readFile("src/components/development-launch-dialog.tsx", "utf8");
+    // 命中 prop 的 lastProjectDir 时一次请求完成校验+回填，免除「空目录预检 →
+    // 回填 → 递归第三次预检」的串行往返；codex 挂载恒为客户端形态不预填。
+    expect(source).toContain('const initialProjectDir = (requiresProjectDir || cli === "zcode") && cli !== "codex"');
+    expect(source).toContain("await runPreflight(initialProjectDir, loaded.nonce)");
+    // 预填目录已失效（INVALID_PROJECT_DIR）：回退空目录预检保证弹窗可用。
+    expect(source).toContain('if (!prefilled && initialProjectDir)');
+    expect(source).toContain('await runPreflight("")');
+    // 携带目录的成功预检回填显示；服务端历史值不得覆盖用户手动选择（无重跑分支）。
+    expect(source).toContain("if (path) setProjectDir(path);");
+    expect(source).not.toContain("body.lastProjectDir !== path");
   });
 
   test("弹窗不改动默认链：只有点「打开 {Agent}」才写配置并同步 CLI", async () => {

@@ -163,6 +163,15 @@ export function DevelopmentLaunchDialog({
       ?? agentLaunchDeclarations(cli).launchModes[0]
       ?? "tui") as "tui" | "web" | "app";
   const [busyAction, setBusyAction] = useState("");
+  /**
+   * 启动进度阶段（2026-10-10 C1）：只绑定真实可观测边界——「切换 CLI 形态」
+   * 对应 onSetCliForm await 完成，「同步配置并启动」覆盖 /start 请求全程，
+   * 响应返回即全部完成（成功消息 + 关窗倒计时）。服务端请求内部（保存默认
+   * 链/preSync/拉起/persist）对前端无独立边界，不拆步骤、不做模拟进度。
+   */
+  const [launchPhase, setLaunchPhase] = useState<"idle" | "switching" | "syncing">("idle");
+  /** 本次启动是否包含形态切换（点击时快照）：切换成功后 formMismatch 实时复位，步骤行渲染不能依赖它。 */
+  const [launchSwitchedForm, setLaunchSwitchedForm] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const launchLabel = `在 ${registryAgentLabel(cli)} 中开发`;
@@ -198,7 +207,7 @@ export function DevelopmentLaunchDialog({
       : null;
     closeButtonRef.current?.focus();
     void loadCapabilities()
-      .then(loaded => {
+      .then(async loaded => {
         // 桌面客户端优先（2026-10-05 用户确认，声明驱动零分派）：声明了 app 形态、
         // 非 fixedLaunchMode 且检测到客户端已安装时，默认选中客户端（dsh-app）；
         // 未安装保持 Web 缺省。仅在弹窗刚挂载、终端值仍为空/preferredTerminal 时
@@ -210,13 +219,23 @@ export function DevelopmentLaunchDialog({
           && (!terminal || terminal === target.development?.preferredTerminal)) {
           setTerminal("dsh-app");
         }
-        // 首次预检不带目录，由响应里的 lastProjectDir（服务端 preflight 前 reload 磁盘、
-        // 按当前激活目标，比父组件传入的 target prop 新鲜）在 runPreflight 内统一回填
-        // 显示（2026-10-08 修复：此前把上次目录直接带进请求却不落输入框状态，
-        // claude/opencode/zcode 每次打开都是空目录、必填时还挡启动）。目录已失效时
-        // 递归预检返回 INVALID_PROJECT_DIR 并清空，用户手动选择即可恢复。
-        // 挂载时异步闭包仍持有初始空 nonce，显式传递响应值避免再取一次能力。
-        return runPreflight("", loaded.nonce);
+        // 首次预检：E（2026-10-10）直接带上该供应商上次启动目录（target prop 的
+        // development.lastProjectDir），免去「空目录预检 → 回填 → 递归第三次预检」
+        // 的串行往返；命中时一次请求完成校验并回填显示。codex 挂载时终端恒为
+        // codex-client（目录选填、不预填），与递归分支的排除条件一致；prop 缺失
+        // lastProjectDir 时仍走 runPreflight 内的递归预填（服务端新鲜值）。
+        const initialProjectDir = (requiresProjectDir || cli === "zcode") && cli !== "codex"
+          && target.development?.lastProjectDir
+          ? target.development.lastProjectDir
+          : "";
+        const prefilled = await runPreflight(initialProjectDir, loaded.nonce);
+        if (!prefilled && initialProjectDir) {
+          // 预填目录已失效：回退空目录预检（nonce 已随失败清空，postMutation 会
+          // 自动重新获取能力签发新 nonce），保证模型/密钥/终端就位、弹窗可用——
+          // 与原递归分支「失败仅清目录」的行为一致。
+          setProjectDir("");
+          await runPreflight("");
+        }
       })
       .catch(cause => {
         setError(errorMessage(cause, "本机开发能力检测失败"));
@@ -338,6 +357,10 @@ export function DevelopmentLaunchDialog({
         nonceOverride,
       );
       setPreflight(body);
+      // E：携带目录的预检成功即回填显示（目录已通过服务端 realpath/存在性校验）。
+      // 不做「服务端 lastProjectDir 与请求值不同则重跑」——该分支会误伤用户
+      // 手动选目录/切终端的场景（用户明确选择的新目录理应优先于历史值）。
+      if (path) setProjectDir(path);
       // 用户在本次弹窗里显式选过模型后，任何预检（选目录 / 切终端 / 重跑）都不得
       // 静默覆盖；只有显式重置（切换默认供应商）或尚未选择时才采用已保存的默认模型。
       if (resetModel || (!modelModified && !modelUserPickedRef.current)) {
@@ -471,6 +494,8 @@ export function DevelopmentLaunchDialog({
       return;
     }
     setBusyAction("start");
+    setLaunchPhase(formMismatch ? "switching" : "syncing");
+    setLaunchSwitchedForm(formMismatch);
     setError("");
     setMessage("");
     // 形态切换回执：switching 记录本次点击是否真的切换了（切换成功后 formMismatch
@@ -489,6 +514,7 @@ export function DevelopmentLaunchDialog({
           setError(errorMessage(cause, "CLI 形态切换失败，已取消本次启动"));
           return;
         }
+        setLaunchPhase("syncing");
       }
       const body = await postMutation<ApiEnvelope & {
         defaultNotice?: string;
@@ -566,6 +592,7 @@ export function DevelopmentLaunchDialog({
       setError(errorMessage(cause, "启动失败"));
     } finally {
       setBusyAction("");
+      setLaunchPhase("idle");
     }
   }
 
@@ -1059,10 +1086,14 @@ export function DevelopmentLaunchDialog({
 
           {busyAction === "start" ? (
             <ol className="development-launch-stepper" role="status" aria-label="启动进度">
-              {formMismatch ? <li className="active"><span>切换 CLI 形态</span></li> : null}
-              <li className={formMismatch ? "pending" : "active"}><span>保存默认链</span></li>
-              <li className="pending"><span>同步 CLI 配置</span></li>
-              <li className="pending"><span>启动 {registryAgentLabel(cli)}</span></li>
+              {launchSwitchedForm ? (
+                <li className={launchPhase === "switching" ? "active" : "done"}>
+                  <span>切换 CLI 形态</span>
+                </li>
+              ) : null}
+              <li className={launchPhase === "syncing" ? "active" : "pending"}>
+                <span>同步配置并启动 {registryAgentLabel(cli)}</span>
+              </li>
             </ol>
           ) : null}
         </div>

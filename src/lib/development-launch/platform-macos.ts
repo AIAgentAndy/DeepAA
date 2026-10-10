@@ -154,8 +154,13 @@ export class MacDevelopmentPlatformAdapter implements DevelopmentPlatformAdapter
       || join(process.cwd(), "bin", "development-launch.mjs");
   }
 
-  /** 探测结果进程级缓存：zsh 登录壳 command -v / 终端存在性探测都很重，60s 内复用。 */
-  private static readonly PROBE_TTL_MS = 60_000;
+  /**
+   * 探测结果进程级缓存：登录壳 command -v 很重（交互壳实测单个可达秒级）。
+   * 成功结果长缓存——CLI 安装位置低频变化；失败保持短缓存，用户装好 CLI 后
+   * 重开弹窗即可见，不被陈旧的 null 挡住。
+   */
+  private static readonly PROBE_SUCCESS_TTL_MS = 30 * 60_000;
+  private static readonly PROBE_FAILURE_TTL_MS = 60_000;
   private executableProbeCache = new Map<DevelopmentCli, {value: string | null; expires: number}>();
   private terminalsProbeCache: {value: TerminalCapability[]; expires: number} | null = null;
 
@@ -218,7 +223,12 @@ export class MacDevelopmentPlatformAdapter implements DevelopmentPlatformAdapter
     const cached = this.executableProbeCache.get(cli);
     if (cached && Date.now() < cached.expires) return cached.value;
     const value = await this.resolveExecutableUncached(cli);
-    this.executableProbeCache.set(cli, {value, expires: Date.now() + MacDevelopmentPlatformAdapter.PROBE_TTL_MS});
+    this.executableProbeCache.set(cli, {
+      value,
+      expires: Date.now() + (value
+        ? MacDevelopmentPlatformAdapter.PROBE_SUCCESS_TTL_MS
+        : MacDevelopmentPlatformAdapter.PROBE_FAILURE_TTL_MS),
+    });
     return value;
   }
 
@@ -231,13 +241,14 @@ export class MacDevelopmentPlatformAdapter implements DevelopmentPlatformAdapter
       const path = join(this.homeDir, candidate);
       if (await pathExists(path)) return path;
     }
-    const result = await this.run({
-      command: "/bin/zsh",
-      args: ["-lic", `command -v ${executable}`],
-    }).catch(() => undefined);
-    if (!result || result.exitCode !== 0) return null;
-    const path = result.stdout.trim().split(/\r?\n/).at(-1) || "";
-    return path.startsWith("/") && await pathExists(path) ? path : null;
+    // 登录壳兜底按代价升序：先非交互（-lc，实测 ~0.1s，登录层 PATH 已初始化），
+    // 命中即返回；仍找不到再交互（-lic，实测可达秒级——加载完整 .zshrc），
+    // 兜底 PATH 只在交互层初始化的用户环境。
+    for (const loginShellArgs of [["-lc"], ["-lic"]] as const) {
+      const path = await probeLoginShellExecutable(this.run, executable, loginShellArgs);
+      if (path) return path;
+    }
+    return null;
   }
 
   /**
@@ -290,7 +301,7 @@ export class MacDevelopmentPlatformAdapter implements DevelopmentPlatformAdapter
       { id: "terminal.app", label: "Terminal", available: terminal },
       { id: "iterm2", label: "iTerm2", available: iterm },
     ];
-    this.terminalsProbeCache = {value, expires: Date.now() + MacDevelopmentPlatformAdapter.PROBE_TTL_MS};
+    this.terminalsProbeCache = {value, expires: Date.now() + MacDevelopmentPlatformAdapter.PROBE_SUCCESS_TTL_MS};
     return value;
   }
 
@@ -356,6 +367,21 @@ async function findExecutableOnPath(name: string, rawPath: string): Promise<stri
     if (await pathExists(candidate)) return candidate;
   }
   return null;
+}
+
+/** 登录壳 command -v 兜底：解析出绝对路径并确认存在，否则视为未找到。 */
+async function probeLoginShellExecutable(
+  run: DevelopmentCommandRunner,
+  executable: string,
+  shellArgs: readonly string[],
+): Promise<string | null> {
+  const result = await run({
+    command: "/bin/zsh",
+    args: [...shellArgs, `command -v ${executable}`],
+  }).catch(() => undefined);
+  if (!result || result.exitCode !== 0) return null;
+  const path = result.stdout.trim().split(/\r?\n/).at(-1) || "";
+  return path.startsWith("/") && await pathExists(path) ? path : null;
 }
 
 async function pathExists(path: string): Promise<boolean> {

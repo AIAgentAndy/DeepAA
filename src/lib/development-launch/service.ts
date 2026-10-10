@@ -49,7 +49,7 @@ import {
   type DevelopmentPlatformAdapter,
 } from "./platform";
 import { launchCommandInTerminal } from "./terminal-launcher";
-import { backupFile, syncCliConfigs, type ConfigSyncReport } from "@/lib/config-sync/sync-manager";
+import { backupFile, invalidateCredentialExistenceCache, syncCliConfigs, type ConfigSyncReport } from "@/lib/config-sync/sync-manager";
 import { resolveDefaultReasoningLevel } from "@/lib/config-sync/model-capabilities";
 import { resolveGatewayBaseUrl, normalizeLoopbackAliasBaseUrl } from "@/lib/local-endpoints";
 import {
@@ -400,6 +400,8 @@ export class DevelopmentLaunchService {
       agentScope: input.agentScope,
     });
     await this.credentialStore.put(metadata.id, `${target.name} · ${metadata.label}`, input.secret);
+    // 写操作后失效同步预检的存在性缓存（新 id 本无缓存，此处保持语义完备）。
+    invalidateCredentialExistenceCache(metadata.id);
     let canDeleteSecretOnFailure = true;
     try {
       await this.credentials.upsert(metadata);
@@ -458,6 +460,7 @@ export class DevelopmentLaunchService {
         for (const secretId of credentialSecretIds(item)) {
           await this.credentialStore.delete(secretId);
         }
+        invalidateCredentialExistenceCache(item.id);
       } catch (error) {
         // 系统凭据删除失败时保留元数据，便于后续重试或人工定位，不能假报已清理。
         failed.push({credentialId: item.id, code: stableCleanupErrorCode(error, "CREDENTIAL_DELETE_FAILED")});
@@ -506,6 +509,8 @@ export class DevelopmentLaunchService {
         `${this.configProvider.getConfig().targets?.find(t => t.id === input.targetId)?.name ?? input.targetId} · ${label}`,
         input.secret,
       );
+      // 覆盖写可能改变存在性（曾探测失败的条目被重建），失效缓存。
+      invalidateCredentialExistenceCache(current.id);
     }
     const updated: DevelopmentCredentialMetadata = {
       ...current,
@@ -529,6 +534,8 @@ export class DevelopmentLaunchService {
     const remaining = await this.credentials.list(input.targetId);
     if (remaining.length <= 1) throw new Error("CREDENTIAL_LAST_REQUIRED");
     for (const secretId of credentialSecretIds(metadata)) await this.credentialStore.delete(secretId);
+    // 删除后失效缓存，避免全量同步预检在 TTL 内误报「凭据仍存在」。
+    invalidateCredentialExistenceCache(metadata.id);
     await this.credentials.remove(metadata.id);
     // 双保险：删除后清理/提升供应商与 Agent 级默认密钥引用，避免悬空指向已删除密钥。
     await this.reconcileCredentialDefaults(input.targetId, metadata.id);

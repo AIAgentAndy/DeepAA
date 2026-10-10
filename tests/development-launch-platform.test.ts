@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -349,6 +349,98 @@ describe("development launch platform adapters", () => {
     expect(result.agents.claude).toMatchObject({available: true, executablePath: join(pathDir, "claude")});
     expect(result.agents.opencode).toMatchObject({available: true, executablePath: join(pathDir, "opencode")});
     expect(commands.every(command => !command.args.includes("--version"))).toBe(true);
+  });
+
+  test("macOS 登录壳兜底先非交互 -lc，命中即不启动交互壳（2026-10-10 A1）", async () => {
+    const root = await mkdtemp(join(tmpdir(), "platform-login-shell-"));
+    tempRoots.push(root);
+    // 登录壳返回的路径必须真实存在（探测会做存在性校验）。
+    const fakeCli = join(root, "bin", "codex");
+    await mkdir(join(root, "bin"), {recursive: true});
+    await writeFile(fakeCli, "#!/bin/sh\n", {mode: 0o755});
+    const shellCommands: CommandSpec[] = [];
+    const adapter = new MacDevelopmentPlatformAdapter({
+      env: {PATH: ""},
+      homeDir: join(root, "home"),
+      run: async command => {
+        if (command.command === "/bin/zsh") shellCommands.push(command);
+        // 非交互登录壳命中；交互壳永不命中（若被调用说明顺序错误）。
+        if (command.args[0] === "-lc") return {stdout: `${fakeCli}\n`, stderr: "", exitCode: 0};
+        return {stdout: "", stderr: "", exitCode: 1};
+      },
+    });
+
+    expect(await adapter.resolveExecutable("codex")).toBe(fakeCli);
+    // 只允许跑一次登录壳，且必须是非交互形态（交互壳实测秒级，是冷探测瓶颈）。
+    expect(shellCommands).toHaveLength(1);
+    expect(shellCommands[0].args).toEqual(["-lc", "command -v codex"]);
+  });
+
+  test("macOS 登录壳兜底 -lc 未命中时回退交互 -lic（2026-10-10 A1 兜底链）", async () => {
+    const root = await mkdtemp(join(tmpdir(), "platform-login-shell-fallback-"));
+    tempRoots.push(root);
+    const fakeCli = join(root, "bin", "claude");
+    await mkdir(join(root, "bin"), {recursive: true});
+    await writeFile(fakeCli, "#!/bin/sh\n", {mode: 0o755});
+    const shellCommands: CommandSpec[] = [];
+    const adapter = new MacDevelopmentPlatformAdapter({
+      env: {PATH: ""},
+      homeDir: join(root, "home"),
+      run: async command => {
+        if (command.command === "/bin/zsh") shellCommands.push(command);
+        // PATH 只在交互层初始化的用户环境：-lc 找不到，-lic 命中。
+        if (command.args[0] === "-lic") return {stdout: `${fakeCli}\n`, stderr: "", exitCode: 0};
+        return {stdout: "", stderr: "", exitCode: 1};
+      },
+    });
+
+    expect(await adapter.resolveExecutable("claude")).toBe(fakeCli);
+    expect(shellCommands.map(command => command.args[0])).toEqual(["-lc", "-lic"]);
+  });
+
+  test("macOS 探测缓存：成功长 TTL、失败短 TTL 内均不重复探测（2026-10-10 A2）", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await mkdtemp(join(tmpdir(), "platform-probe-ttl-"));
+      tempRoots.push(root);
+      const fakeCli = join(root, "bin", "opencode");
+      await mkdir(join(root, "bin"), {recursive: true});
+      await writeFile(fakeCli, "#!/bin/sh\n", {mode: 0o755});
+      let shellCalls = 0;
+      const succeed = new Map<string, boolean>([["opencode", true]]);
+      const adapter = new MacDevelopmentPlatformAdapter({
+        env: {PATH: ""},
+        homeDir: join(root, "home"),
+        run: async command => {
+          if (command.command !== "/bin/zsh") return {stdout: "", stderr: "", exitCode: 1};
+          shellCalls += 1;
+          const executable = command.args.at(-1)!.replace("command -v ", "");
+          return succeed.get(executable)
+            ? {stdout: `${fakeCli}\n`, stderr: "", exitCode: 0}
+            : {stdout: "", stderr: "", exitCode: 1};
+        },
+      });
+
+      // 失败（dsh 未命中两次登录壳）：短 TTL 内命中缓存，零新增 shell。
+      expect(await adapter.resolveExecutable("dsh")).toBeNull();
+      expect(shellCalls).toBe(2);
+      await adapter.resolveExecutable("dsh");
+      expect(shellCalls).toBe(2);
+
+      // 成功（opencode）：30 分钟长 TTL 内命中缓存。
+      expect(await adapter.resolveExecutable("opencode")).toBe(fakeCli);
+      expect(shellCalls).toBe(3);
+      vi.setSystemTime(Date.now() + 29 * 60_000);
+      await adapter.resolveExecutable("opencode");
+      expect(shellCalls).toBe(3);
+      // 超过成功 TTL 后重新探测（且此时改为失败，验证确实重新执行）。
+      vi.setSystemTime(Date.now() + 2 * 60_000);
+      succeed.set("opencode", false);
+      expect(await adapter.resolveExecutable("opencode")).toBeNull();
+      expect(shellCalls).toBe(5);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("Windows 能力探测只确认可执行文件存在，不启动 --version", async () => {
