@@ -168,6 +168,21 @@ describe("跨平台 Deepaa 启动器", () => {
       command: "/usr/local/bin/node",
       args: ["/app/deepaa/dist/proxy/proxy-server.mjs"],
     });
+    // 生产 web 进程独占堆上限（2026-10-10 用户确认 768M）：进程级旗标，只进 web
+    // spec；代理 / 构建不携带。
+    expect(prod.web).toEqual({
+      command: "/usr/local/bin/node",
+      args: [
+        "--disable-warning=ExperimentalWarning",
+        "--max-old-space-size=768",
+        "/app/deepaa/node_modules/next/dist/bin/next",
+        "start",
+        "-p",
+        "4321",
+        "-H",
+        "127.0.0.1",
+      ],
+    });
     expect(specs.web).toEqual({
       command: "/usr/local/bin/node",
       args: [

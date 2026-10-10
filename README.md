@@ -1,55 +1,97 @@
 # DeepAA
 
-**Deep Agent Analytics**
+**Understand AI costs. Trace every call.**
 
-DeepAA is a local reverse-proxy inspector for AI agent and LLM API traffic. It captures OpenAI-compatible and Anthropic-compatible requests and responses, then presents the full call chain in a clean web UI with formatted JSON, streaming diagnostics, token usage, headers, raw payloads, and copyable debug commands.
+DeepAA (Deep Agent Analytics) is an open source, local workspace for **AI coding cost transparency and multi-model management**. It connects official prices, plans, subscriptions, relay multipliers, and promotions to individual requests, so you can inspect usage, costs, and calculation details. Manage providers and agents, trace inputs and outputs, and configure model-level failover in the same workspace.
 
-[中文文档](./README_cn.md)
-
-## Why It Exists
-
-Modern AI agents often talk to model providers, gateways, or internal relay services through OpenAI or Anthropic compatible APIs. When something goes wrong, the most useful evidence is usually hidden in the exact HTTP exchange: the prompt, message sequence, tool calls, request headers, streaming events, upstream response, and final parsed model output.
-
-DeepAA gives you that evidence locally. Point any compatible SDK, CLI, agent, or relay client at the local proxy, configure the real upstream base URL in the UI, and inspect what actually happened.
+[Website & product preview](https://deepaa.dev/en-US) · [Installation & setup](https://deepaa.dev/en-US/docs) · [中文文档](./README_cn.md) · [MIT license](./LICENSE)
 
 ## Core Value
 
-- Inspect any OpenAI-compatible or Anthropic-compatible model endpoint, including first-party APIs, local models, enterprise gateways, and third-party relay services.
-- Capture the underlying request and response chain instead of only the high-level SDK result.
-- View requests, responses, SSE streams, tool calls, token usage, timing, headers, and raw payloads in a polished local web interface.
-- Format JSON with line numbers, indentation, wrapping, and collapsible blocks for readable debugging.
-- Configure multiple upstream targets at runtime from the UI without restarting the proxy.
-- Generate a copyable `curl` command from captured requests for quick reproduction.
-- Persist one v2 raw JSONL copy, then asynchronously project Session, Thread, Turn, Step, tool, token, and cost data into SQLite.
+With multiple agents, models, and providers, a bill total rarely explains which task incurred a cost or why. Cache rates, plan quotas, subscription windows, relay multipliers, and promotions make comparisons harder. DeepAA brings these rules, request records, and configuration controls into one local workspace.
 
-## Verified Agents
+| Capability | What you get |
+| --- | --- |
+| **Per-request cost transparency** | Inspect uncached input, cache reads, cache writes, and output charges, with matched rates, multipliers, settlement coefficients, plan usage rules, and calculation formulas. Compare totals by model, provider, agent, and time range. |
+| **Unified provider and agent access** | Check connected provider balances and plan quotas; manage models and credentials. Enable CLI sync to avoid editing managed settings by hand and use compatible models from multiple providers in the same agent. |
+| **Agent-to-model call tracing** | Follow Session → Thread → Turn → Step relationships across tasks and sub-agents. Inspect prompts, model outputs, tool interactions, tokens, latency, and request evidence together. |
+| **Model and billing-rule update notifications** | Follow the published model catalog for new models and changes to prices, plans, promotions, and capabilities. Inspect versions, before/after differences, and which models you currently use are affected. |
+| **Model-level failover** | Configure ordered model-and-provider backups, failure thresholds, sticky backup selection, and recovery probes to reduce disruption from model or channel failures. |
 
-DeepAA has been verified with the following AI coding agents:
+Observability records stay on your machine, with no upload to a DeepAA cloud. Model requests still go to your chosen provider. No agent source changes or observability SDK are required.
 
-- **Claude Code** — set `ANTHROPIC_BASE_URL` to the local proxy address.
-- **Codex** — set `model_providers.<provider>.base_url` to the local proxy address in `~/.codex/config.toml`.
+## One-line Installation
 
-Any OpenAI-compatible or Anthropic-compatible client (SDK, CLI, relay service) also works.
+Install without cloning the repository. The scripts check or install Node.js ≥22.13, install the npm CLI, then launch the console at `http://127.0.0.1:3210`.
 
-## Supported API Formats
+```bash
+# macOS (Terminal)
+curl -fsSL https://deepaa.dev/install.sh | bash
+```
 
-DeepAA understands these protocol families:
+```powershell
+# Windows (PowerShell)
+irm https://deepaa.dev/install.ps1 | iex
+```
 
-- Anthropic Messages API compatible traffic.
-- OpenAI Chat Completions compatible traffic.
-- OpenAI Responses API compatible traffic, including streamed SSE responses.
+With Node.js already installed, run `npm install -g deepaa`. Installation starts the console automatically; run `deepaa` if it does not open. `DEEPAA_NO_LAUNCH=1` skips auto-start. The scripts also accept `DEEPAA_MIRROR=cn|global` to select the download channel.
 
-The upstream service does not need to be the official provider. Any gateway or relay service that speaks one of these compatible formats can be inspected.
+## Your First Three Steps
+
+1. Add a provider in **Provider management**, choose pay-as-you-go, plan, or subscription billing, and configure available models and credentials.
+2. Connect an installed agent, choose its default provider and model, and enable CLI configuration sync if desired. Select a project and launch it from the dashboard.
+3. Review balances, quotas, and multi-dimensional analytics on the dashboard. Open Session tracking, Interaction content, or Token pricing to inspect a specific request and its cost calculation.
+
+## Understand the Cost of a Request
+
+DeepAA connects what was consumed, which rules applied, and how the amount was calculated. Those records also feed task-level and global analytics.
+
+| Billing channel | Reporting basis |
+| --- | --- |
+| **Pay-as-you-go** | Request usage, matched rates, credential multipliers, and settlement coefficients, with component charges and amounts before/after multipliers. Call-time billing snapshots preserve the calculation basis. |
+| **Plans and subscriptions** | Quota consumption, windows, monthly fees, and allocation details, clearly labeled as **estimated cost**. Credit, monetary, and percentage quotas use their respective rules; missing evidence is marked pending or unavailable. |
+| **Relay reconciliation** | Supported sub2api / new-api pay-as-you-go targets can reconcile site records and append adjustments when evidence and stability conditions are met. Original ledger entries and historical prices are preserved. |
+
+Illustrative formulas for common token billing and credit-based plans:
+
+```text
+Usage charge (original currency) = Σ(billable units × applicable rate / 1,000,000) × credential multiplier
+CNY display amount = original-currency amount × call-time settlement coefficient
+
+Estimated credit-plan cost = monthly fee × (request credits / window quota) × (window days / 30)
+```
+
+Input, cache, and output use their respective rates without double counting. Long-context, time-based, service-tier, and promotion rules depend on the request's matched rules. The frozen billing record is the basis for each amount. Plan allocation is an estimate, not a per-request invoice from the provider. Percentage-based subscriptions may use quota-window deltas; the UI retains the estimation method and evidence.
+
+The price center prioritizes manual overrides, official catalog prices, then LiteLLM fallback rates, and distinguishes same-named models from different providers. New rates apply to subsequent matches; historical requests keep their original rates, multipliers, and settlement coefficients. Catalog notifications describe published rule versions, with timing determined by catalog publication and sync.
+
+## Supported Agents and Model Services
+
+Five coding agents are integrated for access, managed configuration sync, and quick launch:
+
+| Agent | Gateway protocols |
+| --- | --- |
+| **Codex** | OpenAI Responses |
+| **Claude Code** | Anthropic Messages |
+| **OpenCode** | OpenAI Responses / Chat Completions, Anthropic Messages |
+| **DeepSeek Harness** | OpenAI Chat Completions / Responses, Anthropic Messages |
+| **ZCode** | Anthropic Messages, OpenAI Chat Completions / Responses |
+
+Reuse one provider across agents, or use models from multiple providers in the same agent. Available combinations depend on protocols, model capabilities, and explicit agent scopes. Balance sync, quota sync, and subscription passthrough depend on the provider and agent integration.
+
+Observation uses gateway capture or supported local-log imports. Codex and ZCode support their corresponding official-direct logs. DeepSeek Harness logs enrich native session identities and are not enabled as a separate billing import source by default. Raw HTTP evidence comes only from gateway capture, and task relationships depend on the identities and evidence exposed by the client.
+
+CLI sync backs up files before changing only DeepAA-managed fields and preserving unrelated configuration. Initial setup still requires selecting providers, models, and credentials. Failover retries only when conditions are met and no response content has been forwarded to the client; an already-started response is never transparently replayed.
 
 ## Tech Stack
 
 - Framework: [Next.js 16](https://nextjs.org/) + [React 19](https://react.dev/)
 - Language: TypeScript 5
 - Package Manager: pnpm
-- Runtime: Node.js 22.13+ or 23.4+ (Node built-in `node:sqlite` driver; the proxy is a standalone native Node HTTP process
+- Runtime: Node.js 22.13+ or 23.4+ (Node built-in `node:sqlite` driver; the proxy is a standalone native Node HTTP process)
 - Storage: one local v2 raw JSONL/blob archive + indexed SQLite projections
 
-## Quick Start
+## Quick Start (Source Development)
 
 ### 1. Install Dependencies
 
@@ -142,7 +184,7 @@ By default, both servers bind to `127.0.0.1` only. This is intentional because c
 
 ### 3. Point Your Client at the Local Proxy
 
-Open **Proxy Management** and create reusable provider targets. A target may define an OpenAI-compatible upstream URL, an Anthropic-compatible upstream URL, or both. These are request body formats, not provider categories. Models and OS credential references are shared by the target and can be scoped to Codex or Claude Code.
+Open **Provider management** and create reusable provider targets. A target may define an OpenAI-compatible upstream URL, an Anthropic-compatible upstream URL, or both. These are request body formats, not provider categories. Models and OS credential references are shared by the target and can be scoped to the agents you connect.
 
 New installations start with no Agent connection. Connect only the Agents you use, then explicitly choose each Agent's default provider target, model, credential, and whether DeepAA should manage its CLI configuration. The same provider target can be reused by multiple Agents.
 
@@ -175,7 +217,7 @@ Connect the Agent, complete its default target/model/credential chain, then use 
 
 Local development launch requires Codex CLI or Claude Code to already be available on PATH. macOS supports Terminal.app and iTerm2; Windows supports Windows Terminal and PowerShell. The Windows adapter is covered by unit tests but is not marked as verified until it passes validation on a real Windows host. The selected CLI still loads the project's AGENTS.md, CLAUDE.md, MCP servers, hooks, skills, plugins, and permission rules normally.
 
-## Turntime Configuration
+## Runtime Configuration
 
 | Environment variable | Default | Description |
 | --- | --- | --- |
@@ -250,7 +292,7 @@ Standalone Node proxy -> configured upstream API or gateway
           data/deepaa.sqlite -> Next.js UI/API
 ```
 
-The proxy matches the first local path segment against configured targets, forwards the request, streams the upstream response to the client, and appends exactly one v2 raw exchange after completion. It does not import SQLite or business-derivation code. The Next.js Node process starts an independent single-writer Worker that tails complete JSONL lines and updates SQLite one exchange per transaction. A stopped, locked, or failed Worker cannot alter proxy responses.
+The proxy resolves the Agent from the local path and the provider from the prefixed model ID, forwards the request, streams the upstream response to the client, and appends exactly one v2 raw exchange after completion. It does not import SQLite or business-derivation code. The Next.js Node process starts an independent single-writer Worker that tails complete JSONL lines and updates SQLite one exchange per transaction. A stopped, locked, or failed Worker cannot alter proxy responses.
 
 ## Web UI
 
@@ -266,17 +308,11 @@ Metadata requests such as `/models` without an explicit Session identity are rec
 
 The raw request view includes the full request body, selected proxy target, upstream path, and a copyable `curl` command. The raw response view includes the proxy route, parsed JSON where possible, raw text fallback, and stream completeness diagnostics for supported SSE protocols.
 
-## Automatic Session Grouping
+## Session Attribution and Scoped Inspection
 
-Captured requests are grouped by:
+Requests are attributed to Sessions, recursive Threads, Turns, and Steps using native agent identities and verifiable call relationships. Switching models or providers should not split one task into a new daily model-based session. Where native identities are unavailable, the UI retains the relationships it can establish.
 
-```text
-proxy target + model + local date + manual generation
-```
-
-For example, calls to `OpenAI · gpt-5 · 2026-05-27` stay in the same session for that day. Calls to a different proxy target, a different model, or the next local date create separate sessions automatically.
-
-The "new capture session" button is still available. It starts a new manual generation for the selected session, so the next matching requests go to a label such as `OpenAI · gpt-5 · 2026-05-27 #2`.
+The dashboard aggregates by time range; Session tracking follows the task hierarchy. Interaction content and Token pricing share the same business context. Select a Session, Thread, Turn, or Step before inspecting or exporting. Default previews are paginated and byte-bounded, with limits explicitly shown.
 
 ## HTTP API
 
@@ -429,7 +465,7 @@ DeepAA avoids duplicating the base path, so `/responses` becomes `/v1/responses`
 
 ### Raw Request or Raw Response Is Empty
 
-Only requests sent through the local proxy have full raw HTTP exchange data. Make sure the client is using `http://127.0.0.1:3211` or one of the generated target URLs such as `http://127.0.0.1:3211/api.openai.com`.
+Only requests sent through the local proxy have full raw HTTP exchange data. Make sure the client uses an Agent gateway base URL, such as `http://127.0.0.1:3211/codex/v1` for Codex or `http://127.0.0.1:3211/claude` for Claude Code, and a provider-prefixed model ID.
 
 ### Port Conflict
 

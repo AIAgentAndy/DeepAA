@@ -48,4 +48,3 @@ incremental_lines.txt
 # 已跟踪的 docs/logo/logo.png 与 docs/ui-redesign-v4/demo.css 不受忽略规则影响。
 /AGENTS.md
 /docs/
-/public/deepaa-logo-review*.html

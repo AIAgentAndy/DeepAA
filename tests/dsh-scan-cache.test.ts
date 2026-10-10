@@ -359,3 +359,74 @@ describe("dsh 本地扫描增量性（2026-09-18 每轮全量重解压修复）"
     );
   });
 });
+
+describe("dsh 解析失败预算与退避（2026-10-10 无界重解压修复）", () => {
+  /** 坏 zstd 文件：解压或解析必然失败（旧实现每轮重试，每 2s 重复昂贵解压）。 */
+  function writeCorruptSession(
+    cliDir: string,
+    workspace: string,
+    directory: string,
+  ): {path: string} {
+    const dir = join(cliDir, "sessions", workspace, directory);
+    mkdirSync(dir, {recursive: true});
+    const path = join(dir, "session.v3.jsonl.zstd");
+    writeFileSync(path, Buffer.from("this-is-not-zstd-data-0123456789abcdef", "utf8"));
+    return {path};
+  }
+
+  test("失败消耗预算：本轮不再无界继续，下一轮坏文件零成本退避、健康文件恢复解析", () => {
+    const cliDir = newCliDir();
+    const corrupt = writeCorruptSession(cliDir, "--ws-f--", "sess-corrupt-0001");
+    const healthy = writeSession(cliDir, "--ws-f--", "sess-healthy-0002", sessionJsonl({
+      sessionId: "sess-healthy-0002",
+      steps: [{ turn: 1, step: 1, responseId: "resp-f-healthy" }],
+    }));
+    // 坏文件 mtime 更新（unseen 按 mtime 倒序在前被先尝试），预算只容一次失败收取。
+    utimesSync(corrupt.path, PINNED_MTIME_SECONDS + 4, PINNED_MTIME_SECONDS + 4);
+    utimesSync(healthy.path, PINNED_MTIME_SECONDS + 2, PINNED_MTIME_SECONDS + 2);
+    const adapter = createDshLocalSourceAdapter({
+      cliDir,
+      scanDecompressedBytesPerRound: 12_288,
+      failureBackoffBaseMs: 60_000,
+    });
+
+    // 首轮：坏文件尝试失败并收取 4 MiB 预算 → 本轮终止（旧实现的 break 要求
+    // 「至少成功一个」，全部失败的轮次会对扫描上限内文件逐一重解压）。
+    assert.deepEqual(
+      adapter.readPendingCandidates(FLOOR, ALLOWED),
+      [],
+      "失败收取预算后本轮不得继续无界尝试",
+    );
+    // 第二轮：坏文件退避中零成本跳过，健康文件获得全额预算。
+    assert.deepEqual(
+      adapter.readPendingCandidates(FLOOR, ALLOWED).map(item => item.id),
+      ["sess-healthy-0002_t1_s1"],
+      "退避跳过坏文件后健康文件必须恢复解析",
+    );
+  });
+
+  test("退避到期自动重试：修复后的文件恢复索引（瞬时失败自愈语义保持）", async () => {
+    const cliDir = newCliDir();
+    const corrupt = writeCorruptSession(cliDir, "--ws-g--", "sess-recover-0001");
+    utimesSync(corrupt.path, PINNED_MTIME_SECONDS + 2, PINNED_MTIME_SECONDS + 2);
+    const adapter = createDshLocalSourceAdapter({ cliDir, failureBackoffBaseMs: 60 });
+    assert.deepEqual(adapter.readPendingCandidates(FLOOR, ALLOWED), []);
+
+    // 原地修复为合法会话（size 变化的既有重解析条件不变，但仍受退避约束）。
+    writeFileSync(corrupt.path, zstdCompressSync(Buffer.from(sessionJsonl({
+      sessionId: "sess-recover-0001",
+      steps: [{ turn: 1, step: 1, responseId: "resp-g-recovered" }],
+    }), "utf8")));
+    assert.deepEqual(
+      adapter.readPendingCandidates(FLOOR, ALLOWED).map(item => item.id),
+      [],
+      "退避窗口内不得重试（否则活跃坏文件回到每轮重解压）",
+    );
+    await new Promise(resolve => setTimeout(resolve, 120));
+    assert.deepEqual(
+      adapter.readPendingCandidates(FLOOR, ALLOWED).map(item => item.id),
+      ["sess-recover-0001_t1_s1"],
+      "退避到期后修复文件必须恢复解析",
+    );
+  });
+});
