@@ -7,6 +7,12 @@ import type {DashboardQueryResult} from "@/lib/db/analytics-queries";
 import {AGENT_REGISTRY, agentLabel} from "@/lib/agent-registry";
 import {DEFAULT_TIME_ZONE, timeZoneIana, timeZoneOffsetMinutes} from "@/lib/timezones";
 import {useGlobalTimeZone} from "@/lib/timezone-preference";
+import {
+  dashboardWallRangeToIso,
+  instantToWallHour,
+  parseDashboardRangeQuery,
+  rebaseWallClockHour,
+} from "@/lib/dashboard-url-range";
 import {Donut, LineChart, Sparkline, StackedBarChart, XLabels, type ChartSeries} from "./dashboard/charts";
 import {formatTokenAxis} from "./dashboard/chart-scale";
 import {HourPicker} from "./dashboard/hour-picker";
@@ -140,50 +146,51 @@ function zonedStartOfDay(nowMs: number, offsetMinutes: number, dayShift = 0): Da
   return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate() + dayShift) - offsetMinutes * 60_000);
 }
 
-/** 绝对时刻 → 该时区墙钟的小时级输入串（YYYY-MM-DDTHH:00）。 */
-function zonedHourInputValue(date: Date, offsetMinutes: number): string {
-  const shifted = new Date(date.getTime() + offsetMinutes * 60_000);
-  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}T${pad(shifted.getUTCHours())}:00`;
-}
-
 /** 默认范围 = 全局时区的「今天 00:00 → 明天 00:00」。 */
 function defaultRange(offsetMinutes: number): {start: string; end: string} {
   const now = Date.now();
   return {
-    start: zonedHourInputValue(zonedStartOfDay(now, offsetMinutes), offsetMinutes),
-    end: zonedHourInputValue(zonedStartOfDay(now, offsetMinutes, 1), offsetMinutes),
+    start: instantToWallHour(zonedStartOfDay(now, offsetMinutes), offsetMinutes),
+    end: instantToWallHour(zonedStartOfDay(now, offsetMinutes, 1), offsetMinutes),
   };
 }
 
-function parseInitialRange(initialQuery: string): {start: string; end: string; tz: string} {
-  const params = new URLSearchParams(initialQuery);
-  const start = params.get("start");
-  const end = params.get("end");
-  const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/u;
-  if (start && end && iso.test(start) && iso.test(end) && Date.parse(end) > Date.parse(start)) {
+interface InitialDashboardRange {
+  start: string;
+  end: string;
+  tz: string;
+  /** URL 是否显式携带了有效范围（UTC ISO 或旧墙钟书签）。 */
+  explicit: boolean;
+}
+
+function parseInitialRange(initialQuery: string): InitialDashboardRange {
+  const offsetMinutes = timeZoneOffsetMinutes(DEFAULT_TIME_ZONE);
+  const parsed = parseDashboardRangeQuery(initialQuery, offsetMinutes);
+  if (parsed.explicit) {
     // tz URL 参数已废弃（2026-09-17 全站时区统一受右上角偏好控制）：旧链接里的 tz 直接忽略。
-    return {start, end, tz: DEFAULT_TIME_ZONE};
+    // UTC ISO 链接是绝对时刻；旧墙钟书签按东八区缺省解释（双格式兼容，2026-10-10）。
+    return {start: parsed.start, end: parsed.end, tz: DEFAULT_TIME_ZONE, explicit: true};
   }
-  return {...defaultRange(timeZoneOffsetMinutes(DEFAULT_TIME_ZONE)), tz: DEFAULT_TIME_ZONE};
+  return {...defaultRange(offsetMinutes), tz: DEFAULT_TIME_ZONE, explicit: false};
 }
 
 function presetRange(key: string, offsetMinutes: number): {start: string; end: string} | undefined {
   const now = Date.now();
   const todayStart = zonedStartOfDay(now, offsetMinutes);
-  const tomorrow = zonedHourInputValue(zonedStartOfDay(now, offsetMinutes, 1), offsetMinutes);
-  if (key === "today") return {start: zonedHourInputValue(todayStart, offsetMinutes), end: tomorrow};
+  const tomorrow = instantToWallHour(zonedStartOfDay(now, offsetMinutes, 1), offsetMinutes);
+  if (key === "today") return {start: instantToWallHour(todayStart, offsetMinutes), end: tomorrow};
   if (key === "yesterday") {
     return {
-      start: zonedHourInputValue(zonedStartOfDay(now, offsetMinutes, -1), offsetMinutes),
-      end: zonedHourInputValue(todayStart, offsetMinutes),
+      start: instantToWallHour(zonedStartOfDay(now, offsetMinutes, -1), offsetMinutes),
+      end: instantToWallHour(todayStart, offsetMinutes),
     };
   }
   if (key === "24h") {
     const end = new Date(Math.floor(now / 3_600_000) * 3_600_000 + 3_600_000);
-    return {start: zonedHourInputValue(new Date(end.getTime() - 24 * 3_600_000), offsetMinutes), end: zonedHourInputValue(end, offsetMinutes)};
+    return {start: instantToWallHour(new Date(end.getTime() - 24 * 3_600_000), offsetMinutes), end: instantToWallHour(end, offsetMinutes)};
   }
-  if (key === "7d") return {start: zonedHourInputValue(zonedStartOfDay(now, offsetMinutes, -6), offsetMinutes), end: tomorrow};
-  if (key === "30d") return {start: zonedHourInputValue(zonedStartOfDay(now, offsetMinutes, -29), offsetMinutes), end: tomorrow};
+  if (key === "7d") return {start: instantToWallHour(zonedStartOfDay(now, offsetMinutes, -6), offsetMinutes), end: tomorrow};
+  if (key === "30d") return {start: instantToWallHour(zonedStartOfDay(now, offsetMinutes, -29), offsetMinutes), end: tomorrow};
   return undefined;
 }
 
@@ -281,18 +288,25 @@ export function DashboardContent({initialQuery}: {initialQuery?: string}) {
   // 全站统一时区（右上角选择器）：查询边界一律按该偏好换算，URL 不再携带 tz 参数。
   const globalTz = useGlobalTimeZone();
   const [tz, setTz] = useState(initial.tz);
-  /* 用户是否手动改过范围（预设/边界输入）：未改过时跟随全局时区重算默认「今天」。 */
-  const rangeTouchedRef = useRef(false);
+  /* URL 显式携带或用户改过的范围 = 绝对时间（2026-10-10 与会话追踪页语义统一）：
+     切时区只把墙钟串重排到新时区，数据窗口不平移；既修复旧版「挂载时显式链接被
+     覆盖成今天」的问题，也替代旧版「已选范围随时区平移」的行为。 */
+  const rangeExplicitRef = useRef(initial.explicit);
   useEffect(() => {
     if (globalTz.value === tz) return;
+    const previousOffset = timeZoneOffsetMinutes(tz);
+    const nextOffset = timeZoneOffsetMinutes(globalTz.value);
     setTz(globalTz.value);
-    // SSR/首帧默认按东八区生成；挂载后拿到真实偏好且用户未自定义范围时，重算默认「今天」。
-    if (!rangeTouchedRef.current) {
-      const next = defaultRange(timeZoneOffsetMinutes(globalTz.value));
+    if (!rangeExplicitRef.current) {
+      // 用户未自定义范围：默认「今天」跟随新时区重算日界。
+      const next = defaultRange(nextOffset);
       setStartInput(next.start);
       setEndInput(next.end);
+      return;
     }
-  }, [globalTz.value, tz]);
+    setStartInput(rebaseWallClockHour(startInput, previousOffset, nextOffset));
+    setEndInput(rebaseWallClockHour(endInput, previousOffset, nextOffset));
+  }, [globalTz.value, tz, startInput, endInput]);
   const [activePreset, setActivePreset] = useState<string>("today");
   const [metric, setMetric] = useState<MetricKey>("token");
   const [analysisMetric, setAnalysisMetric] = useState<AnalysisMetricKey>("token");
@@ -397,6 +411,8 @@ export function DashboardContent({initialQuery}: {initialQuery?: string}) {
     const params = new URLSearchParams({start: startInput, end: endInput});
     // 后端聚合只接受 IANA 时区：UTC±N 下拉值映射为等价固定偏移 IANA 区。
     params.set("timezone", timeZoneIana(tz));
+    // URL 统一写 UTC ISO 绝对时刻（2026-10-10 与会话追踪页一致）：墙钟按当前全局时区换算。
+    const isoRange = dashboardWallRangeToIso(startInput, endInput, timeZoneOffsetMinutes(tz));
     fetch(`/api/analytics/dashboard?${params.toString()}`, {signal: controller.signal})
       .then(async response => {
         if (!response.ok) {
@@ -408,7 +424,7 @@ export function DashboardContent({initialQuery}: {initialQuery?: string}) {
       .then(result => {
         setData(result);
         // tz 不再写入 URL（2026-09-17 全站时区统一受右上角偏好控制）。
-        router.replace(`/dashboard?start=${encodeURIComponent(startInput)}&end=${encodeURIComponent(endInput)}`, {scroll: false});
+        if (isoRange) router.replace(`/dashboard?start=${encodeURIComponent(isoRange.start)}&end=${encodeURIComponent(isoRange.end)}`, {scroll: false});
       })
       .catch(caught => {
         if ((caught as Error).name !== "AbortError") setError(caught instanceof Error ? caught.message : "加载失败");
@@ -423,14 +439,14 @@ export function DashboardContent({initialQuery}: {initialQuery?: string}) {
   const applyPreset = useCallback((key: string) => {
     const range = presetRange(key, timeZoneOffsetMinutes(tz));
     if (!range) return;
-    rangeTouchedRef.current = true;
+    rangeExplicitRef.current = true;
     setActivePreset(key);
     setStartInput(range.start);
     setEndInput(range.end);
   }, [tz]);
 
   const onBoundaryChange = useCallback((which: "start" | "end", value: string) => {
-    rangeTouchedRef.current = true;
+    rangeExplicitRef.current = true;
     setActivePreset("");
     /* 小时粒度：分钟强制对齐 00 */
     const normalized = value.length >= 16 ? `${value.slice(0, 13)}:00` : value;

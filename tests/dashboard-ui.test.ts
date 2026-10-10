@@ -288,6 +288,24 @@ describe("仪表盘 UI 约束", () => {
     expect(css).toContain("height: 118px");
   });
 
+  test("时间范围 URL 与会话追踪页统一为 UTC ISO，读路径兼容旧墙钟书签（2026-10-10）", async () => {
+    const content = await readFile("src/components/dashboard-content.tsx", "utf8");
+    const range = await readFile("src/lib/dashboard-url-range.ts", "utf8");
+    // URL 读写统一走编解码模块：写入绝对 ISO，读取双格式兼容。
+    expect(content).toContain("parseDashboardRangeQuery");
+    expect(content).toContain("dashboardWallRangeToIso");
+    expect(content).toContain("rebaseWallClockHour");
+    // 显式范围（URL 或用户选择）是绝对时间：切时区重排墙钟而不是平移窗口，
+    // 也不再在挂载时被默认「今天」覆盖。
+    expect(content).toContain("rangeExplicitRef");
+    expect(content).not.toContain("rangeTouchedRef");
+    // 不再把墙钟串直接写进 URL。
+    expect(content).not.toContain("encodeURIComponent(startInput)");
+    expect(content).not.toContain("encodeURIComponent(endInput)");
+    expect(range).toContain("ABSOLUTE_ISO_RE");
+    expect(range).toContain("WALL_HOUR_RE");
+  });
+
   test("模块排序：仅模块本体悬停触发，不再画虚线描边，箭头纵向拉长", async () => {
     const content = await readFile("src/components/dashboard-content.tsx", "utf8");
     const css = await readFile("src/components/dashboard.module.css", "utf8");
