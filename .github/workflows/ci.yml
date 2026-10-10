@@ -53,7 +53,7 @@ jobs:
             local clean="${log%.log}-clean.log"
             sed 's/\x1b\[[0-9;]*m//g' "$log" > "$clean" || cp "$log" "$clean"
             local hits
-            hits=$(grep -A 6 -E "FAIL |not ok [1-9]|^# fail [1-9]|failing tests|Unhandled" "$clean" | grep -v "^--$" | grep -v "0 failed" | head -60)
+            hits=$(grep -A 6 -E "FAIL |not ok [1-9]|^# fail [1-9]|failing tests|Unhandled" "$clean" | grep -v "^--$" | grep -v "0 failed" | head -60 || true)
             if [ -z "$hits" ]; then
               # 无用例级失败行：疑似进程崩溃，回退输出日志尾部。
               hits=$(tail -n 24 "$clean")
