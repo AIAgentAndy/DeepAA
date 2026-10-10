@@ -1,7 +1,7 @@
 import type {DeepaaDatabase} from "@/lib/db/sqlite-driver";
 import { statSync } from "node:fs";
 import { lstat, opendir, rm, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { computeRetentionCutoff, readRetentionConfig } from "../retention";
 import {
   derivedArtifactPath,
@@ -315,8 +315,11 @@ function evaluateCandidate(
   }
   const expectedPath = resolve(dataDir, row.relative_path);
   // lexical 防御：relative_path 必须仍在 captures/v2 下。
+  // 用 relative() 判包含而非 startsWith(root + "/")：Windows 的 resolve() 产物是
+  // 反斜杠，硬编码正斜杠会让全部候选被判 file_identity_mismatch（清理整体失效）。
   const captureRoot = resolve(dataDir, "captures", "v2");
-  if (!expectedPath.startsWith(captureRoot + "/") && expectedPath !== captureRoot) {
+  const pathWithinCaptureRoot = relative(captureRoot, expectedPath);
+  if (pathWithinCaptureRoot.startsWith("..") || isAbsolute(pathWithinCaptureRoot)) {
     return {kind: "skip", reason: "file_identity_mismatch"};
   }
   let info;
