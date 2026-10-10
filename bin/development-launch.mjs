@@ -148,7 +148,7 @@ async function assertPrivateRuntimeDirectory(runtimeDirectory, tempRoot) {
   if (
     !metadata.isDirectory()
     || metadata.isSymbolicLink()
-    || (metadata.mode & 0o077) !== 0
+    || (POSIX_MODE_BITS_ENFORCED && (metadata.mode & 0o077) !== 0)
     || dirname(actualRuntime) !== actualRoot
     || !ownedByCurrentUser(metadata)
   ) {
@@ -156,11 +156,21 @@ async function assertPrivateRuntimeDirectory(runtimeDirectory, tempRoot) {
   }
 }
 
+// Windows 的 fs.stat().mode 是合成值（可写恒 0o666、只读 0o444），表达不了
+// POSIX group/other 权限位；等价隔离由用户临时目录 ACL 承担（与
+// tests/helpers/posix-permissions.ts 同口径）。生产上该启动计划路径只属于
+// macOS Terminal.app 超长命令场景（Windows 不进入），跳过仅使库级校验在
+// Windows 宿主可测；目录/符号链接/属主/父目录约束全部保留。
+const POSIX_MODE_BITS_ENFORCED = process.platform !== "win32";
+
 function assertPrivateRegularFile(metadata) {
   if (!metadata.isFile() || metadata.nlink !== 1) {
     throw new Error("DEVELOPMENT_LAUNCH_PLAN_INVALID");
   }
-  if ((metadata.mode & 0o077) !== 0 || !ownedByCurrentUser(metadata)) {
+  if (
+    (POSIX_MODE_BITS_ENFORCED && (metadata.mode & 0o077) !== 0)
+    || !ownedByCurrentUser(metadata)
+  ) {
     throw new Error("DEVELOPMENT_LAUNCH_PLAN_NOT_PRIVATE");
   }
 }

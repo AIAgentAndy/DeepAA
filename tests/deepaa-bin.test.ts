@@ -350,7 +350,11 @@ describe("跨平台 Deepaa 启动器", () => {
       // 钉住 POSIX kill 语义：本用例经 harness fake child 验证信号→kill 接线；
       // win32 分支会 spawn 真实 taskkill.exe 而不调用 child.kill，fake child
       // 永不退出导致超时（taskkill 行为属生产路径，不在单测覆盖）。
+      // env/homeDir 同步显式化：沙箱注入的 DEEPAA_DATA_DIR 是宿主 Windows 路径，
+      // 在 darwin 语义的 posix.isAbsolute 下非绝对会直接抛错。
       platform: "darwin",
+      env: {},
+      homeDir: "/home/tester",
       spawnProcess: harness.spawnProcess,
       signalEmitter: harness.signals,
       stdout: harness.stdout,

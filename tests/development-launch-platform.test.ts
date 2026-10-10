@@ -351,7 +351,7 @@ describe("development launch platform adapters", () => {
     expect(commands.every(command => !command.args.includes("--version"))).toBe(true);
   });
 
-  test("macOS 登录壳兜底先非交互 -lc，命中即不启动交互壳（2026-10-10 A1）", async () => {
+  test.skipIf(process.platform === "win32")("macOS 登录壳兜底先非交互 -lc，命中即不启动交互壳（2026-10-10 A1）", async () => {
     const root = await mkdtemp(join(tmpdir(), "platform-login-shell-"));
     tempRoots.push(root);
     // 登录壳返回的路径必须真实存在（探测会做存在性校验）。
@@ -376,7 +376,7 @@ describe("development launch platform adapters", () => {
     expect(shellCommands[0].args).toEqual(["-lc", "command -v codex"]);
   });
 
-  test("macOS 登录壳兜底 -lc 未命中时回退交互 -lic（2026-10-10 A1 兜底链）", async () => {
+  test.skipIf(process.platform === "win32")("macOS 登录壳兜底 -lc 未命中时回退交互 -lic（2026-10-10 A1 兜底链）", async () => {
     const root = await mkdtemp(join(tmpdir(), "platform-login-shell-fallback-"));
     tempRoots.push(root);
     const fakeCli = join(root, "bin", "claude");
@@ -398,7 +398,7 @@ describe("development launch platform adapters", () => {
     expect(shellCommands.map(command => command.args[0])).toEqual(["-lc", "-lic"]);
   });
 
-  test("macOS 探测缓存：成功长 TTL、失败短 TTL 内均不重复探测（2026-10-10 A2）", async () => {
+  test.skipIf(process.platform === "win32")("macOS 探测缓存：成功长 TTL、失败短 TTL 内均不重复探测（2026-10-10 A2）", async () => {
     vi.useFakeTimers();
     try {
       const root = await mkdtemp(join(tmpdir(), "platform-probe-ttl-"));

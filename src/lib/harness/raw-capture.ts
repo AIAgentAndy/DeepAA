@@ -194,13 +194,13 @@ export async function appendRawCapturedExchangeV2(
     const handle = await open(filePath, "a+");
     try {
       await recoverV2PoisonedOffset(handle, filePath);
-      const byteOffset = await repairV2PartialTail(handle);
+      const byteOffset = await repairV2PartialTail(handle, filePath);
       try {
         await writeBufferFully(handle, line);
         return { filePath, byteOffset, lineLengthBytes: line.length };
       } catch (error) {
         try {
-          await handle.truncate(byteOffset);
+          await truncateCaptureFile(handle, filePath, byteOffset);
         } catch (rollbackError) {
           v2PoisonedOffsets.set(filePath, byteOffset);
           throw new AggregateError(
@@ -211,7 +211,9 @@ export async function appendRawCapturedExchangeV2(
         throw error;
       }
     } finally {
-      await handle.close();
+      // truncateCaptureFile 的 r+ 回退不会触碰本句柄；close 失败（已被回退路径关闭等）
+      // 只影响清理，不改变追加结果语义。
+      await handle.close().catch(() => {});
     }
   });
 }
@@ -500,7 +502,7 @@ async function recoverV2PoisonedOffset(handle: FileHandle, filePath: string): Pr
   const byteOffset = v2PoisonedOffsets.get(filePath);
   if (byteOffset === undefined) return;
   try {
-    await handle.truncate(byteOffset);
+    await truncateCaptureFile(handle, filePath, byteOffset);
   } catch (error) {
     throw new Error(
       `v2 raw capture recovery to byte offset ${byteOffset} failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -511,10 +513,35 @@ async function recoverV2PoisonedOffset(handle: FileHandle, filePath: string): Pr
 }
 
 /**
+ * 截断 v2 capture 文件到指定字节偏移。
+ * Windows 的 append 模式句柄（libuv 只授予 FILE_APPEND_DATA，没有 FILE_WRITE_DATA）
+ * 执行 SetEndOfFile 会被拒绝访问（EACCES/EPERM）；该类权限错误经独立 r+ 句柄
+ * 重试一次完成同一截断。其它错误（磁盘满、注入失败等）立即传播，不重试。
+ */
+async function truncateCaptureFile(
+  handle: FileHandle,
+  filePath: string,
+  byteOffset: number,
+): Promise<void> {
+  try {
+    await handle.truncate(byteOffset);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code !== "EACCES" && code !== "EPERM") throw error;
+    const repair = await open(filePath, "r+");
+    try {
+      await repair.truncate(byteOffset);
+    } finally {
+      await repair.close();
+    }
+  }
+}
+
+/**
  * 进程重启后 poisoned map 会丢失，因此每次追加前都以固定小块倒序寻找最后一个完整换行。
  * 只截断末尾半行，不把可能很大的 capture 文件整体读入内存。
  */
-async function repairV2PartialTail(handle: FileHandle): Promise<number> {
+async function repairV2PartialTail(handle: FileHandle, filePath: string): Promise<number> {
   const fileSize = (await handle.stat()).size;
   let scanEnd = fileSize;
   while (scanEnd > 0) {
@@ -537,12 +564,12 @@ async function repairV2PartialTail(handle: FileHandle): Promise<number> {
     const lastNewline = block.lastIndexOf(0x0a);
     if (lastNewline >= 0) {
       const cleanOffset = scanStart + lastNewline + 1;
-      if (cleanOffset !== fileSize) await handle.truncate(cleanOffset);
+      if (cleanOffset !== fileSize) await truncateCaptureFile(handle, filePath, cleanOffset);
       return cleanOffset;
     }
     scanEnd = scanStart;
   }
-  if (fileSize > 0) await handle.truncate(0);
+  if (fileSize > 0) await truncateCaptureFile(handle, filePath, 0);
   return 0;
 }
 

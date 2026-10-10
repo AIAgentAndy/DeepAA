@@ -49,7 +49,9 @@ describe("development launch helper", () => {
     }]);
   });
 
-  test("拒绝权限过宽的计划且错误不泄漏 Session ID", async () => {
+  // POSIX 权限位语义在 Windows 宿主上不可模拟（stat.mode 恒合成值、chmod 不落位），
+  // 「权限过宽拒绝」与「真实 shebang 子进程执行」两条只在 POSIX 宿主验证。
+  test.skipIf(process.platform === "win32")("拒绝权限过宽的计划且错误不泄漏 Session ID", async () => {
     const fixture = await planFixture();
     await chmod(fixture.prepared.planPath, 0o644);
     const helper = await import("../bin/development-launch.mjs");
@@ -67,7 +69,7 @@ describe("development launch helper", () => {
     expect(message).not.toContain(RESUME_SESSION_ID);
   });
 
-  test("真实子进程收到完整 Session ID 和有界环境覆盖", async () => {
+  test.skipIf(process.platform === "win32")("真实子进程收到完整 Session ID 和有界环境覆盖", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "development-launch-process-test-"));
     tempRoots.push(tempRoot);
     const executableDirectory = join(tempRoot, "bin");
