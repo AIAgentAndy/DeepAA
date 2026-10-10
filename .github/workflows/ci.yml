@@ -35,8 +35,30 @@ jobs:
       - name: 类型检查
         run: pnpm typecheck
 
-      - name: 全量测试
-        run: pnpm test
+      - name: 全量测试（vitest）
+        shell: bash
+        run: set -o pipefail && pnpm test:vitest 2>&1 | tee vitest-output.log
+
+      - name: 全量测试（sqlite）
+        shell: bash
+        run: set -o pipefail && pnpm test:sqlite 2>&1 | tee sqlite-output.log
+
+      - name: 失败摘要（注解）
+        if: failure()
+        shell: bash
+        run: |
+          emit() {
+            local log="$1"
+            [ -f "$log" ] || return 0
+            local count=0
+            while IFS= read -r line; do
+              printf '::error title=%s::%s\n' "$log" "$(printf '%s' "$line" | cut -c1-220)"
+              count=$((count+1))
+              if [ "$count" -ge 10 ]; then break; fi
+            done < <(grep -E "^not ok|^# fail [1-9]|^ FAIL |Unhandled|failed" "$log" | grep -v "0 failed" | head -40)
+          }
+          emit vitest-output.log
+          emit sqlite-output.log
 
       - name: 生产构建
         run: pnpm build
