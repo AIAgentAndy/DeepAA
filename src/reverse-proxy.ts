@@ -531,9 +531,9 @@ async function forwardToUpstream(
   request.once("aborted", finishRequestCapture);
   request.once("error", finishRequestCapture);
 
-    const origins = new Set([plan.upstreamUrl.origin]);
-    agents.retainOrigins(origins);
-    const lease = await agents.acquire(plan.upstreamUrl);
+    // 池保留仅由配置快照变更驱动（RoutingConfigController.onSnapshot）：per-request
+    // 退休会误杀同 origin 的兄弟通道（直连/隧道并存，2026-10-10）。
+    const lease = await agents.acquire(plan.upstreamUrl, plan.model);
   const routing = {...plan.routing};
   let connectionStatus: ProxyCapturedExchangeInput["connectionStatus"] = "open_completed";
   let upstreamResponse: IncomingMessage | undefined;
@@ -638,6 +638,12 @@ async function forwardToUpstream(
           settle();
           return;
         }
+        // 连接期失败：退休本通道池条目（隧道失败同时失效代理探测缓存），下次请求自愈重估。
+        // 客户端中断（request.aborted / 本地 CLIENT_ABORTED 销毁）不是上游连接故障，
+        // 不退休——与 failover 路径的 clientAborted 守卫同语义（2026-10-10 修复）。
+        const clientInitiated = request.aborted
+          || (error instanceof Error && error.message === "CLIENT_ABORTED");
+        if (!clientInitiated) lease.reportConnectFailure();
         responseStatus = 502;
         responseStatusText = "Bad Gateway";
         responseHeaders = {"content-type": "application/json"};
@@ -921,9 +927,7 @@ async function forwardWithFailover(
       if (collectorOpen) requestCollector.capture(chunk);
     });
 
-    const origins = new Set([upstreamUrl.origin]);
-    agents.retainOrigins(origins);
-    const lease = await agents.acquire(upstreamUrl);
+    const lease = await agents.acquire(upstreamUrl, decision.modelId);
 
     // 尝试的显式取消路径（P0）：切换候选时销毁旧管道并停写采集器，
     // 防止旧数据/旧错误（如 EPIPE）干扰新尝试或销毁客户端响应。
@@ -1126,6 +1130,8 @@ async function forwardWithFailover(
           settle({kind: "final"});
           return;
         }
+        // 连接期失败：退休本通道池条目（隧道失败同时失效代理探测缓存），链内后续尝试自愈重估。
+        lease.reportConnectFailure();
         failCurrent(upstreamErrorDetail(error));
       });
       sourceStream.once("error", error => {

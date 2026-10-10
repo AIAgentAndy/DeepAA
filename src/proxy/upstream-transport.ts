@@ -7,7 +7,11 @@ import http, {
 import https, {Agent as HttpsAgent} from "node:https";
 import type {Transform} from "node:stream";
 import * as nodeZlib from "node:zlib";
-import {resolveOfficialUpstreamProxy} from "./official-upstream";
+import {
+  invalidateOfficialUpstreamProxyCache,
+  resolveOfficialUpstreamProxy,
+  type UpstreamProxyEndpoint,
+} from "./official-upstream";
 import {createConnectTunnelHttpsAgent} from "./upstream-proxy";
 const {createBrotliDecompress, createGunzip, createInflate} = nodeZlib;
 
@@ -51,11 +55,25 @@ interface AgentEntry {
   agent: HttpAgent | HttpsAgent;
   active: number;
   retired: boolean;
+  /** 隧道条目记录代理端点：reportConnectFailure 时据此失效探测缓存。 */
+  proxyEndpoint?: UpstreamProxyEndpoint;
 }
 
 export interface AgentLease {
   agent: HttpAgent | HttpsAgent;
   release(): void;
+  /**
+   * 连接期失败自愈（2026-10-10）：退休本 (origin, 通道) 池条目——隧道条目
+   * 同时失效代理解测缓存，下一次 acquire 按最新系统代理状态重估。只做池内
+   * 记账（幂等），绝不触碰 failover 健康状态机；刻意不做请求内直连重试
+   * （门控域外系模型直连仍被模型级封锁、官方域直连只会更慢，徒增延迟）。
+   */
+  reportConnectFailure(): void;
+}
+
+/** 池键 = origin + 通道（隧道键含代理端点，代理换端口自动换新键）。 */
+function poolKey(origin: string, proxy: UpstreamProxyEndpoint | undefined): string {
+  return proxy ? `${origin}|tunnel|${proxy.host}:${proxy.port}` : `${origin}|direct`;
 }
 
 /** keep-alive Agent 的退休不会中断活动流，只在最后一个 lease 释放后销毁。 */
@@ -63,13 +81,18 @@ export class UpstreamAgentPool {
   private readonly entries = new Map<string, AgentEntry>();
 
   /**
-   * 按 origin 池化上游连接 Agent（2026-10-08 起异步化）：国际官方上游白名单域
-   * 且探测到系统代理时改用 CONNECT 隧道 Agent，其余一切目标与既有直连行为
-   * 字节级一致（影响隔离红线，tests/upstream-proxy.test.ts 守卫）。
+   * 按 (origin, 通道[, 代理端点]) 池化上游连接 Agent（2026-10-10 起按请求模型
+   * 门控）：白名单域经 `resolveOfficialUpstreamProxy` 判定隧道（模型门控域仅
+   * VPN 家族模型隧道，国产模型与无模型请求直连），其余一切目标与既有直连行为
+   * 字节级一致（影响隔离红线，tests/upstream-proxy.test.ts 守卫）。同一 origin
+   * 的直连/隧道双通道并存，互不挤占。
    */
-  async acquire(url: URL): Promise<AgentLease> {
-    const origin = url.origin;
-    let entry = this.entries.get(origin);
+  async acquire(url: URL, modelId?: string): Promise<AgentLease> {
+    let proxy: UpstreamProxyEndpoint | undefined;
+    if (url.protocol === "https:") proxy = await resolveOfficialUpstreamProxy(url.hostname, modelId);
+    const key = poolKey(url.origin, proxy);
+    // 代理解析 await 之后 get/set 全同步：并发 acquire 不会重复建 Agent。
+    let entry = this.entries.get(key);
     if (!entry || entry.retired) {
       const options = {
         keepAlive: true,
@@ -80,9 +103,10 @@ export class UpstreamAgentPool {
         scheduling: "lifo" as const,
       };
       let agent: HttpAgent | HttpsAgent;
-      if (url.protocol === "https:") {
-        const proxy = await resolveOfficialUpstreamProxy(url.hostname);
-        agent = proxy ? createConnectTunnelHttpsAgent(proxy, options) : new HttpsAgent(options);
+      if (proxy) {
+        agent = createConnectTunnelHttpsAgent(proxy, options);
+      } else if (url.protocol === "https:") {
+        agent = new HttpsAgent(options);
       } else {
         agent = new HttpAgent(options);
       }
@@ -90,8 +114,9 @@ export class UpstreamAgentPool {
         agent,
         active: 0,
         retired: false,
+        ...(proxy ? {proxyEndpoint: proxy} : {}),
       };
-      this.entries.set(origin, entry);
+      this.entries.set(key, entry);
     }
     entry.active += 1;
     let released = false;
@@ -103,19 +128,30 @@ export class UpstreamAgentPool {
         entry!.active = Math.max(0, entry!.active - 1);
         if (entry!.retired && entry!.active === 0) {
           entry!.agent.destroy();
-          if (this.entries.get(origin) === entry) this.entries.delete(origin);
+          if (this.entries.get(key) === entry) this.entries.delete(key);
+        }
+      },
+      reportConnectFailure: () => {
+        entry!.retired = true;
+        if (entry!.proxyEndpoint) invalidateOfficialUpstreamProxyCache();
+        if (entry!.active === 0) {
+          entry!.agent.destroy();
+          if (this.entries.get(key) === entry) this.entries.delete(key);
         }
       },
     };
   }
 
+  /** 按 origin 段匹配保留：同 origin 的直连/隧道双通道一并保留或一并退休。 */
   retainOrigins(origins: ReadonlySet<string>): void {
-    for (const [origin, entry] of this.entries) {
+    for (const [key, entry] of this.entries) {
+      const separator = key.indexOf("|");
+      const origin = separator === -1 ? key : key.slice(0, separator);
       if (origins.has(origin)) continue;
       entry.retired = true;
       if (entry.active === 0) {
         entry.agent.destroy();
-        this.entries.delete(origin);
+        this.entries.delete(key);
       }
     }
   }

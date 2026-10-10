@@ -132,7 +132,7 @@ function AgentCard({agent, config, target, credentials, cliStatus, onConnectAgen
     </header>
 
     {!connected ? <p className={styles.emptyCompact}>尚未接入 {label}：点击「接入 {label}」完成绑定；是否把当前供应商设为默认供应商需在向导中显式选择。</p> : available ? <>
-      {agent in CLI_FORM_COPY && connection ? <CliFormSection agent={agent as keyof typeof CLI_FORM_COPY} cliSyncEnabled={connection.cliSyncEnabled !== false} onSetCliForm={onSetCliForm} /> : null}
+      {agent in CLI_FORM_COPY && connection && !CLI_FORM_COPY[agent as keyof typeof CLI_FORM_COPY].hidden ? <CliFormSection agent={agent as keyof typeof CLI_FORM_COPY} cliSyncEnabled={connection.cliSyncEnabled !== false} onSetCliForm={onSetCliForm} /> : null}
       <section className={styles.agentDefaultsPanelV5}>
         <header className={styles.agentSectionHeaderV5}><div><span className={styles.agentSectionEyebrowV5}>DEFAULT ACCESS CHAIN</span><h4>当前供应商的默认访问链</h4></div><span className={styles.agentSectionStateV5}><CheckCircle2 size={14} /> 修改后立即同步</span></header>
         <div className={styles.formGrid}>
@@ -154,8 +154,10 @@ function AgentCard({agent, config, target, credentials, cliStatus, onConnectAgen
 /**
  * 「CLI 形态」能力声明表（2026-10-09 用户确认）：仅官方登录型 CLI（codex / claude）
  * 支持 网关 ↔ 官方 切换，文案按 Agent 注册表化（扩展面守卫：禁止 agent 名条件分派）。
+ * hidden：2026-10-10 用户确认 claude 暂不支持直连形态，切换区块暂时隐藏（恒网关
+ * 模式，文案保留）；后续支持后删除该标记即恢复展示。
  */
-const CLI_FORM_COPY: Readonly<Record<"codex" | "claude", {gateway: string; official: string}>> = {
+const CLI_FORM_COPY: Readonly<Record<"codex" | "claude", {gateway: string; official: string; hidden?: boolean}>> = {
   codex: {
     gateway: "网关模式：CLI 指向本地网关，模型目录为网关模型（中转站 / 按量）；OpenAI 订阅预设模型不可经网关使用（ChatGPT 登录协议差异），需切换官方模式。",
     official: "官方模式：CLI 使用 ChatGPT 登录与官方模型（桌面 App 同样可用），受管网关配置已清空；用量经本机数据直连导入自动捕获。",
@@ -163,6 +165,7 @@ const CLI_FORM_COPY: Readonly<Record<"codex" | "claude", {gateway: string; offic
   claude: {
     gateway: "网关模式：CLI 指向本地网关；已登录时订阅预设模型透传官方登录，中转站模型走密钥注入。",
     official: "官方模式：CLI 使用官方登录与官方端点，受管网关配置已清空。",
+    hidden: true,
   },
 };
 

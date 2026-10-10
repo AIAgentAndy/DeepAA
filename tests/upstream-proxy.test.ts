@@ -8,7 +8,9 @@ import {join} from "node:path";
 import {promisify} from "node:util";
 import {afterEach, describe, expect, test} from "vitest";
 import {
-  OFFICIAL_UPSTREAM_HOSTS,
+  FULL_TUNNEL_UPSTREAM_HOSTS,
+  MODEL_GATED_TUNNEL_HOSTS,
+  invalidateOfficialUpstreamProxyCache,
   isOfficialUpstreamHost,
   isPlaceholderAuthorization,
   parseScutilProxy,
@@ -32,21 +34,18 @@ afterEach(async () => {
   await Promise.allSettled(cleanups.splice(0).reverse().map(cleanup => cleanup()));
 });
 
-describe("官方上游白名单", () => {
-  test("白名单包含五个官方域（含 api.openai.com，2026-10-08 用户确认）", () => {
-    expect([...OFFICIAL_UPSTREAM_HOSTS]).toEqual([
-      "chatgpt.com",
-      "api.anthropic.com",
-      "api.openai.com",
-      "openrouter.ai",
-      "opencode.ai",
-    ]);
+describe("两级上游白名单（2026-10-10 用户确认）", () => {
+  test("官方域全程隧道、中转域模型门控（host 直连可达但国外系模型被模型级封锁）", () => {
+    expect([...FULL_TUNNEL_UPSTREAM_HOSTS]).toEqual(["chatgpt.com", "api.anthropic.com", "api.openai.com"]);
+    expect([...MODEL_GATED_TUNNEL_HOSTS]).toEqual(["opencode.ai", "openrouter.ai"]);
   });
 
   test("精确与子域命中；中转站/本地域绝不命中", () => {
     expect(isOfficialUpstreamHost("chatgpt.com")).toBe(true);
     expect(isOfficialUpstreamHost("api.anthropic.com")).toBe(true);
     expect(isOfficialUpstreamHost("cdn.chatgpt.com")).toBe(true);
+    expect(isOfficialUpstreamHost("opencode.ai")).toBe(true);
+    expect(isOfficialUpstreamHost("openrouter.ai")).toBe(true);
     expect(isOfficialUpstreamHost("relay.auto-code.net")).toBe(false);
     expect(isOfficialUpstreamHost("bigmodel.cn")).toBe(false);
     expect(isOfficialUpstreamHost("127.0.0.1")).toBe(false);
@@ -86,6 +85,33 @@ describe("代理解析", () => {
     expect(await resolveOfficialUpstreamProxy("relay.example.com")).toBeUndefined();
     expect(await resolveOfficialUpstreamProxy("chatgpt.com")).toEqual({host: "127.0.0.1", port: 7994});
   });
+
+  test("模型门控矩阵（2026-10-10 用户确认）：门控域仅 VPN 家族模型隧道，env 不豁免门控", async () => {
+    process.env.DEEPAA_UPSTREAM_PROXY = "http://127.0.0.1:7994";
+    // 全程隧道域：与模型无关。
+    expect(await resolveOfficialUpstreamProxy("chatgpt.com", "deepseek-v4.1-flash"))
+      .toEqual({host: "127.0.0.1", port: 7994});
+    expect(await resolveOfficialUpstreamProxy("chatgpt.com")).toEqual({host: "127.0.0.1", port: 7994});
+    // 门控域：VPN 家族模型（含 openrouter 命名空间前缀与 o 系列变体）隧道。
+    for (const model of [
+      "grok-4.7", "gpt-6-luna", "claude-opus-5", "gemini-2.5-pro", "o3",
+      "openai/gpt-5.6-sol", "x-ai/grok-4", "openai/chatgpt-4o-latest",
+    ]) {
+      expect(await resolveOfficialUpstreamProxy("opencode.ai", model), model)
+        .toEqual({host: "127.0.0.1", port: 7994});
+    }
+    // 门控域：国产模型与无模型（如 web 侧用量 GET）一律直连，显式 env 也不豁免。
+    for (const model of ["deepseek-v4.1-flash", "glm-5.3", "kimi-k3", "minimax-m3", "qwen3-coder", undefined]) {
+      expect(await resolveOfficialUpstreamProxy("opencode.ai", model), String(model)).toBeUndefined();
+      expect(await resolveOfficialUpstreamProxy("openrouter.ai", model), String(model)).toBeUndefined();
+    }
+  });
+
+  test("invalidateOfficialUpstreamProxyCache：可安全重入（自愈语义由池级测试覆盖）", () => {
+    setOfficialUpstreamProxyForTests({host: "10.0.0.9", port: 8080});
+    invalidateOfficialUpstreamProxyCache();
+    expect(() => invalidateOfficialUpstreamProxyCache()).not.toThrow();
+  });
 });
 
 describe("占位 token 镜像与判定", () => {
@@ -114,6 +140,14 @@ describe("UpstreamAgentPool 影响隔离", () => {
     const directLease = await pool.acquire(new URL("https://relay.auto-code.net/v1/responses"));
     expect(Object.prototype.hasOwnProperty.call(directLease.agent, "createConnection")).toBe(false);
     directLease.release();
+
+    // 门控域 + 国产模型：即使 env 显式配置代理也走直连（模型门控优先于 env，2026-10-10）。
+    const gatedLease = await pool.acquire(
+      new URL("https://opencode.ai/zen/go/v1/chat/completions"),
+      "deepseek-v4.1-flash",
+    );
+    expect(Object.prototype.hasOwnProperty.call(gatedLease.agent, "createConnection")).toBe(false);
+    gatedLease.release();
     pool.close();
 
     // 无代理（env 清空 + 缓存注入 undefined）：白名单域同样走直连。

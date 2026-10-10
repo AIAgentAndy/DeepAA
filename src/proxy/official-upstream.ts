@@ -1,23 +1,36 @@
 /**
- * 国际官方上游出站代理（2026-10-08 用户确认）。
+ * 国际官方上游出站代理（2026-10-08 引入；2026-10-10 用户确认两级化 + 模型门控）。
  *
- * 仅白名单域名允许经用户系统代理出站（国内网络下 Node 进程不读系统代理、
- * 直连官方域超时的根因修复）；其余上游一律直连，字节级行为不变。影响隔离红线：
- * 白名单是代码常量，扩展时加一行即可，不引入独立配置文件。
+ * 域白名单分两级：
+ * - 全程隧道域：host 级封锁，与模型无关，命中即按代理探测结果决定隧道；
+ * - 模型门控域：host 直连可达、但对国外系模型存在模型级地域封锁（用户实测
+ *   opencode.ai 与 openrouter.ai：国产模型直连 OK、gpt/claude/gemini/grok 系
+ *   直连被拒、开 VPN 正常）——仅当请求模型命中 VPN 家族才隧道，其余一律直连，
+ *   绝不因系统代理存在而把国产模型劫持进 VPN。
+ * 其余上游一律直连，字节级行为不变。影响隔离红线：两级白名单与 VPN 家族
+ * 前缀都是代码常量，扩展时加一行即可，不引入独立配置文件。
  *
  * 代理来源优先级：显式 env `DEEPAA_UPSTREAM_PROXY` > macOS 系统代理
- * （`scutil --proxy` 的 HTTP/HTTPS 代理端口，60 秒缓存，失败静默回退直连）。
- * 第一期只支持 HTTP 型代理（CONNECT 隧道）；SOCKS-only 用户用 env 显式兜底。
+ * （`scutil --proxy` 的 HTTP/HTTPS 代理端口，60 秒缓存）。env 只替代探测
+ * 端点、不豁免模型门控（2026-10-10 用户确认）。第一期只支持 HTTP 型代理
+ * （CONNECT 隧道）；SOCKS-only 用户用 env 显式兜底。连接期隧道失败由
+ * `UpstreamAgentPool` 的 `reportConnectFailure` 调 `invalidateOfficialUpstreamProxyCache`
+ * 触发下一次请求重探测（自愈语义见 upstream-transport）。
  */
 import {execFile} from "node:child_process";
+import {isVpnTunnelModel} from "./upstream-model-gate";
 
-/** 国际官方上游域白名单（2026-10-08 用户确认；扩展时加一行）。 */
-export const OFFICIAL_UPSTREAM_HOSTS = [
+/** 全程隧道域（host 级封锁，与模型无关；扩展时加一行）。 */
+export const FULL_TUNNEL_UPSTREAM_HOSTS = [
   "chatgpt.com",
   "api.anthropic.com",
   "api.openai.com",
-  "openrouter.ai",
+] as const;
+
+/** 模型门控域：host 直连可达，但国外系模型被模型级地域封锁（用户实测）。 */
+export const MODEL_GATED_TUNNEL_HOSTS = [
   "opencode.ai",
+  "openrouter.ai",
 ] as const;
 
 export interface UpstreamProxyEndpoint {
@@ -32,11 +45,25 @@ export interface UpstreamProxyEndpoint {
  */
 export const PROXY_BUNDLE_PLACEHOLDER_TOKEN = "deepaa-gateway";
 
-/** hostname 是否命中官方上游白名单（精确或子域）。 */
+/** hostname 是否命中任一级白名单（精确或子域）。 */
 export function isOfficialUpstreamHost(hostname: string): boolean {
+  return isFullTunnelUpstreamHost(hostname) || isModelGatedUpstreamHost(hostname);
+}
+
+/** hostname 是否命中全程隧道域（精确或子域）。 */
+export function isFullTunnelUpstreamHost(hostname: string): boolean {
+  return hostMatchesList(hostname, FULL_TUNNEL_UPSTREAM_HOSTS);
+}
+
+/** hostname 是否命中模型门控域（精确或子域）。 */
+export function isModelGatedUpstreamHost(hostname: string): boolean {
+  return hostMatchesList(hostname, MODEL_GATED_TUNNEL_HOSTS);
+}
+
+function hostMatchesList(hostname: string, domains: readonly string[]): boolean {
   const host = hostname.trim().toLowerCase().replace(/^\[|\]$/gu, "");
   if (!host) return false;
-  return OFFICIAL_UPSTREAM_HOSTS.some(domain => host === domain || host.endsWith(`.${domain}`));
+  return domains.some(domain => host === domain || host.endsWith(`.${domain}`));
 }
 
 /**
@@ -71,13 +98,20 @@ let cachedProxy: {endpoint: UpstreamProxyEndpoint | undefined; at: number} | und
 let refreshing: Promise<void> | undefined;
 
 /**
- * 解析某 hostname 的出站代理；非白名单域直接返回 undefined（零开销直连）。
- * env 显式配置优先于系统代理探测；探测结果带 60 秒缓存。
+ * 解析某 hostname（可选携带本次请求模型）的出站代理；非白名单域、以及
+ * 门控域的非 VPN 家族模型（含无模型请求）直接返回 undefined——零开销直连，
+ * 不触发系统代理探测。env 显式配置优先于系统代理探测；探测结果带 60 秒缓存。
  */
 export async function resolveOfficialUpstreamProxy(
   hostname: string,
+  modelId?: string,
 ): Promise<UpstreamProxyEndpoint | undefined> {
-  if (!isOfficialUpstreamHost(hostname)) return undefined;
+  if (isFullTunnelUpstreamHost(hostname)) return resolveConfiguredProxy();
+  if (isModelGatedUpstreamHost(hostname) && isVpnTunnelModel(modelId)) return resolveConfiguredProxy();
+  return undefined;
+}
+
+async function resolveConfiguredProxy(): Promise<UpstreamProxyEndpoint | undefined> {
   const fromEnv = parseUpstreamProxyEnv(process.env.DEEPAA_UPSTREAM_PROXY);
   if (fromEnv) return fromEnv;
   if (cachedProxy && Date.now() - cachedProxy.at < PROXY_CACHE_TTL_MS) return cachedProxy.endpoint;
@@ -90,6 +124,14 @@ export async function resolveOfficialUpstreamProxy(
     });
   await refreshing;
   return cachedProxy?.endpoint;
+}
+
+/**
+ * 失效探测缓存（连接期隧道失败自愈）：下一次 resolveOfficialUpstreamProxy
+ * 重新探测系统代理。进行中的探测不受影响（其结果仍会写入缓存）。
+ */
+export function invalidateOfficialUpstreamProxyCache(): void {
+  cachedProxy = undefined;
 }
 
 /** 测试隔离钩子：清空探测缓存。 */

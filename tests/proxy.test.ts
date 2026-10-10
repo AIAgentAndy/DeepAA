@@ -804,6 +804,60 @@ describe("Node reverse proxy", () => {
     });
     expect(followup.status).toBe(200);
   });
+
+  test("首字节前客户端中断不退休连接池条目：后续请求复用 keep-alive（2026-10-10 修复守卫）", async () => {
+    let connections = 0;
+    let served = 0;
+    const upstream = createServer(async (request, response) => {
+      served += 1;
+      if (served === 1) {
+        response.writeHead(200, {"content-type": "text/event-stream"});
+        response.write(sse("response.created", {type: "response.created"}));
+        await delay(400);
+        if (!response.destroyed) response.end(sse("response.completed", {type: "response.completed"}));
+        return;
+      }
+      try {
+        await readRequest(request); // 等完整请求体：被中断的部分上传永远等不到，真实上游同款语义
+      } catch {
+        response.destroy();
+        return;
+      }
+      json(response, {ok: true});
+    });
+    upstream.on("connection", () => { connections += 1; });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => {
+      upstream.close(() => resolve());
+      upstream.closeAllConnections?.();
+    }));
+    const upstreamPort = (upstream.address() as {port: number}).port;
+    const fixture = await startProxyFixture(`http://127.0.0.1:${upstreamPort}`);
+
+    // 请求 1：慢 SSE 在飞，占用 keep-alive 连接 A。
+    const first = fetch(`http://127.0.0.1:${fixture.proxy.port}/codex/v1/responses`, {
+      method: "POST",
+      body: JSON.stringify({model: prefixedModel(fixture, "gpt-test"), stream: true}),
+    });
+    await delay(120);
+
+    // 请求 2：上传未完成即中断（首字节前）——若误退休池条目，请求 3 将走全新 TCP 连接。
+    await abortMidBodyUpload(fixture.proxy.port, prefixedModel(fixture, "gpt-test"));
+    await delay(80);
+
+    // 请求 1 收尾后其连接回到空闲池，请求 3 应复用它（上游总 TCP 连接数 = 2）。
+    const settled = await first;
+    expect(settled.status).toBe(200);
+    await settled.text();
+    await delay(60);
+    const followup = await fetch(`http://127.0.0.1:${fixture.proxy.port}/codex/v1/responses`, {
+      method: "POST",
+      body: JSON.stringify({model: prefixedModel(fixture, "gpt-test")}),
+    });
+    expect(followup.status).toBe(200);
+    await followup.text();
+    expect(connections).toBe(2);
+  });
 });
 
 async function startProxyFixture(
@@ -1029,6 +1083,34 @@ async function abortAfterText(port: number, marker: string, body: string): Promi
       clearTimeout(timeout);
       reject(error);
     });
+  });
+}
+
+/** 首字节前中断：声明大 content-length 但只上传含 model 字段的部分请求体后销毁连接。 */
+async function abortMidBodyUpload(port: number, model: string): Promise<void> {
+  await new Promise<void>(resolve => {
+    const socket = createConnection({host: "127.0.0.1", port});
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve();
+    };
+    socket.once("connect", () => {
+      socket.write([
+        "POST /codex/v1/responses HTTP/1.1",
+        "Host: 127.0.0.1",
+        "content-type: application/json",
+        "content-length: 4096",
+        "",
+        "",
+      ].join("\r\n"));
+      socket.write(`{"model":"${model}","stream":true,"pad":"`);
+      setTimeout(finish, 60);
+    });
+    socket.once("error", finish);
+    setTimeout(finish, 1_500);
   });
 }
 
