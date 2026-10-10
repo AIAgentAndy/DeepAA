@@ -239,16 +239,19 @@ export const opencodeCliConfigAdapter: AgentCliConfigAdapter = {
   },
 };
 
-/** 按设计文档 9.2/9.3 路径规则解析 OpenCode 全局配置文件。 */
+/**
+ * 按设计文档 9.2/9.3 路径规则解析 OpenCode 全局配置文件。
+ * Windows 与 opencode v2 实际读取位置对齐：`~/.config/opencode`（v2.0.26 实测
+ * watcher 订阅 C:\Users\<user>\.config\opencode；2026-10-11 前误写
+ * %APPDATA%\opencode 导致 TUI 读不到受管 provider 与默认模型）。
+ */
 export function resolveOpenCodeConfigPath(context: CliSyncContext): string {
   if (context.paths.opencodeConfigPath?.trim()) return context.paths.opencodeConfigPath;
   const explicitFile = context.env.OPENCODE_CONFIG?.trim();
   if (explicitFile) return explicitFile;
   const pathModule = context.platform === "win32" ? win32 : posix;
   const directory = context.env.OPENCODE_CONFIG_DIR?.trim()
-    || (context.platform === "win32"
-      ? pathModule.join(context.env.APPDATA || pathModule.join(context.homeDir, "AppData", "Roaming"), "opencode")
-      : pathModule.join(context.env.XDG_CONFIG_HOME || pathModule.join(context.homeDir, ".config"), "opencode"));
+    || pathModule.join(context.env.XDG_CONFIG_HOME?.trim() || pathModule.join(context.homeDir, ".config"), "opencode");
   const candidates = ["opencode.jsonc", "opencode.json", "config.json"];
   for (const name of candidates) {
     const candidate = pathModule.join(directory, name);

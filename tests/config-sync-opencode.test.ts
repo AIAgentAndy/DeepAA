@@ -253,7 +253,20 @@ test("路径解析：显式文件 > 显式目录 > XDG_CONFIG_HOME > 平台默�
     env: {APPDATA: "C:\\Users\\test\\AppData\\Roaming"},
     platform: "win32",
   });
-  expect(resolveOpenCodeConfigPath(win)).toBe("C:\\Users\\test\\AppData\\Roaming\\opencode\\opencode.jsonc");
+  // opencode v2 在 Windows 同样读取 ~/.config/opencode（v2.0.26 实测 watcher
+  // 订阅该目录）；%APPDATA%\opencode 是 2026-10-11 前的误写位置，TUI 读不到。
+  expect(resolveOpenCodeConfigPath(win)).toBe("C:\\Users\\test\\.config\\opencode\\opencode.jsonc");
+  // Windows 上显式 XDG_CONFIG_HOME 同样生效（与 opencode 路径库一致）。
+  const winXdg = createCliSyncContext({
+    config: config(),
+    paths,
+    template,
+    overrides: {},
+    homeDir: "C:\\Users\\test",
+    env: {XDG_CONFIG_HOME: "C:\\xdg"},
+    platform: "win32",
+  });
+  expect(resolveOpenCodeConfigPath(winXdg)).toBe("C:\\xdg\\opencode\\opencode.jsonc");
 });
 
 test("Agent 接入范围外的模型不会进入任何 provider", () => {
