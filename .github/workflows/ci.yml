@@ -57,7 +57,7 @@ jobs:
               printf '::error title=%s::%s\n' "$log" "$(printf '%s' "$line" | cut -c1-220)"
               count=$((count+1))
               if [ "$count" -ge 10 ]; then break; fi
-            done < <(grep -E "FAIL |not ok [1-9]|^# fail [1-9]|Unhandled|AssertionError|TypeError:" "$clean" | grep -v "0 failed" | head -40)
+            done < <(grep -A 6 -E "FAIL |not ok [1-9]" "$clean" | grep -v "^--$" | grep -v "0 failed" | head -60)
           }
           emit vitest-output.log
           emit sqlite-output.log

@@ -6,7 +6,7 @@ import {afterEach, describe, expect, test} from "vitest";
 import {runOfficialCatalogSync, readTargetModelUsage} from "../src/lib/provider-catalog/catalog-runner.js";
 import {resetProviderCatalogMemoryCacheForTests} from "../src/lib/provider-catalog/cache.js";
 import {readPricingConfig} from "../src/lib/pricing.js";
-import {getDeepaaDatabase} from "../src/lib/db/connection.js";
+import {getDeepaaDatabase, closeAllDeepaaDatabasesForTests} from "../src/lib/db/connection.js";
 import {queryCatalogNotifications, loadCatalogNotification} from "../src/lib/provider-catalog/notification-store.js";
 import {normalizeProviderCatalog} from "../src/lib/provider-catalog/normalize.js";
 
@@ -19,6 +19,8 @@ const FIXTURE_CATALOG_REVISION = "2099.01.01.01";
 
 afterEach(async () => {
   resetProviderCatalogMemoryCacheForTests();
+  // Windows 上打开中的 SQLite 句柄会阻止 rm 删除临时目录（EBUSY），先关库再删。
+  closeAllDeepaaDatabasesForTests();
   await Promise.all(tempDirs.splice(0).map(dir => rm(dir, {recursive: true, force: true})));
 });
 

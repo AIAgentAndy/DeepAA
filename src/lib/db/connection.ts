@@ -117,3 +117,18 @@ export function getDeepaaDatabase(
   databases.set(normalizedPath, db);
   return db;
 }
+
+/**
+ * 测试专用：关闭并清空本进程缓存的共享数据库句柄。
+ * Windows 上打开中的 SQLite 文件会阻止 rm(recursive) 删除临时数据目录
+ * （POSIX 允许 unlink-while-open），afterEach 删除临时目录前必须先调用。
+ */
+export function closeAllDeepaaDatabasesForTests(): void {
+  const globalState = globalThis as DeepaaDatabaseGlobal;
+  const databases = globalState.__deepaaDatabases;
+  if (!databases) return;
+  for (const db of databases.values()) {
+    if (db.open) db.close();
+  }
+  databases.clear();
+}
