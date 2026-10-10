@@ -58,7 +58,7 @@ describe("sync engine newapi adapter", () => {
       tokens: {success: true, data: {items: [
         {id: 8, name: "唯一令牌", key: "sk-abc****def", status: 1},
       ]}},
-      pricing: {success: true, data: {}},
+      pricing: {success: true, data: [], group_ratio: {}},
     }, [{id: "local", label: "唯一令牌", key: "sk-abc123def"}]);
     expect(newApi.credentialComparison).toEqual([expect.objectContaining({
       matched: true, remoteKeyId: "8",
@@ -96,7 +96,7 @@ describe("sync engine newapi adapter", () => {
         }};
       }
       if (url.endsWith("/api/pricing")) {
-        return {success: true, data: {group_ratio: {vip: 0.9, default: 1}}};
+        return {success: true, data: [], group_ratio: {vip: 0.9, default: 1}};
       }
       throw new Error(`unexpected ${url}`);
     });
@@ -139,7 +139,7 @@ describe("sync engine newapi adapter", () => {
         total: 1,
         items: [{name: "straitapi 主密钥", key: "stra**********tail", group: "vip", status: 1}],
       }},
-      pricing: {success: true, data: {group_ratio: {vip: 0.08}}},
+      pricing: {success: true, data: [], group_ratio: {vip: 0.08}},
     }, [{id: "c-strait", label: "主密钥", key: "sk-straitapi-secret-tail"}]);
 
     expect(result.rates).toEqual([
@@ -156,7 +156,7 @@ describe("sync engine newapi adapter", () => {
       urls.push(url);
       if (url.includes("/api/token/")) return {success: true, data: {page: 1, page_size: 100, total: 0, items: []}};
       if (url.endsWith("/api/user/self")) return {success: true, data: {quota: 0}};
-      if (url.endsWith("/api/pricing")) return {success: true, data: {group_ratio: {}}};
+      if (url.endsWith("/api/pricing")) return {success: true, data: [], group_ratio: {}};
       throw new Error(`unexpected ${url}`);
     }));
     expect(urls).toContain("https://console.example.com/api/token/?p=1&size=100");
@@ -210,7 +210,7 @@ describe("sync engine newapi adapter", () => {
         return new Response(JSON.stringify({success: true, data: {items: []}}), {status: 200, headers: {"content-type": "application/json"}});
       }
       if (url.endsWith("/api/pricing")) {
-        return new Response(JSON.stringify({success: true, data: {group_ratio: {}}}), {status: 200, headers: {"content-type": "application/json"}});
+        return new Response(JSON.stringify({success: true, data: [], group_ratio: {}}), {status: 200, headers: {"content-type": "application/json"}});
       }
       throw new Error(`unexpected ${url}`);
     }) as typeof fetch;
@@ -253,11 +253,81 @@ describe("sync engine newapi adapter", () => {
       {
         self: {success: true, data: {quota: 0}},
         tokens: {success: true, data: [{key: "sk-a1****b2", group: "auto", status: 1}]},
-        pricing: {success: true, data: {group_ratio: {auto: "自动"}}},
+        pricing: {success: true, data: [], group_ratio: {auto: "自动"}},
       },
       [{id: "c1", label: "密钥A", key: "sk-a1xxb2"}],
     );
     expect(result.rates).toBeUndefined();
+    expect(result.credentialComparison).toEqual([
+      expect.objectContaining({matched: true}),
+    ]);
+    expect(result.credentialComparison?.[0]?.ratio).toBeUndefined();
+  });
+
+  test("标准 New API 的 group_ratio 与 data 平级（data 为模型数组）时能取到倍率", () => {
+    // 2026-10-10 1yuanapi 实测形态：旧实现把 data 当分组容器读取，
+    // 对全部标准 New API 站点永远拿不到分组倍率（黄标「远端未返回有效倍率」）。
+    const result = parseNewApiPayloads({
+      self: {success: true, data: {quota: 298854, group: "default"}},
+      tokens: {success: true, data: {items: [
+        {id: 2535, name: "gpt-new", key: "gpt**********new", group: "gpt_pro渠道", status: 1},
+      ]}},
+      pricing: {success: true, data: [{model_name: "gpt-6.1-sol"}], group_ratio: {"gpt_pro渠道": 0.35}},
+    }, [{id: "c-gpt", label: "gpt-new", key: "sk-gpt-secret-new"}]);
+
+    expect(result.rates).toEqual([
+      {credentialId: "c-gpt", tokenGroup: "gpt_pro渠道", ratio: 0.35, source: "auto_group"},
+    ]);
+    expect(result.credentialComparison).toEqual([
+      expect.objectContaining({matched: true, remoteKeyId: "2535", ratio: 0.35}),
+    ]);
+  });
+
+  test("令牌分组为空时跟随用户分组（镜像 New API 计费语义）", () => {
+    const result = parseNewApiPayloads({
+      self: {success: true, data: {quota: 0, group: "vip"}},
+      tokens: {success: true, data: {items: [
+        {id: 1, name: "默认组密钥", key: "abc****def", group: "", status: 1},
+      ]}},
+      pricing: {success: true, data: [], group_ratio: {vip: 0.9, default: 1}},
+    }, [{id: "c1", label: "密钥A", key: "sk-abcxxdef"}]);
+
+    expect(result.rates).toEqual([
+      {credentialId: "c1", tokenGroup: "vip", ratio: 0.9, source: "auto_group"},
+    ]);
+    expect(result.credentialComparison).toEqual([
+      expect.objectContaining({matched: true, ratio: 0.9}),
+    ]);
+  });
+
+  test("auto 令牌不回退用户分组：自动分组链路无法由 group_ratio 还原，保持待确认", () => {
+    const result = parseNewApiPayloads({
+      self: {success: true, data: {quota: 0, group: "vip"}},
+      tokens: {success: true, data: {items: [
+        {id: 2, name: "自动分组密钥", key: "aut****grp", group: "auto", status: 1},
+      ]}},
+      pricing: {success: true, data: [], group_ratio: {vip: 0.9}},
+    }, [{id: "c2", label: "密钥B", key: "sk-autxxgrp"}]);
+
+    expect(result.rates).toBeUndefined();
+    expect(result.credentialComparison?.[0]).toEqual(
+      expect.objectContaining({matched: true}),
+    );
+    expect(result.credentialComparison?.[0]?.ratio).toBeUndefined();
+  });
+
+  test("个别 fork 把 group_ratio 嵌在 data 对象内时保留兼容兜底", () => {
+    const result = parseNewApiPayloads({
+      self: {success: true, data: {quota: 0}},
+      tokens: {success: true, data: {items: [
+        {id: 3, name: "嵌套形态", key: "nest****old", group: "vip", status: 1},
+      ]}},
+      pricing: {success: true, data: {group_ratio: {vip: 0.5}}},
+    }, [{id: "c3", label: "密钥C", key: "sk-nestxxold"}]);
+
+    expect(result.rates).toEqual([
+      {credentialId: "c3", tokenGroup: "vip", ratio: 0.5, source: "auto_group"},
+    ]);
   });
 
 
@@ -983,7 +1053,7 @@ describe("sync engine service", () => {
             items: [{name: "默认", key: "abc1**********defg", group: "vip", status: 1}],
           }};
         }
-        if (url.endsWith("/api/pricing")) return {success: true, data: {group_ratio: {vip: 0.9}}};
+        if (url.endsWith("/api/pricing")) return {success: true, data: [], group_ratio: {vip: 0.9}};
         return {};
       }) as typeof fetch,
     });
@@ -1076,7 +1146,7 @@ describe("sync engine service", () => {
       if (url.endsWith("/api/user/login")) return json({success: true, data: {access_token: "tok"}});
       if (url.endsWith("/api/user/self")) return json({success: true, data: {quota: 5_000_000}});
       if (url.includes("/api/token/")) return json({success: true, data: {items: []}});
-      if (url.endsWith("/api/pricing")) return json({success: true, data: {group_ratio: {}}});
+      if (url.endsWith("/api/pricing")) return json({success: true, data: [], group_ratio: {}});
       return new Response("{}", {status: 404});
     }) as typeof fetch;
     const service = new SyncService({

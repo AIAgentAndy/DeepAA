@@ -31,11 +31,6 @@ interface NewApiTokenItem {
   status?: number;
 }
 
-interface NewApiPricingData {
-  group_ratio?: Record<string, unknown>;
-  usable_group?: Record<string, unknown>;
-}
-
 export interface NewApiPayloads {
   self: unknown;
   tokens: unknown;
@@ -188,8 +183,9 @@ export async function newApiSyncWithToken(
 
 /**
  * 解析 New API 三份 payload：余额 = quota/500000（USD）；
- * 密钥倍率 = 令牌分组 → group_ratio（"自动" 等非数值分组倍率跳过）；
- * 模型实际计费价 = model_ratio / completion_ratio（供目标级计费覆盖）。
+ * 密钥倍率 = 有效计费分组 → /api/pricing 的 group_ratio。
+ * 有效计费分组镜像 New API 计费语义（middleware/auth.go）：令牌分组非空时以其为准
+ * （"auto" 无法由 group_ratio 还原，查不到即跳过、保持黄标提醒），为空时跟随用户分组。
  */
 export function parseNewApiPayloads(
   payloads: NewApiPayloads,
@@ -197,8 +193,15 @@ export function parseNewApiPayloads(
 ): SyncResult {
   const self = asRecord(payloads.self);
   const selfData = asRecord(self?.data);
-  const pricingData = asRecord(payloads.pricing)?.data as NewApiPricingData | undefined;
-  const groupRatio = pricingData?.group_ratio;
+  // 标准 New API/one-api 的 /api/pricing：group_ratio 与 data 平级（data 是模型价目数组）。
+  // 2026-10-10 1yuanapi 事故：旧实现只读 data.group_ratio（把模型数组当分组容器），
+  // 对全部标准站点永远拿不到分组倍率；嵌套形态仅个别 fork 存在，保留作兼容兜底。
+  const pricingRecord = asRecord(payloads.pricing);
+  const groupRatio = asRecord(pricingRecord?.group_ratio)
+    ?? asRecord(asRecord(pricingRecord?.data)?.group_ratio);
+  const userGroup = typeof selfData?.group === "string" && selfData.group
+    ? selfData.group
+    : undefined;
   const tokenData = asRecord(payloads.tokens)?.data;
   const tokenItems = Array.isArray(tokenData)
     ? tokenData
@@ -222,7 +225,7 @@ export function parseNewApiPayloads(
   for (const item of tokenItems) {
     const token = asRecord(item);
     if (!token || !newApiTokenIsActive(token.status)) continue;
-    const group = typeof token.group === "string" ? token.group : undefined;
+    const group = resolveNewApiBillingGroup(token.group, userGroup);
     const ratio = group && groupRatio ? groupRatio[group] : undefined;
     if (typeof ratio !== "number" || !Number.isFinite(ratio) || ratio < 0) continue;
     const key = typeof token.key === "string" ? token.key : "";
@@ -257,7 +260,7 @@ export function parseNewApiPayloads(
       };
     }
     const active = newApiTokenIsActive(remoteToken.status);
-    const group = typeof remoteToken.group === "string" ? remoteToken.group : undefined;
+    const group = resolveNewApiBillingGroup(remoteToken.group, userGroup);
     const ratio = group && groupRatio ? groupRatio[group] : undefined;
     return {
       credentialId: credential.id,
@@ -342,6 +345,20 @@ function stripTrailingSlash(value: string): string {
 
 function stripApiKeyPrefix(value: string): string {
   return value.toLowerCase().startsWith("sk-") ? value.slice(3) : value;
+}
+
+/**
+ * 令牌的有效计费分组：镜像 New API 计费语义（middleware/auth.go 的 TokenAuth）——
+ * 令牌分组非空时覆盖用户分组；为空/缺失时跟随用户分组（/api/user/self 的 group）。
+ * "auto" 是令牌分组的有效取值，原样返回：自动分组链路无法由 group_ratio 精确还原，
+ * 查不到倍率时保持「远端未返回有效倍率」提醒，绝不误回退到用户分组。
+ */
+function resolveNewApiBillingGroup(
+  tokenGroup: unknown,
+  userGroup: string | undefined,
+): string | undefined {
+  if (typeof tokenGroup === "string" && tokenGroup) return tokenGroup;
+  return userGroup;
 }
 
 /** New API 当前状态 1 为启用；旧实现的 0 及当前的 2/3/4 均不可用于倍率快照。 */
