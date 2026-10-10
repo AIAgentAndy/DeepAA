@@ -46,5 +46,7 @@ incremental_lines.txt
 
 # ─── 本地私有资料（维护者本机存在，不随仓库发布）──
 # 已跟踪的 docs/logo/logo.png 与 docs/ui-redesign-v4/demo.css 不受忽略规则影响。
+# docs/screenshots 是 README 界面截图，随仓库发布。
 /AGENTS.md
-/docs/
+/docs/*
+!/docs/screenshots/
