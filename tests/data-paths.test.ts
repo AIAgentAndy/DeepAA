@@ -1,4 +1,4 @@
-import {resolve, win32} from "node:path";
+import {posix, resolve, win32} from "node:path";
 import {describe, expect, test} from "vitest";
 import {resolveDeepaaDataDir} from "../src/lib/data-paths.js";
 import {resolveLauncherDataDir} from "../bin/deepaa.mjs";
@@ -40,6 +40,8 @@ describe("Deepaa 数据目录", () => {
       env: {},
       sourceCheckout: true,
     })).toBe(resolve("/repo/deepaa/data"));
+    // resolveLauncherDataDir 被 platform:"darwin" 钉死为 posix 语义，
+    // 期望值也必须按 posix 计算，否则在 Windows 宿主上会被补上盘符。
     expect(resolveLauncherDataDir({
       rootDir: "/repo/deepaa",
       cwd: "/tmp/arbitrary-cwd",
@@ -47,7 +49,7 @@ describe("Deepaa 数据目录", () => {
       sourceCheckout: true,
       platform: "darwin",
       homeDir: "/Users/tester",
-    })).toBe(resolve("/repo/deepaa/data"));
+    })).toBe(posix.resolve("/repo/deepaa/data"));
   });
 
   test("macOS 安装模式使用 ~/.deepaa", () => {

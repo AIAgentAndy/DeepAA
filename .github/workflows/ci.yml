@@ -35,8 +35,40 @@ jobs:
       - name: 类型检查
         run: pnpm typecheck
 
-      - name: 全量测试
-        run: pnpm test
+      - name: 全量测试（vitest）
+        shell: bash
+        run: set -o pipefail && pnpm test:vitest 2>&1 | tee vitest-output.log
+
+      - name: 全量测试（sqlite）
+        shell: bash
+        run: set -o pipefail && pnpm test:sqlite 2>&1 | tee sqlite-output.log
+
+      - name: 失败摘要（注解）
+        if: failure()
+        shell: bash
+        run: |
+          emit() {
+            local log="$1"
+            [ -f "$log" ] || return 0
+            local clean="${log%.log}-clean.log"
+            sed 's/\x1b\[[0-9;]*m//g' "$log" > "$clean" || cp "$log" "$clean"
+            local hits
+            hits=$(grep -A 14 -E "FAIL |not ok [1-9]|^# fail [1-9]|failing tests|Unhandled" "$clean" | grep -v "^--$" | grep -v "0 failed" | head -60 || true)
+            if [ -z "$hits" ] && grep -qE "ELIFECYCLE|exit code [1-9]" "$clean"; then
+              # 无用例级失败行且日志含失败退出痕迹：疑似进程崩溃，回退输出日志尾部。
+              # 通过中的日志不含 ELIFECYCLE，不会占用注解额度。
+              hits=$(tail -n 24 "$clean")
+            fi
+            local count=0
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              printf '::error title=%s::%s\n' "$log" "$(printf '%s' "$line" | cut -c1-220)"
+              count=$((count+1))
+              if [ "$count" -ge 10 ]; then break; fi
+            done <<< "$hits"
+          }
+          emit vitest-output.log
+          emit sqlite-output.log
 
       - name: 生产构建
         run: pnpm build

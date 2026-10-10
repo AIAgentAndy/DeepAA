@@ -75,9 +75,12 @@ describe("C8 安装 / 卸载（macOS，临时目录）", () => {
     expect(script).toContain('do script "deepaa"');
     const info = await readFile(join(result.path, "Contents/Info.plist"), "utf8");
     expect(info).toContain(APP_BUNDLE_ID);
-    // 可执行位
+    // 可执行位：Windows 宿主文件系统无法保存 POSIX 执行位（chmod 为 no-op），
+    // 仅在 POSIX 宿主上断言。
     const info2 = await stat(join(result.path, "Contents/MacOS/DeepAA"));
-    expect(info2.mode & 0o111).not.toBe(0);
+    if (process.platform !== "win32") {
+      expect(info2.mode & 0o111).not.toBe(0);
+    }
   });
 
   test("install --silent：静默形态脚本", async () => {

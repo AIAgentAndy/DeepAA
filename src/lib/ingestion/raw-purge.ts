@@ -1,7 +1,7 @@
 import type {DeepaaDatabase} from "@/lib/db/sqlite-driver";
 import { statSync } from "node:fs";
 import { lstat, opendir, rm, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { computeRetentionCutoff, readRetentionConfig } from "../retention";
 import {
   derivedArtifactPath,
@@ -9,6 +9,31 @@ import {
   purgedDerivedArtifactPlaceholder,
 } from "./derived-artifact-store";
 import { sourceFileId } from "./raw-source-reader";
+
+/**
+ * 删除文件并对 Windows 瞬时文件锁做短重试。
+ * Windows 上刚写入/刚关闭的文件可能被 Defender、搜索索引器短暂锁定（EPERM/EBUSY），
+ * 立即删除会失败；静默短退避后重试可消化该竞态（CI 实测）。POSIX 上首次即成功。
+ */
+async function rmWithTransientLockRetry(
+  path: string,
+  options: {force?: boolean} = {},
+): Promise<void> {
+  const maxAttempts = 5;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await rm(path, options);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if ((code === "EPERM" || code === "EBUSY") && attempt < maxAttempts) {
+        await new Promise(resolvePromise => setTimeout(resolvePromise, 50 * attempt));
+        continue;
+      }
+      throw error;
+    }
+  }
+}
 
 /**
  * 一键清除超过保留窗口的 raw（docs/上线前架构升级改造.md P1-7，决策 D1/D3/D5）。
@@ -223,7 +248,7 @@ export async function executeRawPurge(
       const collected = purgeOneSource(db, dataDir, candidate.sourceId);
       for (const hash of collected.externalBlobHashes) gcBlobHashes.add(hash);
       for (const hash of collected.artifactHashes) gcArtifactHashes.add(hash);
-      await rm(join(dataDir, candidate.relativePath), {force: true});
+      await rmWithTransientLockRetry(join(dataDir, candidate.relativePath), {force: true});
       result.purgedFiles.push({
         relativePath: candidate.relativePath,
         fileBytes: candidate.fileBytes,
@@ -290,8 +315,11 @@ function evaluateCandidate(
   }
   const expectedPath = resolve(dataDir, row.relative_path);
   // lexical 防御：relative_path 必须仍在 captures/v2 下。
+  // 用 relative() 判包含而非 startsWith(root + "/")：Windows 的 resolve() 产物是
+  // 反斜杠，硬编码正斜杠会让全部候选被判 file_identity_mismatch（清理整体失效）。
   const captureRoot = resolve(dataDir, "captures", "v2");
-  if (!expectedPath.startsWith(captureRoot + "/") && expectedPath !== captureRoot) {
+  const pathWithinCaptureRoot = relative(captureRoot, expectedPath);
+  if (pathWithinCaptureRoot.startsWith("..") || isAbsolute(pathWithinCaptureRoot)) {
     return {kind: "skip", reason: "file_identity_mismatch"};
   }
   let info;
@@ -470,7 +498,7 @@ async function gcExternalBlobs(
     if (row) continue;
     const blobPath = join(dataDir, "blobs", hash.slice(0, 2), `${hash}.body.gz`);
     try {
-      await rm(blobPath, {force: true});
+      await rmWithTransientLockRetry(blobPath, {force: true});
       deleted += 1;
     } catch {
       // 单个 blob 删除失败不阻塞；下次清理重试。
@@ -494,7 +522,7 @@ async function gcDerivedArtifacts(
     ).get(hash, hash);
     if (row) continue;
     try {
-      await rm(derivedArtifactPath(dataDir, hash), {force: true});
+      await rmWithTransientLockRetry(derivedArtifactPath(dataDir, hash), {force: true});
       deleted += 1;
     } catch {
       // 同上：失败不阻塞。
@@ -688,7 +716,7 @@ export async function sweepOrphanExternalArtifacts(
   for (const entry of scan.blobs) {
     if (referencedBlobs.has(entry.hash) || !isBeyondActiveGrace(entry, nowMs)) continue;
     try {
-      await rm(entry.path, {force: true});
+      await rmWithTransientLockRetry(entry.path, {force: true});
       deletedBlobs += 1;
     } catch {
       // 单个失败下轮重试。
@@ -697,7 +725,7 @@ export async function sweepOrphanExternalArtifacts(
   for (const entry of scan.artifacts) {
     if (referencedArtifacts.has(entry.hash) || !isBeyondActiveGrace(entry, nowMs)) continue;
     try {
-      await rm(entry.path, {force: true});
+      await rmWithTransientLockRetry(entry.path, {force: true});
       deletedArtifacts += 1;
     } catch {
       // 同上。

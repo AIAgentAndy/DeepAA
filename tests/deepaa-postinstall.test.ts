@@ -4,7 +4,7 @@
  * 2026-10-08 追加：安装后自动启动（门禁矩阵 + 静默失败不中断）。
  */
 
-import {readFile} from "node:fs/promises";
+import {readFile, writeFile} from "node:fs/promises";
 import {mkdtemp, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -158,9 +158,13 @@ describe("F1 runPostinstall 行为", () => {
 
   test("图标安装抛错：绝不中断（降级文案，正常返回）", async () => {
     const lines: string[] = [];
+    // 用「文件占据目录位置」制造确定性失败：POSIX 与 Windows 上 mkdir 都会 ENOTDIR。
+    // 不能用 "/definitely/not/writable" 这类假不可写路径——Windows 会解析到当前盘符并真实创建。
+    const blocker = join(sandbox, "blocked-applications");
+    await writeFile(blocker, "", "utf8");
     const result = await runPostinstall({
       platform: "darwin",
-      applicationsDir: join("/definitely/not/writable", "x"),
+      applicationsDir: join(blocker, "DeepAA.app"),
       exec: async () => ({code: 0, stdout: "", stderr: ""}),
       output: text => lines.push(text),
       env: {},

@@ -143,6 +143,12 @@ describe("跨平台 Deepaa 启动器", () => {
   });
 
   test("代理使用独立 Node 产物且运行命令不包含隐式构建（dev = tsx watch 热更新）", () => {
+    // Windows 宿主上 join() 产物是反斜杠路径，命令参数统一归一化为 posix 再比较。
+    const toPosix = (value: string) => value.replaceAll("\\", "/");
+    const posixSpec = <T extends {command: string; args: string[]}>(spec: T): T => ({
+      ...spec,
+      args: spec.args.map(toPosix),
+    });
     const specs = buildDeepaaProcessSpecs({
       rootDir: "/app/deepaa",
       production: false,
@@ -153,9 +159,9 @@ describe("跨平台 Deepaa 启动器", () => {
 
     // 开发模式代理走 tsx watch 源码热更新（2026-10-05 用户确认）。
     expect(specs.proxy.command).toBe("/usr/local/bin/node");
-    expect(specs.proxy.args[0]!.endsWith("tsx/dist/cli.mjs")).toBe(true);
+    expect(toPosix(specs.proxy.args[0]!).endsWith("tsx/dist/cli.mjs")).toBe(true);
     expect(specs.proxy.args[1]).toBe("watch");
-    expect(specs.proxy.args[2]!.endsWith("src/proxy-server.ts")).toBe(true);
+    expect(toPosix(specs.proxy.args[2]!).endsWith("src/proxy-server.ts")).toBe(true);
     // 生产模式仍为独立 dist 产物。
     const prod = buildDeepaaProcessSpecs({
       rootDir: "/app/deepaa",
@@ -164,13 +170,13 @@ describe("跨平台 Deepaa 启动器", () => {
       nodeExecutable: "/usr/local/bin/node",
       port: "4321",
     });
-    expect(prod.proxy).toEqual({
+    expect(posixSpec(prod.proxy)).toEqual({
       command: "/usr/local/bin/node",
       args: ["/app/deepaa/dist/proxy/proxy-server.mjs"],
     });
     // 生产 web 进程独占堆上限（2026-10-10 用户确认 768M）：进程级旗标，只进 web
     // spec；代理 / 构建不携带。
-    expect(prod.web).toEqual({
+    expect(posixSpec(prod.web)).toEqual({
       command: "/usr/local/bin/node",
       args: [
         "--disable-warning=ExperimentalWarning",
@@ -183,7 +189,7 @@ describe("跨平台 Deepaa 启动器", () => {
         "127.0.0.1",
       ],
     });
-    expect(specs.web).toEqual({
+    expect(posixSpec(specs.web)).toEqual({
       command: "/usr/local/bin/node",
       args: [
         // node:sqlite experimental 警告抑制（web 进程打开数据库）。
@@ -197,15 +203,16 @@ describe("跨平台 Deepaa 启动器", () => {
         "127.0.0.1",
       ],
     });
-    expect(specs.proxyBuild.args).toEqual([
-      "/app/deepaa/scripts/build-proxy.mjs",
-    ]);
+    expect(posixSpec(specs.proxyBuild)).toEqual({
+      command: "/usr/local/bin/node",
+      args: ["/app/deepaa/scripts/build-proxy.mjs"],
+    });
     expect(specs.webBuild.args).toContain("build");
-    expect(specs.traceNormalize).toEqual({
+    expect(posixSpec(specs.traceNormalize)).toEqual({
       command: "/usr/local/bin/node",
       args: ["/app/deepaa/scripts/normalize-next-trace.mjs"],
     });
-    expect(specs.traceVerify).toEqual({
+    expect(posixSpec(specs.traceVerify)).toEqual({
       command: "/usr/local/bin/node",
       args: ["/app/deepaa/scripts/verify-next-trace.mjs"],
     });
@@ -340,6 +347,14 @@ describe("跨平台 Deepaa 启动器", () => {
       rootDir: "/app/deepaa",
       nodeExecutable: "/usr/local/bin/node",
       nodeVersion: "22.19.0",
+      // 钉住 POSIX kill 语义：本用例经 harness fake child 验证信号→kill 接线；
+      // win32 分支会 spawn 真实 taskkill.exe 而不调用 child.kill，fake child
+      // 永不退出导致超时（taskkill 行为属生产路径，不在单测覆盖）。
+      // env/homeDir 同步显式化：沙箱注入的 DEEPAA_DATA_DIR 是宿主 Windows 路径，
+      // 在 darwin 语义的 posix.isAbsolute 下非绝对会直接抛错。
+      platform: "darwin",
+      env: {},
+      homeDir: "/home/tester",
       spawnProcess: harness.spawnProcess,
       signalEmitter: harness.signals,
       stdout: harness.stdout,

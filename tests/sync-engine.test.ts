@@ -5,6 +5,7 @@ import {join} from "node:path";
 import {chmod} from "node:fs/promises";
 import {expectPosixFileMode} from "./helpers/posix-permissions.js";
 import {openDeepaaDatabase} from "../src/lib/db/connection.js";
+import type {DeepaaDatabase} from "../src/lib/db/sqlite-driver.js";
 import {
   NewApiAdapter,
   newApiLogin,
@@ -33,8 +34,14 @@ import {ProxyConfigStore as RealProxyConfigStore} from "../src/proxy-config.js";
 import type {ProviderCatalog} from "../src/lib/provider-catalog/types.js";
 
 const tempRoots: string[] = [];
+// 直连打开的数据库句柄：Windows 上打开中的 SQLite 文件会阻止 afterEach 的
+// rm 删除临时目录（EBUSY），统一在删除前关闭。
+const openDatabases: DeepaaDatabase[] = [];
 
 afterEach(async () => {
+  for (const db of openDatabases.splice(0)) {
+    if (db.open) db.close();
+  }
   await Promise.all(tempRoots.splice(0).map(path => rm(path, {recursive: true, force: true})));
 });
 
@@ -1283,6 +1290,7 @@ describe("sync engine plan tier（opencode-go 档位必选，2026-09-30）", () 
     const root = await mkdtemp(join(tmpdir(), "sync-plan-tier-"));
     tempRoots.push(root);
     const db = openDeepaaDatabase({dataDir: root});
+    openDatabases.push(db);
     const store = new RealProxyConfigStore({
       configPath: join(root, "proxy-config.json"),
       developmentCredentialsPath: join(root, "development-credentials.json"),

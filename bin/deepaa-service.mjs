@@ -24,7 +24,7 @@ import {spawn, spawnSync} from "node:child_process";
 import {openSync} from "node:fs";
 import {mkdir, rename, rm, stat, writeFile} from "node:fs/promises";
 import {homedir} from "node:os";
-import {dirname, join, resolve} from "node:path";
+import {dirname, join, posix, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
 import net from "node:net";
 import http from "node:http";
@@ -77,8 +77,10 @@ function resolveDataDir(options = {}) {
 export function buildLaunchAgentPlist(options) {
   const {role, nodeExecutable, launcherPath, dataDir, pathEnv} = options;
   const label = SERVICE_ID[role];
-  const logPath = join(dataDir, "logs", `${role}.log`);
-  const errLogPath = join(dataDir, "logs", `${role}.err.log`);
+  // LaunchAgent 是 macOS 专用产物：纯构造器必须与宿主平台无关，
+  // Windows 宿主上的 join() 会把正斜杠拼成反斜杠，破坏生成与断言口径。
+  const logPath = posix.join(dataDir, "logs", `${role}.log`);
+  const errLogPath = posix.join(dataDir, "logs", `${role}.err.log`);
   const env = {
     DEEPAA_LAUNCH_REASON: "service",
     NODE_ENV: "production",

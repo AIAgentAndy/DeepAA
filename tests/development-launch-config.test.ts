@@ -32,7 +32,9 @@ async function write(path: string, content: string): Promise<void> {
 }
 
 function tomlProjectKey(path: string): string {
-  return JSON.stringify(path.replaceAll("\\", "\\\\"));
+  // JSON.stringify 的转义规则与 TOML basic string 一致（反斜杠/引号都会转义）。
+  // 不能再预先 replaceAll 转义：Windows 路径会被双重转义成 \\\\，导致键永远匹配不上。
+  return JSON.stringify(path);
 }
 
 describe("Codex configuration resolution", () => {

@@ -223,7 +223,9 @@ describe("MVP-A raw evidence capture", () => {
 
         expect(result.byteOffset).toBe(0);
         expect(writeAttempts).toBe(2);
-        expect(truncateAttempts).toBe(3);
+        // Windows 上恢复路径的首次真实 truncate 会因 append 句柄权限失败（EACCES），
+        // truncateCaptureFile 经 r+ 句柄重试多消耗一次补丁计数（4 = 2 失败 + r+ 重试 + 成功）。
+        expect(truncateAttempts).toBe(process.platform === "win32" ? 4 : 3);
         expect(serialized.trim().split("\n")).toHaveLength(1);
         expect(JSON.parse(serialized).exchangeId).toBe(third.exchangeId);
       },
@@ -516,7 +518,7 @@ describe("MVP-A raw evidence capture", () => {
       },
     }).then(() => undefined, reason => reason as NodeJS.ErrnoException);
 
-    expect(error?.code).toBe("ELOOP");
+    expect(error?.code).toBe(process.platform === "win32" ? "unsafe_raw_body_reference" : "ELOOP");
   });
 
   test("v2 水合拒绝安全检查后被替换但复用原文件 inode 的 blobs 根", async () => {

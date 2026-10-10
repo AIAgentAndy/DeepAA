@@ -28,9 +28,11 @@ test("Claude Code history provider and raw types are removed", () => {
 
 test("README documents the local proxy inspector with verified agents", () => {
   expect(readme).toContain("DeepAA");
-  expect(readme).toContain("OpenAI-compatible and Anthropic-compatible");
-  expect(readme).toContain("local reverse-proxy inspector");
-  expect(readme).toContain("formatted JSON");
+  expect(readme).toContain(
+    "an OpenAI-compatible upstream URL, an Anthropic-compatible upstream URL, or both",
+  );
+  expect(readme).toContain("Standalone Node proxy");
+  expect(readme).toContain("parsed JSON");
   expect(readme).toContain("http://127.0.0.1:3211");
   expect(readme).toContain("Claude Code");
   expect(readme).toContain("Codex");
@@ -51,9 +53,9 @@ test("README documents the local proxy inspector with verified agents", () => {
 
 test("Chinese README documents the same local proxy workflow with verified agents", () => {
   expect(readmeCn).toContain("DeepAA");
-  expect(readmeCn).toContain("OpenAI 兼容格式和 Anthropic 兼容格式");
-  expect(readmeCn).toContain("任意 Agent、SDK、CLI 或中转站");
-  expect(readmeCn).toContain("格式化展示调用链路");
+  expect(readmeCn).toContain("OpenAI 兼容上游 URL、Anthropic 兼容上游 URL");
+  expect(readmeCn).toContain("Agent / SDK / CLI");
+  expect(readmeCn).toContain("查看调用链路");
   expect(readmeCn).toContain("http://127.0.0.1:3211");
   expect(readmeCn).toContain("Claude Code");
   expect(readmeCn).toContain("Codex");

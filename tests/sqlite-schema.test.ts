@@ -1650,10 +1650,13 @@ describe("SQLite schema", () => {
         resolve("/tmp/inspector-project/data"),
       );
 
-      process.env.DEEPAA_DATA_DIR = "/tmp/inspector-isolated-data";
+      // 显式覆盖值必须按宿主平台绝对路径提供：POSIX 字面量在 Windows 的
+      // win32.isAbsolute 下非绝对会直接抛错。
+      const isolatedDir = resolve(tmpdir(), "inspector-isolated-data");
+      process.env.DEEPAA_DATA_DIR = isolatedDir;
       assert.equal(
         resolveDeepaaDataDir("/tmp/ignored-project"),
-        resolve("/tmp/inspector-isolated-data"),
+        isolatedDir,
       );
     } finally {
       if (previous === undefined) {

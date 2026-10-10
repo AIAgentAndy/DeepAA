@@ -11,11 +11,13 @@ import {
   writePricingConfig,
   type PricingConfigV2,
 } from "../src/lib/pricing.js";
-import {getDeepaaDatabase} from "../src/lib/db/connection.js";
+import {getDeepaaDatabase, closeAllDeepaaDatabasesForTests} from "../src/lib/db/connection.js";
 
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
+  // Windows 上打开中的 SQLite 句柄会阻止 rm 删除临时目录（EBUSY），先关库再删。
+  closeAllDeepaaDatabasesForTests();
   await Promise.all(temporaryDirectories.splice(0).map(path => rm(path, { recursive: true, force: true })));
 });
 
