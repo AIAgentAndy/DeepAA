@@ -283,8 +283,9 @@ async function mergeConfigUpdate(
       if (patch.target.id !== undefined && patch.target.id !== patch.id) {
         throw new Error("TARGET_ID_IMMUTABLE");
       }
-      const mergedTarget = mergeTargetPatch(targets[index]!, patch.target);
-      assertDevelopmentDefaultModelsCompatible(mergedTarget);
+      const previousTarget = targets[index]!;
+      const mergedTarget = mergeTargetPatch(previousTarget, patch.target);
+      assertDevelopmentDefaultModelsCompatible(mergedTarget, previousTarget);
       targets[index] = ensureProxyTargetAgentDefaults(
         mergedTarget,
         await listCredentialMetadata(credentialsPath, mergedTarget.id),
@@ -541,17 +542,28 @@ function setTargetAgentDefault(
 }
 
 /**
- * defaultModels 写入门禁（2026-10-06）：targetPatch 携带的 development.defaultModels
- * 此前不经任何校验直达落盘（只有读侧 normalize 静默剪除），现写入即拒——与
- * agentConnectionPatch.defaultModelId 同一套校验口径，堵住 setTargetDefaultModel、
- * 向导等 targetPatch 路径的绕行。
+ * defaultModels 写入门禁（2026-10-06 引入；2026-10-11 增量感知修订）：
+ * 只校验本次 patch **显式写入/改值**的条目（与 agentConnectionPatch.defaultModelId
+ * 同一套校验口径），fail-fast 拦截坏值直达落盘；patch 未改动的存量条目若因同 patch
+ * 的适用收窄（supportedModelScopes）而失效，交由 ensureProxyTargetAgentDefaults
+ * 自动迁移/清除（替换为首个合格模型或删除键），不再一刀切阻断合法的适用收窄。
+ * 修订背景：defaultModels 按目标各自保存且为全部兼容 Agent 预填，与「当前供应商
+ * 是否为该 Agent 的默认供应商」无关——旧的全量校验让非默认供应商的模型适用收窄
+ * 必然被拒（DEFAULT_MODEL_AGENT_SCOPE_MISMATCH），且修复器排在门禁后永远轮不到。
+ * previous 恒为磁盘归一化态（updateConfig 先 readPersistedConfig），被跳过的
+ * 存量条目在 previous 中必然合法，跳过是安全的。
  */
-function assertDevelopmentDefaultModelsCompatible(target: ProxyTarget): void {
+function assertDevelopmentDefaultModelsCompatible(
+  target: ProxyTarget,
+  previous?: ProxyTarget,
+): void {
   const defaults = target.development?.defaultModels;
   if (!defaults) return;
+  const previousDefaults = previous?.development?.defaultModels;
   for (const agent of KNOWN_AGENT_IDS) {
     const modelId = defaults[agent];
     if (modelId === undefined) continue;
+    if (previousDefaults?.[agent] === modelId) continue;
     if (!target.supportedModels.includes(modelId)) throw new Error("DEFAULT_MODEL_NOT_SUPPORTED");
     if (!agentScopeIncludes(target.supportedModelScopes?.[modelId], agent)) {
       throw new Error("DEFAULT_MODEL_AGENT_SCOPE_MISMATCH");

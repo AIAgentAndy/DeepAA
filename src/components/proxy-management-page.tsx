@@ -931,7 +931,7 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
     }
   }
 
-  async function saveConsoleAccount(input: {providerType: SyncProviderType; consoleBaseUrl: string; username: string; password: string; syncIntervalMinutes?: number}): Promise<void> {
+  async function saveConsoleAccount(input: {providerType: SyncProviderType; consoleBaseUrl: string; username: string; password: string; credentialId?: string; syncIntervalMinutes?: number}): Promise<void> {
     if (!selectedTarget || !selectedTargetPersisted) throw new Error("请先保存供应商，再配置控制台同步");
     // 已有账号的保存属于修改场景：文案用「再次同步」而非「首次同步」。
     const syncLabel = Boolean(syncStatusByTarget[selectedTarget.id]?.account) ? "再次同步" : "首次同步";

@@ -29,6 +29,9 @@ export async function POST(request: Request) {
       // 修改模式允许用户名/密码留空：服务端保留已有凭据原值。
       username: optionalStringField(body, "username"),
       password: optionalStringField(body, "password"),
+      // api_key 余额站点（DeepSeek/智谱/Kimi/OpenRouter）的余额查询密钥；
+      // 编辑留空保持已保存值，服务端校验归属当前目标。
+      credentialId: optionalCredentialIdField(body),
       syncIntervalMinutes,
     });
     // sync 是保存后立即执行的首次同步结果；失败时页面据此立刻提醒用户。
@@ -60,6 +63,14 @@ function stringField(body: Record<string, unknown>, key: string): string {
 function optionalStringField(body: Record<string, unknown>, key: string): string {
   if (typeof body[key] !== "string") throw new Error("INVALID_REQUEST");
   return body[key].trim();
+}
+
+/** 可选密钥 ID：仅 api_key 余额站点消费；非字符串视为非法请求，空值原样透传（保持原值）。 */
+function optionalCredentialIdField(body: Record<string, unknown>): string | undefined {
+  const value = body.credentialId;
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error("INVALID_REQUEST");
+  return value.trim();
 }
 
 /** 可选同步周期（分钟）：传入时必须是白名单值域，否则视为非法请求。 */

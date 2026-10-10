@@ -1,6 +1,6 @@
 import type {DeepaaDatabase} from "@/lib/db/sqlite-driver";
 
-export const SCHEMA_VERSION = 52;
+export const SCHEMA_VERSION = 53;
 
 /**
  * v19：Agent 证据字段。
@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS console_accounts (
   console_base_url TEXT NOT NULL,
   username TEXT NOT NULL,
   password_ref TEXT NOT NULL,
+  credential_id TEXT,
   login_mode TEXT NOT NULL DEFAULT 'http',
   status TEXT NOT NULL DEFAULT 'idle',
   last_sync_at TEXT,
@@ -733,6 +734,18 @@ function migrateRelayReconciliationUsageCarrierV50(db: DeepaaDatabase): void {
     if (!hasColumn(db, "relay_reconciliation_matches", column)) {
       db.exec(`ALTER TABLE relay_reconciliation_matches ADD COLUMN ${column} INTEGER`);
     }
+  }
+}
+
+/**
+ * v53：api_key 余额站点（DeepSeek/智谱/Kimi/OpenRouter）控制台账号的显式余额查询密钥。
+ * 与启动链的 development.defaultCredentials 解耦（余额是账户级属性，与哪个 Agent
+ * 启动无关）；存量行为 NULL，同步时回退 Agent 默认密钥表保持无感。
+ */
+function migrateConsoleCredentialV53(db: DeepaaDatabase): void {
+  if (!hasTable(db, "console_accounts")) return;
+  if (!hasColumn(db, "console_accounts", "credential_id")) {
+    db.exec("ALTER TABLE console_accounts ADD COLUMN credential_id TEXT");
   }
 }
 
@@ -2419,6 +2432,9 @@ export function migrateDeepaaDatabase(db: DeepaaDatabase): void {
       }
       if (current < 52) {
         migratePlanEstimateSettlementsV52(db);
+      }
+      if (current < 53) {
+        migrateConsoleCredentialV53(db);
       }
     }
     db.prepare(

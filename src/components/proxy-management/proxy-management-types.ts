@@ -35,6 +35,8 @@ export interface ProxySyncStatus {
     resolvedProvider: "sub2api" | "newapi" | null;
     consoleBaseUrl: string;
     username: string;
+    /** api_key 余额站点（DeepSeek/智谱/Kimi/OpenRouter）的余额查询密钥 ID；其余站点为 null。 */
+    credentialId: string | null;
     loginMode: string;
     status: string;
     lastSyncAt: string | null;

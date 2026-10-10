@@ -83,8 +83,14 @@ export function normalizeConsoleAccountSecret(value: unknown): ConsoleAccountSec
     throw new Error("INVALID_CONSOLE_ACCOUNT");
   }
   const raw = value as Record<string, unknown>;
-  for (const key of ["targetId", "providerType", "consoleBaseUrl", "username", "password", "updatedAt"] as const) {
+  for (const key of ["targetId", "providerType", "consoleBaseUrl", "updatedAt"] as const) {
     if (typeof raw[key] !== "string" || !raw[key]) throw new Error("INVALID_CONSOLE_ACCOUNT");
+  }
+  // 用户名/密码允许空字符串：api_key 余额站点（DeepSeek/智谱/Kimi/OpenRouter）的
+  // 余额查询走 API Key，不使用控制台账号登录（2026-10-11 表单分流后不再采集）；
+  // 仍要求是字符串，防止 undefined/null 混入破坏类型契约。
+  for (const key of ["username", "password"] as const) {
+    if (typeof raw[key] !== "string") throw new Error("INVALID_CONSOLE_ACCOUNT");
   }
   return {
     targetId: raw.targetId as string,

@@ -1014,10 +1014,12 @@ describe("代理管理 V3 页面结构", () => {
     expect(page).toContain("停用后将自动切换为");
     expect(page).toContain("无其他可用供应商，将变为待配置状态");
     expect(page).toContain("confirmDialog({title: \"停用供应商\"");
-    // 模型归属：非默认代理无需确认；默认模型去掉归属需确认并自动切换/警告。
-    expect(resources).toContain("config.agentConnections[agent]?.defaultTargetId !== target.id");
+    // 模型归属：去掉归属需确认并自动切换/警告。2026-10-11 修复：默认模型记录按目标
+    // 各自保存（非默认供应商同样持有），错误 skip 已删；兜底与服务端修复器同源。
+    expect(resources).not.toContain("config.agentConnections[agent]?.defaultTargetId !== target.id");
+    expect(resources).toContain("eligibleDefaultModelForAgent");
     expect(resources).toContain("默认模型将自动更新为");
-    expect(resources).toContain("将没有可用模型、无法使用当前代理");
+    expect(resources).toContain("将没有可切换的合格模型");
     expect(resources).toContain("默认密钥会自动切换为其他适用密钥（无则取消），确认执行吗");
   });
 

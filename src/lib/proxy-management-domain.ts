@@ -178,12 +178,8 @@ export function ensureProxyTargetAgentDefaults(
   for (const agent of AGENT_REGISTRY) {
     const capability = resolveTargetAgentCapability(target, agent.id);
     const bindingWireApis = bindingWireApisForTarget(target, agent.id);
-    const eligibleModel = capability.supported ? target.supportedModels.find(modelId => {
-      const mapping = target.pricing?.modelVendors?.[modelId];
-      return agentScopeIncludes(target.supportedModelScopes?.[modelId], agent.id)
-        && modelWireApiAllowed(modelId, bindingWireApis, target)
-        && Boolean(mapping?.vendor && mapping.priceEntryId);
-    }) : undefined;
+    // 合格默认模型与服务端修复、UI 适用收窄兜底同源（eligibleDefaultModelForAgent）。
+    const eligibleModel = eligibleDefaultModelForAgent(target, agent.id);
     const existingModel = defaultModels[agent.id];
     const existingModelValid = Boolean(capability.supported
       && existingModel
@@ -224,6 +220,24 @@ export function ensureProxyTargetAgentDefaults(
 /** 中转站模型族映射统一由 model-vendor-map 维护，调用方不得提供 vendor 选择器。 */
 export function inferDiscoveredVendor(runtimeModelId: string): VendorSuggestion | undefined {
   return inferModelVendor(runtimeModelId);
+}
+
+/**
+ * 目标「第一个默认密钥」：按 Agent 注册表顺序（codex→claude→opencode→dsh→zcode）
+ * 取第一个非空的 Agent 级默认密钥 ID。值来自启动默认密钥表（写入端已锁定归属本目标），
+ * 仅作两类消费：api_key 余额站点账号表单的默认选中、账号行无显式密钥时的同步兜底。
+ * 余额是账户级属性，与哪个 Agent 启动无关——这里只是「用户心里的第一把 key」的近似。
+ */
+export function firstAgentDefaultCredentialId(
+  target: Pick<ProxyTarget, "development">,
+): string | undefined {
+  const defaults = target.development?.defaultCredentials;
+  if (!defaults) return undefined;
+  for (const agent of AGENT_REGISTRY) {
+    const credentialId = defaults[agent.id];
+    if (credentialId) return credentialId;
+  }
+  return undefined;
 }
 
 /** 供应商 ready 是所有 Agent 和启动入口共用的基础判断，不接受“有 URL 即可用”。 */
@@ -332,6 +346,30 @@ function bindingWireApisForTarget(
       ? Boolean(target.openaiUrl?.trim())
       : Boolean(target.anthropicUrl?.trim()))
     .map(binding => binding.wireApi);
+}
+
+/**
+ * 某 Agent 在目标上的「合格默认模型」：scope 适用 ∩ wire API 兼容 ∩ 价格映射齐备，
+ * 按 supportedModels 正序取第一个（与向导「显式默认优先 → 兼容交集第一位 → 该 Agent
+ * 首个兼容模型」惯例一致）。
+ * 服务端默认链修复（ensureProxyTargetAgentDefaults）与「密钥与模型」适用收窄的 UI
+ * 确认兜底必须同源使用：确认框说切换到哪个模型，服务端就写哪个模型——两处各自
+ * 内联会分叉（2026-10-11 事故：UI 只查 scope 倒序挑兜底，服务端正序查三条件，
+ * 确认文案说谎且可触发 DEFAULT_MODEL_WIRE_API_MISMATCH）。
+ */
+export function eligibleDefaultModelForAgent(
+  target: ProxyTarget,
+  agent: AgentId,
+  options: {excludeModelId?: string} = {},
+): string | undefined {
+  if (!resolveTargetAgentCapability(target, agent).supported) return undefined;
+  const bindingWireApis = bindingWireApisForTarget(target, agent);
+  return target.supportedModels.find(modelId =>
+    modelId !== options.excludeModelId
+    && agentScopeIncludes(target.supportedModelScopes?.[modelId], agent)
+    && modelWireApiAllowed(modelId, bindingWireApis, target)
+    && Boolean(target.pricing?.modelVendors?.[modelId]?.vendor
+      && target.pricing.modelVendors[modelId].priceEntryId));
 }
 
 /** 停用默认供应商时只接受其它 active 且能完整形成默认链的供应商。 */

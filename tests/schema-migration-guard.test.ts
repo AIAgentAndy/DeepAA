@@ -43,8 +43,9 @@ const DOCUMENTED_DROP_TABLE_EXCEPTIONS: Record<string, {count: number; reason: s
 };
 
 /** 守卫测试与 schema 版本联动声明：升版本时必须同步审视本文件例外清单。
- * v52：新增 plan_estimate_settlements（额度差分估算结算游标，只增表无重建）。 */
-const DECLARED_SCHEMA_VERSION = 52;
+ * v52：新增 plan_estimate_settlements（额度差分估算结算游标，只增表无重建）。
+ * v53：console_accounts 增加 credential_id 列（api_key 余额站点的显式查询密钥，只增列）。 */
+const DECLARED_SCHEMA_VERSION = 53;
 
 describe("schema 迁移红线守卫", () => {
   const schemaPath = join(import.meta.dirname, "..", "src", "lib", "db", "schema.ts");

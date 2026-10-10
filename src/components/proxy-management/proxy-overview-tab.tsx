@@ -6,6 +6,7 @@ import {SecretRevealChip} from "./secret-reveal";
 import type {CredentialItem, ProxySyncStatus} from "./proxy-management-types";
 import {onboardingStepsForTarget} from "@/components/proxy-management/proxy-onboarding-wizard";
 import {PROVIDER_PRESETS, derivePresetCurrency, resolveProviderAccountCapability} from "@/lib/provider-presets";
+import {firstAgentDefaultCredentialId} from "@/lib/proxy-management-domain";
 import {billingChannelLabel} from "@/lib/preset-family";
 import {planProviderLabelFromPlugins} from "@/lib/provider-plugins/meta";
 import {resolveOfficialPresetForTarget} from "@/lib/provider-preset-capabilities";
@@ -53,8 +54,10 @@ interface ProxyOverviewTabProps {
   onStartOnboarding: () => void;
   /** 立即同步控制台数据。 */
   onRunSync: () => Promise<void>;
-  /** 保存/修改控制台账号（保存后服务端立即执行首次同步，失败随错误提醒）。 */
-  onSaveAccount: (input: {providerType: SyncProviderType; consoleBaseUrl: string; username: string; password: string; syncIntervalMinutes?: number}) => Promise<void>;
+  /** 保存/修改控制台账号（保存后服务端立即执行首次同步，失败随错误提醒）。
+   *  api_key 余额站点（DeepSeek/智谱/Kimi/OpenRouter）只消费 credentialId；
+   *  用户名/密码仅中转站登录消费，api_key 站点表单已不再采集。 */
+  onSaveAccount: (input: {providerType: SyncProviderType; consoleBaseUrl: string; username: string; password: string; credentialId?: string; syncIntervalMinutes?: number}) => Promise<void>;
   /** 保存套餐同步；API Key 只能显式选择当前供应商已有密钥。 */
   onSavePlanConfig: (input: {
     providerType: PlanProviderType;
@@ -174,7 +177,7 @@ export function ProxyOverviewTab({config, target, credentials, syncStatus, syncS
     baselineRef.current = {id: target.id, snapshot: snapshotConnectionConfig(target)};
   }
   const dirty = hasConnectionConfigChanges(baselineRef.current.snapshot, target);
-  const [accountDraft, setAccountDraft] = useState({providerType: (syncStatus?.account?.providerType || defaultProviderType(target)) as SyncProviderType, consoleBaseUrl: syncStatus?.account?.consoleBaseUrl || defaultConsoleUrl(target), username: syncStatus?.account?.username || "", password: "", syncIntervalMinutes: syncStatus?.account?.syncIntervalMinutes ?? DEFAULT_SYNC_INTERVAL_MINUTES});
+  const [accountDraft, setAccountDraft] = useState({providerType: (syncStatus?.account?.providerType || defaultProviderType(target)) as SyncProviderType, consoleBaseUrl: syncStatus?.account?.consoleBaseUrl || defaultConsoleUrl(target), username: syncStatus?.account?.username || "", password: "", credentialId: syncStatus?.account?.credentialId || firstAgentDefaultCredentialId(target) || credentials.filter(item => item.targetId === target.id)[0]?.id || "", syncIntervalMinutes: syncStatus?.account?.syncIntervalMinutes ?? DEFAULT_SYNC_INTERVAL_MINUTES});
   const [accountError, setAccountError] = useState("");
   const [editingPlan, setEditingPlan] = useState(false);
   // 「暂不设置」收起态：仅未配置套餐同步期间有效；一旦保存过套餐即永久失效，行为与一直展开一致。
@@ -224,6 +227,11 @@ export function ProxyOverviewTab({config, target, credentials, syncStatus, syncS
   const planHighlight = highlight?.kind === "plan" && !planConfig ? highlight : null;
   /** 中转站一经识别底层类型后不可更换；存量 sub2api/newapi 账号同样锁定。 */
   const accountRelayLocked = Boolean(account && isRelayProviderType(account.providerType));
+  /** api_key 余额站点（DeepSeek/智谱/Kimi/OpenRouter）：账号表单分流为 API Key 下拉，
+   *  余额经所选密钥查询官方接口，不采集用户名/密码（2026-10-11 用户确认）。 */
+  const apiKeyAccountMode = resolveProviderAccountCapability(accountDraft.providerType)?.auth === "api_key";
+  /** API Key 下拉默认值：目标第一个 Agent 默认密钥（codex→claude→…序），缺省回退第一条密钥。 */
+  const defaultAccountCredentialId = firstAgentDefaultCredentialId(target) || targetCredentials[0]?.id || "";
   /** 编辑表单里的中转站选项文案：已识别时直接展示具体底层类型。 */
   const relayDraftLabel = account && isRelayProviderType(account.providerType)
     ? relayProviderLabel(account.providerType, account.resolvedProvider)
@@ -324,6 +332,8 @@ export function ProxyOverviewTab({config, target, credentials, syncStatus, syncS
               consoleBaseUrl: account.consoleBaseUrl || defaultConsoleUrl(target),
               username: account.username || "",
               password: "",
+              // api_key 站点：已保存密钥优先，存量账号（无显式值）回填推导默认值。
+              credentialId: account.credentialId || defaultAccountCredentialId,
               syncIntervalMinutes: account.syncIntervalMinutes,
             });
             setEditingAccount(value => !value);
@@ -331,8 +341,9 @@ export function ProxyOverviewTab({config, target, credentials, syncStatus, syncS
         {/* 同步状态未加载完成前展示占位，避免先渲染「未配置」摘要再闪烁为真实值。 */}
         {!syncStatusReady && !account ? <p className={styles.emptyCompact}>正在加载账号同步配置…</p> : <>
         <dl className={styles.accountSummary}>
-          {/* 官方预设：账号展示用预设名（带通道），不再显示「中转站」等历史错误标签。 */}
-          <div><dt>控制台账号</dt><dd>{account ? `${accountProviderLabel(account.providerType, account.resolvedProvider, targetPreset)} · ${account.username}` : "未配置"}</dd></div>
+          {/* 官方预设：账号展示用预设名（带通道），不再显示「中转站」等历史错误标签。
+              api_key 余额站点没有控制台账号概念：用户名缺省时回退显示所选密钥名。 */}
+          <div><dt>控制台账号</dt><dd>{account ? `${accountProviderLabel(account.providerType, account.resolvedProvider, targetPreset)} · ${account.username || (account.credentialId ? targetCredentials.find(item => item.id === account.credentialId)?.label : undefined) || "API Key 查询"}` : "未配置"}</dd></div>
           <div><dt>最近余额</dt><dd>{syncStatus?.balance ? formatMoneyWithCnyEquivalent(syncStatus.balance.amount, syncStatus.balance.currency, displayFxFor(syncStatus.balance.currency)) : "暂无"}</dd></div>
           <div><dt>最近同步</dt><dd>{account?.lastSyncAt ? formatRelativeTime(account.lastSyncAt) : "尚未同步"}</dd></div>
           <div><dt>下次同步</dt><dd>{account?.nextSyncAt ? `${formatRelativeFuture(account.nextSyncAt)}后` : "—"}</dd></div>
@@ -342,10 +353,15 @@ export function ProxyOverviewTab({config, target, credentials, syncStatus, syncS
       {!accountSyncSupported ? <p className={styles.syncWarning} role="status">该供应商暂无公开余额接口，余额请在官方控制台查看；如该供应商匹配套餐适配器，可在下方「套餐用量」模块同步。</p> : null}
       {/* 表单只在「已确认未配置」（加载完成且无账号）或用户主动编辑时出现；加载中不闪表单。 */}
       {accountSyncSupported && (account ? editingAccount : (!accountDismissed && syncStatusReady)) ? <form className={styles.inlineForm} onSubmit={event => {event.preventDefault(); setAccountError(""); void onSaveAccount(accountDraft).then(() => setEditingAccount(false)).catch(error => setAccountError(error instanceof Error ? error.message : "保存失败"));}}>
-        <label className={styles.field}><span>站点类型</span><select value={accountDraft.providerType} onChange={event => setAccountDraft({...accountDraft, providerType: event.currentTarget.value as SyncProviderType})} disabled={accountRelayLocked}><option value="relay">{relayDraftLabel}</option>{account && isRelayProviderType(account.providerType) ? <option value={account.providerType} style={{display: "none"}}>{relayProviderLabel(account.providerType, account.resolvedProvider)}</option> : null}<option value="openai">OpenAI（官方）</option><option value="anthropic">Anthropic（官方）</option><option value="deepseek">DeepSeek（官方）</option><option value="zhipu">智谱（官方）</option><option value="kimi-coding">Kimi / Moonshot（官方）</option><option value="minimax">MiniMax（官方）</option><option value="volcengine-plan">火山方舟（Coding Plan）</option><option value="openrouter">OpenRouter</option><option value="siliconflow">SiliconFlow（硅基流动）</option><option value="qwenai">千问 AI</option><option value="tencent-hunyuan">腾讯混元</option><option value="opencode-go">OpenCode Go</option><option value="manual">手动</option></select></label>
+        <label className={styles.field}><span>站点类型</span><select value={accountDraft.providerType} onChange={event => {const providerType = event.currentTarget.value as SyncProviderType; setAccountDraft({...accountDraft, providerType, // 切入 api_key 站点且尚未选密钥时自动补默认值（第一个 Agent 默认密钥 → 目标第一条密钥）。
+          ...(resolveProviderAccountCapability(providerType)?.auth === "api_key" && !accountDraft.credentialId ? {credentialId: defaultAccountCredentialId} : {})});}} disabled={accountRelayLocked}><option value="relay">{relayDraftLabel}</option>{account && isRelayProviderType(account.providerType) ? <option value={account.providerType} style={{display: "none"}}>{relayProviderLabel(account.providerType, account.resolvedProvider)}</option> : null}<option value="openai">OpenAI（官方）</option><option value="anthropic">Anthropic（官方）</option><option value="deepseek">DeepSeek（官方）</option><option value="zhipu">智谱（官方）</option><option value="kimi-coding">Kimi / Moonshot（官方）</option><option value="minimax">MiniMax（官方）</option><option value="volcengine-plan">火山方舟（Coding Plan）</option><option value="openrouter">OpenRouter</option><option value="siliconflow">SiliconFlow（硅基流动）</option><option value="qwenai">千问 AI</option><option value="tencent-hunyuan">腾讯混元</option><option value="opencode-go">OpenCode Go</option><option value="manual">手动</option></select></label>
         <label className={styles.field}><span>控制台地址</span><input type="url" required value={accountDraft.consoleBaseUrl} onChange={event => setAccountDraft({...accountDraft, consoleBaseUrl: event.currentTarget.value})} /></label>
-        <label className={styles.field}><span>用户名或邮箱</span><input value={accountDraft.username} onChange={event => setAccountDraft({...accountDraft, username: event.currentTarget.value})} /></label>
-        <label className={`${styles.field} ${styles.fieldSecret}`}><span>密码 / 会话凭据</span><input type="password" value={accountDraft.password} onChange={event => setAccountDraft({...accountDraft, password: event.currentTarget.value})} placeholder={account ? "留空保持原值" : "必填"} /><SecretRevealChip kind="console" targetId={target.id} masked={syncStatus?.account?.credentialMasked} label="复制控制台密码/会话凭据" /></label>
+        {apiKeyAccountMode ? <>
+          <label className={styles.field}><span>余额查询密钥</span><select required value={accountDraft.credentialId} onChange={event => setAccountDraft({...accountDraft, credentialId: event.currentTarget.value})}><option value="">{targetCredentials.length > 0 ? "请选择当前供应商的一条密钥" : "当前供应商还没有系统密钥"}</option>{targetCredentials.map(credential => <option key={credential.id} value={credential.id}>{credential.label} · {formatCredentialFingerprint(credential.fingerprintSuffix)}</option>)}</select></label>
+        </> : <>
+          <label className={styles.field}><span>用户名或邮箱</span><input value={accountDraft.username} onChange={event => setAccountDraft({...accountDraft, username: event.currentTarget.value})} /></label>
+          <label className={`${styles.field} ${styles.fieldSecret}`}><span>密码 / 会话凭据</span><input type="password" value={accountDraft.password} onChange={event => setAccountDraft({...accountDraft, password: event.currentTarget.value})} placeholder={account ? "留空保持原值" : "必填"} /><SecretRevealChip kind="console" targetId={target.id} masked={syncStatus?.account?.credentialMasked} label="复制控制台密码/会话凭据" /></label>
+        </>}
         <label className={styles.field}><span>同步周期</span><select value={accountDraft.syncIntervalMinutes} onChange={event => setAccountDraft({...accountDraft, syncIntervalMinutes: Number(event.currentTarget.value)})}>{SYNC_INTERVAL_MINUTES_CHOICES.map(minutes => <option key={minutes} value={minutes}>{minutes}分钟</option>)}</select></label>
         {/* 未完成「保存账号并开启同步」前（无论首次还是再次进入），引导文案常驻表单内部左下，与保存按钮同行；完成后编辑时不重复展示。
             「暂不设置」仅未配置期间出现：点击收起表单，可随时从头部「展开设置」再次进入。 */}

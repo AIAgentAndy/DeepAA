@@ -6,7 +6,7 @@ import {ProxyFallbackDialog} from "./proxy-fallback-dialog";
 import {agentLabel, AGENT_CATALOG, agentCompatibleModelsForTarget, buildAgentDropPatch, protocolAgentsForTarget, resolveTargetAgentCapability, servedAgentsForTarget} from "@/components/proxy-management/agent-catalog";
 import {AgentScopePicker} from "@/components/agent-scope-picker";
 import {SecretRevealChip} from "./secret-reveal";
-import {nextCredentialLabel} from "@/lib/proxy-management-domain";
+import {eligibleDefaultModelForAgent, nextCredentialLabel} from "@/lib/proxy-management-domain";
 import {formatFallbackEntryLabel} from "@/lib/failover-display";
 import {formatCredentialFingerprint} from "@/components/proxy-management/credential-format";
 import {resolveTargetModelPriceEntry, resolveTargetModelWireApis} from "@/lib/proxy-management-domain";
@@ -475,15 +475,20 @@ function ModelRow({target, config, modelId, entry, override, scopeOptions, defau
       .map(option => option.id);
     const nextDefaults = {...target.development?.defaultModels};
     for (const agent of removedAgents) {
-      // 当前供应商不是该 Agent 的默认代理时，模型/密钥必不可能是默认，无需确认。
-      if (config.agentConnections[agent]?.defaultTargetId !== target.id) continue;
+      // defaultModels 按目标各自保存（ensureProxyTargetAgentDefaults 为全部兼容 Agent 预填），
+      // 与「当前供应商是否为该 Agent 的默认供应商」无关——所有指向本模型的默认记录都需迁移。
       if (target.development?.defaultModels?.[agent] !== modelId) continue;
-      // 规则：同代理下，非当前模型且最近添加且适用该 Agent 的模型。
-      const fallback = [...target.supportedModels].reverse().find(item =>
-        item !== modelId && nextScopes[item]?.includes(agent) === true);
+      // 兜底与服务端修复器同源（scope ∩ wire API ∩ 价格映射，正序第一个合格模型）：
+      // 确认框说切换到哪个模型，服务端就写哪个模型。
+      const fallback = eligibleDefaultModelForAgent(
+        {...target, supportedModelScopes: nextScopes},
+        agent,
+        {excludeModelId: modelId},
+      );
+      const isDefaultProvider = config.agentConnections[agent]?.defaultTargetId === target.id;
       const confirmed = await confirmDialog({title: "调整模型适用", message: fallback
-        ? `当前模型「${modelId}」是 ${agentLabel(agent)} 的默认模型，如果去掉该 Agent 适用，则默认模型将自动更新为「${fallback}」。确认继续？`
-        : `当前模型「${modelId}」是 ${agentLabel(agent)} 的默认模型，去掉该 Agent 适用后 ${agentLabel(agent)} 将没有可用模型、无法使用当前代理，会变为待配置状态。确认继续？`});
+        ? `当前模型「${modelId}」是 ${agentLabel(agent)} 的默认模型${isDefaultProvider ? "" : "（当前供应商非其默认供应商，仅调整本供应商的默认记录）"}，去掉该 Agent 适用后，默认模型将自动更新为「${fallback}」。确认继续？`
+        : `当前模型「${modelId}」是 ${agentLabel(agent)} 的默认模型，去掉该 Agent 适用后将没有可切换的合格模型${isDefaultProvider ? `，${agentLabel(agent)} 无法使用当前代理，会变为待配置状态` : "，该默认记录将被清除"}。确认继续？`});
       if (!confirmed) return;
       if (fallback) nextDefaults[agent] = fallback;
       else delete nextDefaults[agent];

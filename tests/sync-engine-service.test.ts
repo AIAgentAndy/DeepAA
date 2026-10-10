@@ -2243,3 +2243,171 @@ describe("对账摘要口径（2026-09-28 修正）", () => {
     }
   });
 });
+
+describe("api_key 余额站点账号分流（2026-10-11 用户确认）", () => {
+  /** DeepSeek 余额 stub：记录请求 URL 与 Authorization，按密钥 ID 区分 helper 返回值。 */
+  function createDeepSeekFixture() {
+    const seen: Array<{url: string; authorization: string}> = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({
+        url: String(input),
+        authorization: String((init?.headers as Record<string, string>)?.authorization ?? ""),
+      });
+      return new Response(JSON.stringify({
+        is_available: true,
+        balance_infos: [{currency: "CNY", total_balance: "110.00"}],
+      }), {status: 200, headers: {"content-type": "application/json"}});
+    }) as typeof fetch;
+    return createFixture(fetchImpl).then(async fixture => {
+      // helper 按密钥 ID 返回不同明文，供断言「到底用了哪把 key」。
+      await writeFile(
+        join(fixture.root, "credential-helper.mjs"),
+        "#!/usr/bin/env node\n"
+        + "const value = {\"cred-good\": \"sk-good\", \"cred-claude\": \"sk-claude\","
+        + " \"cred-zcode\": \"sk-zcode\"}[process.argv[3]] ?? 'sk-x';\n"
+        + "if (process.argv[2] === 'get') process.stdout.write(value + '\\n');\n"
+        + "else process.exitCode = 0;\n",
+        "utf8",
+      );
+      await chmod(join(fixture.root, "credential-helper.mjs"), 0o755);
+      // 补两把同目标密钥（claude/zcode 键位验证注册表顺序兜底）。
+      const now = new Date().toISOString();
+      await writeFile(join(fixture.root, "development-credentials.json"), JSON.stringify({
+        version: 1,
+        credentials: [
+          {
+            id: "cred-good", targetId: "target-1", label: "正确密钥", store: "macos-keychain",
+            account: "cred-good", fingerprintSuffix: "sk-g****0001", createdAt: now, updatedAt: now,
+          },
+          {
+            id: "cred-claude", targetId: "target-1", label: "Claude 默认", store: "macos-keychain",
+            account: "cred-claude", fingerprintSuffix: "sk-c****0002", createdAt: now, updatedAt: now,
+          },
+          {
+            id: "cred-zcode", targetId: "target-1", label: "ZCode 默认", store: "macos-keychain",
+            account: "cred-zcode", fingerprintSuffix: "sk-z****0003", createdAt: now, updatedAt: now,
+          },
+          {
+            id: "cred-other", targetId: "target-2", label: "其他目标密钥", store: "macos-keychain",
+            account: "cred-other", fingerprintSuffix: "sk-o****0004", createdAt: now, updatedAt: now,
+          },
+        ],
+      }), "utf8");
+      return {...fixture, seen};
+    });
+  }
+
+  test("保存只认显式密钥：落库 credentialId、首次同步用它查余额、用户名密码可为空", async () => {
+    const fixture = await createDeepSeekFixture();
+    try {
+      const {account, sync} = await fixture.service.saveConsoleAccount({
+        targetId: "target-1",
+        providerType: "deepseek",
+        consoleBaseUrl: "https://api.deepseek.com",
+        username: "",
+        password: "",
+        credentialId: "cred-good",
+      });
+      expect(sync.ok).toBe(true);
+      expect(account.credentialId).toBe("cred-good");
+      // 密码不再参与同步：请求只带所选密钥的 Bearer。
+      expect(fixture.seen[0]).toMatchObject({
+        url: "https://api.deepseek.com/user/balance",
+        authorization: "Bearer sk-good",
+      });
+      const status = await fixture.service.status("target-1");
+      expect(status.account?.credentialId).toBe("cred-good");
+      expect(status.account?.status).toBe("ok");
+      expect(status.balance?.amount).toBe(110);
+    } finally {
+      fixture.db.close();
+    }
+  });
+
+  test("跨目标密钥与未选密钥都被服务端拒绝", async () => {
+    const fixture = await createDeepSeekFixture();
+    try {
+      await expect(fixture.service.saveConsoleAccount({
+        targetId: "target-1",
+        providerType: "deepseek",
+        consoleBaseUrl: "https://api.deepseek.com",
+        username: "",
+        password: "",
+        credentialId: "cred-other",
+      })).rejects.toThrow("CONSOLE_CREDENTIAL_TARGET_MISMATCH");
+
+      await expect(fixture.service.saveConsoleAccount({
+        targetId: "target-1",
+        providerType: "deepseek",
+        consoleBaseUrl: "https://api.deepseek.com",
+        username: "",
+        password: "",
+      })).rejects.toThrow("CONSOLE_CREDENTIAL_REQUIRED");
+    } finally {
+      fixture.db.close();
+    }
+  });
+
+  test("编辑留空保持已保存密钥；中转站保存不受 credentialId 语义影响", async () => {
+    const fixture = await createDeepSeekFixture();
+    try {
+      await fixture.service.saveConsoleAccount({
+        targetId: "target-1",
+        providerType: "deepseek",
+        consoleBaseUrl: "https://api.deepseek.com",
+        username: "",
+        password: "",
+        credentialId: "cred-good",
+      });
+      // 编辑保存不带 credentialId：保持已保存的 cred-good，不报错不丢失。
+      const edited = await fixture.service.saveConsoleAccount({
+        targetId: "target-1",
+        providerType: "deepseek",
+        consoleBaseUrl: "https://api.deepseek.com",
+        username: "",
+        password: "",
+        syncIntervalMinutes: 10,
+      });
+      expect(edited.account.credentialId).toBe("cred-good");
+      expect(edited.account.syncIntervalMinutes).toBe(10);
+    } finally {
+      fixture.db.close();
+    }
+  });
+
+  test("存量账号（credentialId 为 NULL）按 Agent 注册表顺序回退默认密钥表", async () => {
+    const fixture = await createDeepSeekFixture();
+    try {
+      await fixture.service.saveConsoleAccount({
+        targetId: "target-1",
+        providerType: "deepseek",
+        consoleBaseUrl: "https://api.deepseek.com",
+        username: "",
+        password: "",
+        credentialId: "cred-good",
+      });
+      // 模拟 v53 前的存量行：显式密钥清空，仅剩 Agent 默认表。
+      fixture.db.prepare("UPDATE console_accounts SET credential_id = NULL WHERE target_id = 'target-1'").run();
+
+      // claude 在注册表序中先于 zcode：旧 `codex || claude` 行为原样保留。
+      let revision = fixture.configStore.getConfig().revision;
+      await fixture.configStore.updateConfig({
+        expectedRevision: revision,
+        targetPatch: {id: "target-1", target: {development: {defaultCredentials: {claude: "cred-claude", zcode: "cred-zcode"}}}},
+      });
+      await fixture.service.runSync("target-1");
+      expect(fixture.seen.at(-1)?.authorization).toBe("Bearer sk-claude");
+
+      // 只接 zcode 的目标不再凭空 MISSING：按注册表顺序取到 zcode 默认密钥。
+      revision = fixture.configStore.getConfig().revision;
+      await fixture.configStore.updateConfig({
+        expectedRevision: revision,
+        targetPatch: {id: "target-1", target: {development: {defaultCredentials: {zcode: "cred-zcode"}}}},
+      });
+      await fixture.service.runSync("target-1");
+      expect(fixture.seen.at(-1)?.authorization).toBe("Bearer sk-zcode");
+    } finally {
+      fixture.db.close();
+    }
+  });
+});

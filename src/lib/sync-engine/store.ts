@@ -7,6 +7,11 @@ export interface ConsoleAccountRow {
   consoleBaseUrl: string;
   username: string;
   passwordRef: string;
+  /**
+   * api_key 余额站点（DeepSeek/智谱/Kimi/OpenRouter）的显式余额查询密钥 ID。
+   * 与启动默认密钥表解耦；存量行为 NULL，同步时回退 Agent 默认密钥表。
+   */
+  credentialId: string | null;
   loginMode: string;
   status: string;
   lastSyncAt: string | null;
@@ -140,6 +145,7 @@ const CONSOLE_ACCOUNT_COLUMNS = `
   id, target_id AS targetId,
   CASE provider_type WHEN 'dashscope' THEN 'qwenai' ELSE provider_type END AS providerType,
   console_base_url AS consoleBaseUrl, username, password_ref AS passwordRef,
+  credential_id AS credentialId,
   login_mode AS loginMode, status, last_sync_at AS lastSyncAt,
   last_sync_error AS lastSyncError, next_sync_at AS nextSyncAt,
   consecutive_auto_failures AS consecutiveAutoFailures,
@@ -244,21 +250,26 @@ export class SyncStore {
     );
   }
 
-  upsertConsoleAccount(input: Omit<ConsoleAccountRow, "createdAt" | "updatedAt">): void {
+  /** credentialId 可省略（中转站/手动账号与既有调用方不传），落库边界归一化为 NULL。 */
+  upsertConsoleAccount(
+    input: Omit<ConsoleAccountRow, "createdAt" | "updatedAt" | "credentialId">
+      & {credentialId?: string | null},
+  ): void {
     const now = new Date().toISOString();
     this.db.prepare(`
       INSERT INTO console_accounts(
         id, target_id, provider_type, console_base_url, username, password_ref,
-        login_mode, status, last_sync_at, last_sync_error, consecutive_auto_failures,
+        credential_id, login_mode, status, last_sync_at, last_sync_error, consecutive_auto_failures,
         consecutive_failure_kind, next_sync_at, sync_interval_minutes, created_at, updated_at
       ) VALUES(@id, @targetId, @providerType, @consoleBaseUrl, @username, @passwordRef,
-        @loginMode, @status, @lastSyncAt, @lastSyncError, @consecutiveAutoFailures,
+        @credentialId, @loginMode, @status, @lastSyncAt, @lastSyncError, @consecutiveAutoFailures,
         @consecutiveFailureKind, @nextSyncAt, @syncIntervalMinutes, @createdAt, @updatedAt)
       ON CONFLICT(target_id) DO UPDATE SET
         provider_type = excluded.provider_type,
         console_base_url = excluded.console_base_url,
         username = excluded.username,
         password_ref = excluded.password_ref,
+        credential_id = excluded.credential_id,
         login_mode = excluded.login_mode,
         status = excluded.status,
         last_sync_at = excluded.last_sync_at,
@@ -270,6 +281,7 @@ export class SyncStore {
         updated_at = excluded.updated_at
     `).run({
       ...input,
+      credentialId: input.credentialId ?? null,
       createdAt: now,
       updatedAt: now,
     });

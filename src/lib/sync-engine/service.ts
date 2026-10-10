@@ -55,6 +55,7 @@ import {
 } from "./overview-types";
 import {resolvePlanProviderForTarget} from "./plan-provider";
 import {resolveOfficialPresetForTarget} from "@/lib/provider-preset-capabilities";
+import {firstAgentDefaultCredentialId} from "@/lib/proxy-management-domain";
 import {derivePresetCurrency} from "@/lib/provider-presets";
 import {runPlanEstimateBackfill} from "@/lib/plan-estimate/backfill";
 import {loadProviderCatalog} from "@/lib/provider-catalog/cache";
@@ -240,6 +241,8 @@ export class SyncService {
     consoleBaseUrl: string;
     username: string;
     password: string;
+    /** api_key 余额站点（DeepSeek/智谱/Kimi/OpenRouter）的余额查询密钥；编辑留空保持已保存值。 */
+    credentialId?: string;
     /** 同步周期（分钟）；缺省保留存量值，首次保存默认 5 分钟。 */
     syncIntervalMinutes?: SyncIntervalMinutes;
   }): Promise<{account: ConsoleAccountRow; sync: SyncOutcome}> {
@@ -250,10 +253,12 @@ export class SyncService {
     if (!this.adapters.has(input.providerType)) throw new Error("SYNC_PROVIDER_UNSUPPORTED");
     const consoleBaseUrl = normalizeConsoleBaseUrl(input.consoleBaseUrl);
     const existing = await this.consoleCredentials.find(input.targetId);
+    const existingRow = this.store.getConsoleAccount(input.targetId);
     const username = input.username.trim() || existing?.username || "";
     const password = input.password || existing?.password || "";
     // 中转站（New API / Sub2API）用网页账号登录，必须提供用户名/密码；
-    // 官方预设（DeepSeek、智谱、Kimi 等）走供应商默认 API Key 查询余额，用户名/密码仅作展示标识，可留空。
+    // api_key 余额站点（DeepSeek/智谱/Kimi/OpenRouter）余额经所选 API Key 查询，
+    // 用户名/密码不参与同步（2026-10-11 用户确认分流，表单已改为密钥下拉）。
     const adapter = this.adapters.get(input.providerType)!;
     // 无公开余额接口的官方预设不保存控制台账号：保存后既无法取数又会在调度器反复报错，
     // 统一在保存入口拒绝，避免制造无法自愈的无效配置；存量账号仍可通过删除接口清理。
@@ -262,6 +267,18 @@ export class SyncService {
     }
     const needsWebLogin = adapter.capabilities.auth === "http" || adapter.capabilities.auth === "playwright";
     if (needsWebLogin && (!username || !password)) throw new Error("CONSOLE_ACCOUNT_INCOMPLETE");
+    // api_key 余额站点的查询密钥显式选择并服务端校验归属本目标（与套餐同步同口径），
+    // 不再借启动默认密钥表；编辑留空保持已保存密钥（与用户名/密码编辑语义一致）。
+    let balanceCredentialId: string | null = null;
+    if (adapter.capabilities.auth === "api_key") {
+      const explicit = input.credentialId?.trim() || existingRow?.credentialId || "";
+      if (!explicit) throw new Error("CONSOLE_CREDENTIAL_REQUIRED");
+      const credential = await this.credentialsRepository.find(explicit);
+      if (!credential || credential.targetId !== input.targetId) {
+        throw new Error("CONSOLE_CREDENTIAL_TARGET_MISMATCH");
+      }
+      balanceCredentialId = credential.id;
+    }
     const now = new Date().toISOString();
     const secret: ConsoleAccountSecret = {
       targetId: input.targetId,
@@ -276,7 +293,6 @@ export class SyncService {
       updatedAt: now,
     };
     await this.consoleCredentials.upsert(secret);
-    const existingRow = this.store.getConsoleAccount(input.targetId);
     const syncIntervalMinutes = input.syncIntervalMinutes
       ?? existingRow?.syncIntervalMinutes
       ?? DEFAULT_SYNC_INTERVAL_MINUTES;
@@ -287,7 +303,8 @@ export class SyncService {
       consoleBaseUrl,
       username: secret.username,
       passwordRef: secret.targetId,
-      loginMode: this.adapters.get(input.providerType)!.capabilities.auth,
+      credentialId: balanceCredentialId,
+      loginMode: adapter.capabilities.auth,
       status: "idle",
       lastSyncAt: null,
       lastSyncError: null,
@@ -617,6 +634,7 @@ export class SyncService {
             credentialMasked: secret ? fingerprintForSecret(secret.password) : undefined,
             consoleBaseUrl: account.consoleBaseUrl,
             username: account.username,
+            credentialId: account.credentialId,
             loginMode: account.loginMode,
             status: account.status,
             lastSyncAt: account.lastSyncAt,
@@ -957,8 +975,11 @@ export class SyncService {
       password: secret.password,
       ...(secret.resolvedProvider ? {resolvedProvider: secret.resolvedProvider} : {}),
       credentials: credentials.map(item => ({id: item.id, label: item.label, fingerprintSuffix: item.fingerprintSuffix})),
-      defaultCredentialId: target.development?.defaultCredentials?.codex
-        || target.development?.defaultCredentials?.claude,
+      // 余额查询密钥：账号行显式值优先（api_key 站点保存时已校验归属）；
+      // 存量账号（v53 前无显式值）回退 Agent 默认密钥表按注册表顺序取第一个——
+      // codex/claude 在序首，与旧 `codex || claude` 行为完全一致，同时让只接
+      // opencode/dsh/zcode 的目标不再凭空 MISSING。
+      defaultCredentialId: account.credentialId ?? firstAgentDefaultCredentialId(target),
       allowPlaywright: options.automatic !== false,
       resolveCredential: async credentialId => {
         const token = await this.spawnCredential(["get", credentialId]);

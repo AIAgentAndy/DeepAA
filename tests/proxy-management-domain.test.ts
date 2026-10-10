@@ -1,6 +1,7 @@
 import {describe, expect, test} from "vitest";
 import type {ProxyConfig, ProxyTarget} from "../src/types.js";
 import {
+  eligibleDefaultModelForAgent,
   ensureProxyTargetAgentDefaults,
   firstSidebarTargetId,
   getAgentReadiness,
@@ -408,5 +409,47 @@ describe("代理管理领域规则", () => {
     expect(resolveTargetModelPriceEntry([azureEntry], "gpt-5.6-sol", mapping)).toBeUndefined();
     // 没有供应商映射时绝不跨供应商猜测。
     expect(resolveTargetModelPriceEntry([azureEntry], "gpt-5.6-sol", undefined)).toBeUndefined();
+  });
+
+  test("eligibleDefaultModelForAgent：scope ∩ wire API ∩ 价格映射三条件、正序第一个、可排除自身", () => {
+    // scope 不含该 Agent 的模型不入选；无价格映射的不入选；均合格时取正序第一个。
+    const multi = target({
+      supportedModels: ["gpt-5.6-sol", "gpt-5.6", "gpt-5.6-mini"],
+      supportedModelScopes: {"gpt-5.6-sol": ["codex"], "gpt-5.6": ["codex"], "gpt-5.6-mini": ["claude"]},
+      supportedModelWireApis: {
+        "gpt-5.6-sol": ["responses", "chat_completions"],
+        "gpt-5.6": ["responses"],
+        "gpt-5.6-mini": ["chat_completions"],
+      },
+      pricing: {rateMultiplier: 1, modelVendors: {
+        "gpt-5.6-sol": {vendor: "openai", priceEntryId: "catalog:openai:gpt-5.6-sol"},
+        "gpt-5.6": {vendor: "openai", priceEntryId: "catalog:openai:gpt-5.6"},
+        "gpt-5.6-mini": {vendor: "openai", priceEntryId: "catalog:openai:gpt-5.6-mini"},
+      }},
+    });
+    expect(eligibleDefaultModelForAgent(multi, "codex")).toBe("gpt-5.6-sol");
+    // 排除自身后取下一个合格模型：UI 适用收窄兜底与服务端修复同源依赖该语义。
+    expect(eligibleDefaultModelForAgent(multi, "codex", {excludeModelId: "gpt-5.6-sol"})).toBe("gpt-5.6");
+
+    // wire API 不兼容的模型不入选（codex 只绑 responses；mini 只声明 chat_completions）。
+    const wireMismatch = target({
+      supportedModels: ["gpt-5.6-mini", "gpt-5.6"],
+      supportedModelScopes: {"gpt-5.6-mini": ["codex"], "gpt-5.6": ["codex"]},
+      supportedModelWireApis: {"gpt-5.6-mini": ["chat_completions"], "gpt-5.6": ["responses"]},
+      pricing: {rateMultiplier: 1, modelVendors: {
+        "gpt-5.6-mini": {vendor: "openai", priceEntryId: "catalog:openai:gpt-5.6-mini"},
+        "gpt-5.6": {vendor: "openai", priceEntryId: "catalog:openai:gpt-5.6"},
+      }},
+    });
+    expect(eligibleDefaultModelForAgent(wireMismatch, "codex")).toBe("gpt-5.6");
+
+    // 缺价格映射的模型不入选：全部不合格时返回 undefined（调用方清除默认键）。
+    const noMapping = target({
+      pricing: {rateMultiplier: 1},
+    });
+    expect(eligibleDefaultModelForAgent(noMapping, "codex")).toBeUndefined();
+
+    // 协议能力不支持（目标无 anthropicUrl 但问 claude）：恒 undefined。
+    expect(eligibleDefaultModelForAgent(target(), "claude")).toBeUndefined();
   });
 });

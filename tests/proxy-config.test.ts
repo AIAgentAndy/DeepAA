@@ -845,6 +845,55 @@ test("Agent 级默认模型写入即拒 scope 不符；合法值保留（2026-10
   });
 });
 
+test("存量默认模型随适用收窄自动迁移/清除；显式写坏仍拒（2026-10-11 增量门禁）", async () => {
+  // 场景 A：目标上有另一个合格模型（scope + 价格映射齐备）——收窄后默认被自动替换，
+  // 不再抛 DEFAULT_MODEL_AGENT_SCOPE_MISMATCH（修复器 ensureProxyTargetAgentDefaults 接管）。
+  const store = await emptyStore("proxy-config-default-model-narrow-");
+  await store.updateConfig({targetPatch: {target: target({
+    id: "provider",
+    supportedModels: ["gpt-5.6", "gpt-5.6-sol"],
+    supportedModelScopes: {"gpt-5.6": ["codex"], "gpt-5.6-sol": ["codex"]},
+    pricing: {rateMultiplier: 1, modelVendors: {
+      "gpt-5.6": {vendor: "test", priceEntryId: "test:gpt-5.6"},
+      "gpt-5.6-sol": {vendor: "test", priceEntryId: "test:gpt-5.6-sol"},
+    }},
+    development: {defaultModels: {codex: "gpt-5.6"}},
+  })}});
+  // patch 只收窄 gpt-5.6 的 codex 适用、不带 development：存量默认不再阻断保存，
+  // 而是迁移到首个合格模型 gpt-5.6-sol。
+  await store.updateConfig({
+    targetPatch: {id: "provider", target: {
+      supportedModelScopes: {"gpt-5.6-sol": ["codex"]},
+    }},
+  });
+  expect(store.getConfig().targets[0]?.development?.defaultModels).toEqual({codex: "gpt-5.6-sol"});
+
+  // patch 显式把默认改回已收窄的 gpt-5.6：值相对存量发生变化，仍写入即拒。
+  await expect(store.updateConfig({
+    targetPatch: {id: "provider", target: {
+      development: {defaultModels: {codex: "gpt-5.6"}},
+    }},
+  })).rejects.toThrow("DEFAULT_MODEL_AGENT_SCOPE_MISMATCH");
+
+  // 场景 B：无合格替代（另一模型缺价格映射）——收窄后默认键被清除而非阻断。
+  const storeB = await emptyStore("proxy-config-default-model-narrow-b-");
+  await storeB.updateConfig({targetPatch: {target: target({
+    id: "provider",
+    supportedModels: ["gpt-5.6", "gpt-5.6-mini"],
+    supportedModelScopes: {"gpt-5.6": ["codex"], "gpt-5.6-mini": ["codex"]},
+    pricing: {rateMultiplier: 1, modelVendors: {
+      "gpt-5.6": {vendor: "test", priceEntryId: "test:gpt-5.6"},
+    }},
+    development: {defaultModels: {codex: "gpt-5.6"}},
+  })}});
+  await storeB.updateConfig({
+    targetPatch: {id: "provider", target: {
+      supportedModelScopes: {"gpt-5.6-mini": ["codex"]},
+    }},
+  });
+  expect(storeB.getConfig().targets[0]?.development?.defaultModels).toBeUndefined();
+});
+
 test("目标归一化保留并推断计费通道与供应商族", async () => {
   const store = await emptyStore("proxy-config-billing-channel-");
   const result = await store.updateConfig({
