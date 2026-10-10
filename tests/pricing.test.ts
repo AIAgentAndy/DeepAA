@@ -623,6 +623,33 @@ describe("模型价格表与费用换算", () => {
     await expect(readPricingConfig(dataDir)).rejects.toThrow("本地模型价格配置不是合法 JSON");
   });
 
+  test("价格配置按 mtime 指纹缓存：未变文件命中共享对象，外部改写后失效", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "pricing-cache-"));
+    const custom = {
+      version: 1 as const,
+      currency: "USD",
+      unit: "per_million_tokens",
+      models: [{ id: "cache-hit", match: "cache-model", vendor: "Test", input: 1, output: 2 }],
+    };
+    await writePricingConfig(dataDir, custom);
+    const first = await readPersistedPricingConfig(dataDir);
+    const second = await readPersistedPricingConfig(dataDir);
+    expect(second).toBe(first);
+
+    // 模拟绕过 writePricingConfig 的外部改写（如另一进程）：指纹变化必须失效缓存。
+    // 内容长度刻意不同，避免同 mtime 粒度 + 同 size 的极端假命中。
+    const pricingPath = join(dataDir, "config", "model-pricing.json");
+    await writeFile(pricingPath, JSON.stringify({
+      version: 2,
+      currency: "USD",
+      unit: "per_million_tokens",
+      models: [{id: "external-write", vendor: "Test", runtimeModelId: "ext-model", patterns: ["ext-model"], pricing: {input: 9, output: 9}}],
+    }), "utf-8");
+    const third = await readPersistedPricingConfig(dataDir);
+    expect(third?.models[0]?.id).toBe("external-write");
+    expect(third).not.toBe(first);
+  });
+
   test("价格模型 upsert 只按供应商与运行时模型更新，不删除未提交的历史模型", () => {
     const current = normalizePricingConfig({
       version: 2,

@@ -40,6 +40,18 @@ const PRICING_CATALOG_LIMIT = 200;
 const PRICING_SEARCH_DEBOUNCE_MS = 250;
 const OPEN_PRICING_SETTINGS_EVENT = "deepaa:open-pricing-settings";
 
+/** 首帧后低优先级任务调度：requestIdleCallback 缺省时退化为短超时。
+ *  服务端所有 API 共用单进程事件循环，非关键请求（侧栏概览、价格目录、
+ *  非选中供应商凭据）与首帧关键请求（status / config-sync）同时发出时互相
+ *  排队；idle 派发让基础信息页签先拿到数据再补齐增强信息。 */
+function scheduleIdle(task: () => void): void {
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(() => task(), {timeout: 1500});
+    return;
+  }
+  window.setTimeout(task, 300);
+}
+
 const TABS = [
   {id: "info", label: "基础信息"},
   {id: "resources", label: "密钥与模型"},
@@ -77,6 +89,8 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
   // 而带上过期 revision / nonce（否则会出现 CONFIG_REVISION_CONFLICT / LAUNCH_NONCE_INVALID）。
   const persistedConfigRef = useRef(initialConfig);
   const mutationNonceRef = useRef("");
+  /** 价格目录是否完成过首次加载（成功或失败）：逐模型补拉与初始 idle 派发的门控。 */
+  const [pricingCatalogBootstrapped, setPricingCatalogBootstrapped] = useState(false);
   // 写操作串行队列：配置保存与 CLI 同步共用单次 nonce，并发请求会导致
   // 后到者 LAUNCH_NONCE_INVALID（非必现的「操作凭证已失效」），这里强制逐个执行。
   const mutationQueueRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -246,12 +260,14 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
     void loadCliSyncStatus(initialTargetId);
     // 加载所有代理供应商的凭据：左侧「各 Agent 默认入口」是独立列表，
     // 其“Agent 是否有供应商支持”的判定需要全量凭据，不能随选中供应商联动。
-    for (const target of initialConfig.targets) {
-      void loadCredentials(target.id);
-    }
-    for (const connection of Object.values(initialConfig.agentConnections)) {
-      if (connection?.defaultTargetId) void loadCredentials(connection.defaultTargetId);
-    }
+    // 批量接口一次拉齐（供应商 + 各 Agent 默认供应商去重），替代逐目标 N 次请求；
+    // 非首帧关键路径，idle 派发让 status / config-sync 先行。
+    scheduleIdle(() => void loadCredentialsBatch([...new Set([
+      ...initialConfig.targets.map(target => target.id),
+      ...Object.values(initialConfig.agentConnections)
+        .map(connection => connection?.defaultTargetId)
+        .filter((id): id is string => Boolean(id)),
+    ])]));
     // 初始配置固定来自服务端；后续变更由显式 API 操作驱动。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -263,7 +279,8 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
    */
   const overviewTargetKey = config.targets.map(target => target.id).join(",");
   useEffect(() => {
-    void loadSyncOverview(overviewTargetKey ? overviewTargetKey.split(",") : []);
+    // 侧栏徽标是增强信息且服务端有短 TTL 缓存：idle 派发，不与首帧关键请求抢事件循环。
+    scheduleIdle(() => void loadSyncOverview(overviewTargetKey ? overviewTargetKey.split(",") : []));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overviewTargetKey]);
 
@@ -289,8 +306,13 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
   }
 
   // 价格中心搜索防抖：搜索词变化后延迟请求服务端，避免每次击键都发请求；
-  // 初始空搜索词在挂载后自动加载价格中心前 200 条，供「添加支持的模型」选择。
+  // 初始空搜索词在挂载后 idle 派发加载价格中心前 200 条，供「添加支持的模型」选择——
+  // 它不在基础信息首帧关键路径上，不与 status / config-sync 抢服务端事件循环。
   useEffect(() => {
+    if (!pricingSearch && !pricingCatalogBootstrapped) {
+      scheduleIdle(() => void loadPricingCatalog(pricingSearch));
+      return;
+    }
     const timer = window.setTimeout(() => {
       void loadPricingCatalog(pricingSearch);
     }, PRICING_SEARCH_DEBOUNCE_MS);
@@ -310,6 +332,9 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
 
   useEffect(() => {
     if (!selectedTarget || !selectedTargetPersisted) return;
+    // 首次价格目录加载完成前不逐模型补拉：目录本体大概率已覆盖这些条目，
+    // 空列表时触发只会与目录加载重复请求并抢占首帧事件循环。
+    if (!pricingCatalogBootstrapped) return;
     const missingPriceQueries = selectedTarget.supportedModels
       .map(modelId => {
         const mapping = selectedTarget.pricing?.modelVendors?.[modelId];
@@ -337,7 +362,7 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
       }
     })().catch(() => undefined);
     return () => {cancelled = true;};
-  }, [pricingModels, selectedTarget, selectedTargetPersisted]);
+  }, [pricingModels, pricingCatalogBootstrapped, selectedTarget, selectedTargetPersisted]);
 
   function selectTarget(targetId: string, createdAt?: string) {
     // 草稿与已保存供应商可能路由 ID 撞名：按 createdAt 区分身份。
@@ -1051,6 +1076,22 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
     return items;
   }
 
+  /** 批量加载多供应商凭据（首屏一次请求替代逐目标 N 次）。失败静默：
+   *  单目标路径在选中供应商切换时仍会补拉，这里不弹提示不打断主流程。 */
+  async function loadCredentialsBatch(targetIds: readonly string[]): Promise<void> {
+    const ids = [...new Set(targetIds.filter(Boolean))];
+    if (ids.length === 0) return;
+    try {
+      const response = await fetch(`/api/development-launch/credentials?targets=${encodeURIComponent(ids.join(","))}`, {cache: "no-store"});
+      if (!response.ok) return;
+      const body = await response.json() as {itemsByTarget?: Record<string, CredentialItem[]>};
+      if (!body.itemsByTarget) return;
+      setCredentialsByTarget(current => ({...current, ...body.itemsByTarget}));
+    } catch {
+      // 网络层失败静默：选中目标的重拉链路兜底。
+    }
+  }
+
   async function loadSyncStatus(targetId: string): Promise<void> {
     try {
       const response = await fetch(`/api/proxy-sync/status?target=${encodeURIComponent(targetId)}`, {cache: "no-store"});
@@ -1097,6 +1138,7 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
       const page = await response.json() as PricingCatalogPage;
       setPricingModels(page.items);
     } finally {
+      setPricingCatalogBootstrapped(true);
       setPricingModelLoading(false);
     }
   }

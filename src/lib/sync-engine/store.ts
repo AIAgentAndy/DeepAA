@@ -126,10 +126,15 @@ export interface BoundedSyncRows<T> {
   limited: boolean;
 }
 
-const BALANCE_RETENTION_DAYS = 90;
+/**
+ * 快照保留期统一 35 天：最深的消费方是额度差分回填的 30 天回看
+ * （plan-estimate/backfill.ts 的 PLAN_ESTIMATE_BACKFILL_LOOKBACK_MS），
+ * 余额/状态类读取方都只取最新一条；5 天缓冲覆盖时钟边界与月窗 reset 边缘。
+ */
+const BALANCE_RETENTION_DAYS = 35;
 const RATE_RETENTION_PER_CREDENTIAL = 200;
 const SYNC_RUN_RETENTION_PER_ACCOUNT = 200;
-const PLAN_QUOTA_RETENTION_DAYS = 90;
+const PLAN_QUOTA_RETENTION_DAYS = 35;
 
 const CONSOLE_ACCOUNT_COLUMNS = `
   id, target_id AS targetId,
@@ -546,30 +551,29 @@ export class SyncStore {
       ? ""
       : "AND credential_id IS @credentialId";
     const params = {targetId, credentialId: options.credentialId ?? null};
-    const rankedSql = `
-      SELECT *,
-        ROW_NUMBER() OVER (
-          PARTITION BY credential_id, provider_type, COALESCE(plan_family, ''), window_label
-          ORDER BY captured_at DESC, id DESC
-        ) AS rowNumber
-      FROM plan_quota_snapshots
-      WHERE target_id = @targetId ${credentialFilter}
-    `;
-    const candidateCount = this.db.prepare(`
-      SELECT COUNT(*) FROM (${rankedSql}) WHERE rowNumber = 1
-    `).pluck().get(params) as number;
+    // 单趟窗口查询：外层 COUNT(*) OVER () 在 rowNumber=1 过滤后、LIMIT 截断前求值，
+    // candidateCount 与旧「计数 + 取行」双扫语义一致（分区总数，可大于 limit）。
+    // 窗口排序成本只付一次——此前计数与取行各跑一遍完整窗口扫描。
     const rows = this.db.prepare(`
-      SELECT ${PLAN_QUOTA_COLUMNS}
-      FROM (${rankedSql})
+      SELECT ${PLAN_QUOTA_COLUMNS}, COUNT(*) OVER () AS candidateCount
+      FROM (
+        SELECT *,
+          ROW_NUMBER() OVER (
+            PARTITION BY credential_id, provider_type, COALESCE(plan_family, ''), window_label
+            ORDER BY captured_at DESC, id DESC
+          ) AS rowNumber
+        FROM plan_quota_snapshots
+        WHERE target_id = @targetId ${credentialFilter}
+      )
       WHERE rowNumber = 1
       ORDER BY captured_at DESC,
         CASE window_label WHEN '5h' THEN 0 WHEN 'weekly' THEN 1 WHEN 'monthly' THEN 2 ELSE 3 END,
         id DESC
       LIMIT @limit
-    `).all({...params, limit: safeLimit + 1}) as PlanQuotaSnapshotRow[];
+    `).all({...params, limit: safeLimit + 1}) as Array<PlanQuotaSnapshotRow & {candidateCount: number}>;
     return {
-      items: rows.slice(0, safeLimit),
-      candidateCount,
+      items: rows.slice(0, safeLimit).map(({candidateCount: _count, ...item}) => item),
+      candidateCount: rows.length > 0 ? Number(rows[0]!.candidateCount) : 0,
       processedCount: rows.length,
       limited: rows.length > safeLimit,
     };

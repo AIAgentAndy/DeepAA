@@ -198,6 +198,14 @@ export class SyncService {
   private readonly adapters = new Map<SyncProviderType, SyncConnector>();
   private readonly planAdapters: Map<PlanProviderType, PlanSyncConnector>;
   private readonly loadPlanCatalog: SyncServiceOptions["loadPlanCatalog"];
+  /** 侧栏概览短 TTL 缓存（见 overview 注释）；键为目标 id 列表的规范化拼接。 */
+  private static readonly OVERVIEW_CACHE_TTL_MS = 30_000;
+  private overviewCache: {key: string; payload: SyncOverviewPayload; at: number} | undefined;
+
+  /** 任何会改变 overview 可见数据（账号/余额/套餐快照/同步状态）的写路径调用。 */
+  private invalidateOverviewCache(): void {
+    this.overviewCache = undefined;
+  }
 
   constructor(options: SyncServiceOptions) {
     this.store = new SyncStore(options.db);
@@ -289,6 +297,7 @@ export class SyncService {
       syncIntervalMinutes,
     };
     this.store.upsertConsoleAccount(row);
+    this.invalidateOverviewCache();
     // 保存后立即执行首次同步：结果随响应返回给页面提醒；失败不回滚保存。
     const sync = await this.runSyncOnce(input.targetId);
     return {account: this.store.getConsoleAccount(input.targetId)!, sync};
@@ -297,6 +306,7 @@ export class SyncService {
   async removeConsoleAccount(targetId: string): Promise<boolean> {
     const removed = await this.consoleCredentials.remove(targetId);
     const removedRow = this.store.removeConsoleAccount(targetId);
+    this.invalidateOverviewCache();
     return removed || removedRow;
   }
 
@@ -391,6 +401,7 @@ export class SyncService {
         ?? existing?.syncIntervalMinutes
         ?? DEFAULT_SYNC_INTERVAL_MINUTES,
     });
+    this.invalidateOverviewCache();
     // 保存后立即执行首次同步：结果随响应返回给页面提醒；失败不回滚保存。
     const sync = await this.runPlanSyncOnce(input.targetId);
     return {config: this.store.getPlanSyncConfig(input.targetId)!, sync};
@@ -430,6 +441,7 @@ export class SyncService {
     if (expectedRevision !== config.revision) throw new Error("CONFIG_REVISION_CONFLICT");
     const existing = this.store.getPlanSyncConfig(targetId);
     const removed = this.store.removePlanSyncConfig(targetId);
+    this.invalidateOverviewCache();
     for (const reference of [existing?.accessKeyRef, existing?.secretKeyRef]) {
       if (reference) await this.spawnCredential(["delete", reference]).catch(() => undefined);
     }
@@ -789,6 +801,9 @@ export class SyncService {
         finishedAt: new Date().toISOString(),
       });
       throw error;
+    } finally {
+      // 同步结束（成功或失败）都会写状态/快照：概览缓存必须让位给新数据。
+      this.invalidateOverviewCache();
     }
   }
 
@@ -1035,6 +1050,9 @@ export class SyncService {
         finishedAt: new Date().toISOString(),
       });
       throw error;
+    } finally {
+      // 同步结束（成功或失败）都会写状态/快照：概览缓存必须让位给新数据。
+      this.invalidateOverviewCache();
     }
   }
 
@@ -1383,9 +1401,19 @@ export class SyncService {
    *   `plan_quota_snapshots`（最近若干时间窗）、`sync_runs`（只解析最新一条 ok run）。
    * 目标数上限 `MAX_OVERVIEW_TARGETS`；单目标时间窗上限 `OVERVIEW_PLAN_WINDOW_LIMIT`。
    * 绝不在本方法里打开 raw capture / blob，也不触发任何网络请求。
+   *
+   * 结果带短 TTL 缓存：多目标的同步 SQLite 读（窗口函数）在首屏是最大 CPU 块，
+   * 而数据本身按分钟级周期变化（同步任务默认 5 分钟）。写路径（同步完成 /
+   * 账号与套餐配置增删改）主动失效，TTL 兜底旁路写入；负载只含时间戳与计数，
+   * 路由层仅 JSON 序列化不改写，直接共享返回。
    */
   async overview(targetIds: readonly string[]): Promise<SyncOverviewPayload> {
     const requested = [...new Set(targetIds.map(id => id.trim()).filter(Boolean))];
+    const cacheKey = requested.join(",");
+    const cached = this.overviewCache;
+    if (cached && cached.key === cacheKey && Date.now() - cached.at < SyncService.OVERVIEW_CACHE_TTL_MS) {
+      return cached.payload;
+    }
     const limited = requested.length > MAX_OVERVIEW_TARGETS;
     const ids = requested.slice(0, MAX_OVERVIEW_TARGETS);
     const targets: SyncOverviewTargetSummary[] = [];
@@ -1437,7 +1465,9 @@ export class SyncService {
         rateUnconfirmedLabels: rateUnconfirmed.map(item => item.label),
       });
     }
-    return {targets, processedCount: targets.length, limited};
+    const payload: SyncOverviewPayload = {targets, processedCount: targets.length, limited};
+    this.overviewCache = {key: cacheKey, payload, at: Date.now()};
+    return payload;
   }
 
   private async runAdapter(

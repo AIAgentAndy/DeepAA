@@ -910,8 +910,9 @@ describe("代理管理 V3 页面结构", () => {
     expect(page).toContain("/api/development-launch/credentials/purge");
     expect(page).toContain("confirmDialog({title: \"删除供应商\"");
     expect(page).toContain("供应商「${selectedTarget.name || selectedTarget.id}」已删除。");
-    // 挂载时加载全部目标凭据，Agent 列表不随选中目标联动。
-    expect(page).toContain("for (const target of initialConfig.targets)");
+    // 挂载时批量加载全部目标凭据（targets 批量接口一次拉齐），Agent 列表不随选中目标联动。
+    expect(page).toContain("loadCredentialsBatch");
+    expect(page).toContain("initialConfig.targets.map(target => target.id)");
     expect(page).toContain("不能随选中供应商联动");
     // 预设：国产厂商带 Anthropic 协议端点。
     expect(presets).toContain("https://api.deepseek.com/anthropic");

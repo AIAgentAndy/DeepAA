@@ -1771,6 +1771,54 @@ describe("密钥无有效倍率：只做黄标提醒，不再拆链", () => {
     }
   });
 
+  test("概览结果短 TTL 缓存：同参数命中共享负载，写路径立即失效", async () => {
+    const fixture = await createFixture(sub2FetchStub("sec****key", false));
+    try {
+      const base = fixture.configStore.getConfig();
+      await fixture.configStore.updateConfig({
+        expectedRevision: base.revision,
+        targetPatch: {id: "target-1", target: {
+          ...base.targets[0]!,
+          openaiUrl: "https://gateway.example/v1",
+          presetId: undefined,
+        }},
+      });
+      fixture.service.store.upsertConsoleAccount({
+        id: "acct-cache", targetId: "target-1", providerType: "sub2api",
+        consoleBaseUrl: "https://relay.example.com", username: "u", passwordRef: "r",
+        loginMode: "http", status: "idle", lastSyncAt: null, lastSyncError: null,
+        consecutiveAutoFailures: 0,
+        consecutiveFailureKind: null,
+        nextSyncAt: null, syncIntervalMinutes: 5,
+      });
+      await writeFile(join(fixture.root, "console-credentials.json"), JSON.stringify({
+        version: 1,
+        accounts: [{targetId: "target-1", providerType: "sub2api",
+          consoleBaseUrl: "https://relay.example.com", username: "u", password: "p",
+          updatedAt: new Date().toISOString()}],
+      }), "utf8");
+      await fixture.service.runSync("target-1", {automatic: false});
+
+      const first = await fixture.service.overview(["target-1"]);
+      // TTL 内同参数直接复用共享负载（路由层只做 JSON 序列化）。
+      const second = await fixture.service.overview(["target-1"]);
+      expect(second).toBe(first);
+      // 参数不同（目标集合变化）不命中，各自重建。
+      const widened = await fixture.service.overview(["target-1", "target-missing"]);
+      expect(widened).not.toBe(first);
+      expect(widened.processedCount).toBe(2);
+
+      // 写路径（删除控制台账号）立即失效：下一次读取不再返回旧快照。
+      await fixture.service.removeConsoleAccount("target-1");
+      const afterRemoval = await fixture.service.overview(["target-1"]);
+      expect(afterRemoval).not.toBe(first);
+      expect(afterRemoval.targets[0]?.hasConsoleAccount).toBe(false);
+      expect(afterRemoval.targets[0]?.balance).toBeNull();
+    } finally {
+      fixture.db.close();
+    }
+  });
+
   test("概览接口目标数超上限时截断并标记 limited", async () => {
     const fixture = await createFixture();
     try {

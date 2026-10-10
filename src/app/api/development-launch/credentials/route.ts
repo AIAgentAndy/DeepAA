@@ -10,11 +10,23 @@ import {
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+/** 批量 targets 参数的目标数上限：防御性收紧，当前侧栏一次最多十几个供应商。 */
+const MAX_BATCH_TARGETS = 50;
+
 export async function GET(request: Request) {
   try {
-    const targetId = new URL(request.url).searchParams.get("targetId");
+    const url = new URL(request.url);
+    // 批量读取（供应商管理首屏一次拉全部供应商，替代逐目标 N 次请求）；
+    // 响应形状与单目标不同：itemsByTarget 按目标分组。
+    const targetsParam = url.searchParams.get("targets");
+    if (targetsParam !== null) {
+      const targetIds = targetsParam.split(",").map(value => value.trim()).filter(Boolean).slice(0, MAX_BATCH_TARGETS);
+      if (targetIds.length === 0) throw new Error("INVALID_REQUEST");
+      return Response.json({itemsByTarget: await getDevelopmentLaunchService().listCredentialsForTargets(targetIds)});
+    }
+    const targetId = url.searchParams.get("targetId");
     if (!targetId) throw new Error("INVALID_REQUEST");
-    return Response.json({ items: await getDevelopmentLaunchService().listCredentials(targetId) });
+    return Response.json({items: await getDevelopmentLaunchService().listCredentials(targetId)});
   } catch (error) {
     return developmentLaunchErrorResponse(error);
   }

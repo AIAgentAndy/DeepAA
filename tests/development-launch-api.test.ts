@@ -548,6 +548,33 @@ describe("development launch service", () => {
     })).rejects.toThrow("TARGET_DISABLED");
   });
 
+  test("批量凭据读取一次分组返回，未知目标与单目标接口同语义拒绝", async () => {
+    const fixture = await serviceFixture();
+    expect(await fixture.service.listCredentials("disabled-target")).toEqual([]);
+    const createdOpenai = await fixture.service.createCredential({
+      targetId: "openai-target",
+      label: "OpenAI 密钥",
+      secret: "sk-batch-openai",
+      agentScope: ["codex"],
+    });
+    const createdDisabled = await fixture.service.createCredential({
+      targetId: "disabled-target",
+      label: "预配置密钥",
+      secret: "sk-batch-disabled",
+      agentScope: ["codex"],
+    });
+
+    const grouped = await fixture.service.listCredentialsForTargets(["openai-target", "disabled-target"]);
+    expect(grouped["openai-target"]?.map(item => item.id)).toEqual([createdOpenai.id]);
+    expect(grouped["disabled-target"]?.map(item => item.id)).toEqual([createdDisabled.id]);
+    // 重复与空白目标 ID 去重后仍只返回请求过的键。
+    const deduped = await fixture.service.listCredentialsForTargets(["openai-target", "openai-target", " "]);
+    expect(Object.keys(deduped)).toEqual(["openai-target"]);
+
+    await expect(fixture.service.listCredentialsForTargets(["openai-target", "missing-target"]))
+      .rejects.toThrow("TARGET_NOT_FOUND");
+  });
+
   test("默认链配置保存失败时回滚刚创建的凭据元数据", async () => {
     const fixture = await serviceFixture({configUpdateFails: true});
 

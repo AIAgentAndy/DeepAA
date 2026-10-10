@@ -362,6 +362,25 @@ export class DevelopmentLaunchService {
     return await this.credentials.list(targetId);
   }
 
+  /**
+   * 批量读取多供应商凭据（供应商管理侧栏首屏）：一次配置 reload + 一次元数据
+   * 文件读取后按目标分组，替代逐目标 N 次 /credentials?targetId= 请求排队。
+   * 含未知目标时抛 TARGET_NOT_FOUND，与单目标接口语义一致。
+   */
+  async listCredentialsForTargets(targetIds: readonly string[]): Promise<Record<string, DevelopmentCredentialMetadata[]>> {
+    await this.configProvider.reload();
+    const config = this.configProvider.getConfig();
+    const requested = [...new Set(targetIds.map(id => id.trim()).filter(Boolean))];
+    const knownTargetIds = new Set(config.targets.map(target => target.id));
+    if (requested.some(id => !knownTargetIds.has(id))) throw new Error("TARGET_NOT_FOUND");
+    const grouped: Record<string, DevelopmentCredentialMetadata[]> = {};
+    for (const id of requested) grouped[id] = [];
+    for (const item of await this.credentials.list()) {
+      grouped[item.targetId]?.push(item);
+    }
+    return grouped;
+  }
+
   async createCredential(input: {
     targetId: string;
     label: string;

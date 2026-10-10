@@ -662,7 +662,7 @@ describe("sync engine store", () => {
     }
   });
 
-  test("保留策略：余额超 90 天清理、倍率与同步记录按上限保留", async () => {
+  test("保留策略：余额超 35 天清理、倍率与同步记录按上限保留", async () => {
     const root = await mkdtemp(join(tmpdir(), "sync-store-"));
     tempRoots.push(root);
     const db = openDeepaaDatabase({dataDir: root});
@@ -698,6 +698,90 @@ describe("sync engine store", () => {
       });
       store.prune("2026-08-01T00:00:00.000Z");
       expect(store.latestBalance("t2")).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  test("保留策略：余额与套餐快照 35 天边界（30 天保留、40 天清理）", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sync-store-retention-"));
+    tempRoots.push(root);
+    const db = openDeepaaDatabase({dataDir: root});
+    try {
+      const store = new SyncStore(db);
+      store.upsertConsoleAccount({
+        id: "console_retention",
+        targetId: "t_retention",
+        providerType: "newapi",
+        consoleBaseUrl: "https://console.example.com",
+        username: "u",
+        passwordRef: "t_retention",
+        loginMode: "http",
+        status: "idle",
+        lastSyncAt: null,
+        lastSyncError: null,
+        consecutiveAutoFailures: 0,
+        consecutiveFailureKind: null,
+        nextSyncAt: null,
+        syncIntervalMinutes: 5,
+      });
+      // 相对 prune 时刻 2026-07-27：30 天前（保留）与 40 天前（清理）各一条。
+      for (const [amount, capturedAt] of [
+        [30, "2026-06-27T00:00:00.000Z"],
+        [40, "2026-06-17T00:00:00.000Z"],
+      ] as const) {
+        store.insertBalance({
+          targetId: "t_retention",
+          consoleAccountId: "console_retention",
+          providerType: "newapi",
+          currency: "USD",
+          amount,
+          quota: null,
+          usedQuota: null,
+          source: "newapi",
+          rawJson: "{}",
+          capturedAt,
+        });
+      }
+      store.upsertPlanSyncConfig({
+        id: "plan_retention",
+        targetId: "t_retention",
+        providerType: "kimi-coding",
+        credentialId: "cred-1",
+        accessKeyRef: null,
+        secretKeyRef: null,
+        status: "idle",
+        lastSyncAt: null,
+        lastSyncError: null,
+        consecutiveAutoFailures: 0,
+        consecutiveFailureKind: null,
+        nextSyncAt: null,
+        syncIntervalMinutes: 30,
+      });
+      for (const [used, capturedAt] of [
+        [30, "2026-06-27T00:00:00.000Z"],
+        [40, "2026-06-17T00:00:00.000Z"],
+      ] as const) {
+        store.insertPlanQuotaSnapshots([{
+          targetId: "t_retention",
+          planSyncId: "plan_retention",
+          consoleAccountId: null,
+          credentialId: "cred-1",
+          providerType: "kimi-coding",
+          planName: null,
+          windowLabel: "monthly",
+          used,
+          total: 100,
+          unit: "requests",
+          resetAt: null,
+          rawJson: "{}",
+          capturedAt,
+        }]);
+      }
+
+      store.prune("2026-07-27T00:00:00.000Z");
+      expect(store.latestBalance("t_retention")?.amount).toBe(30);
+      expect(store.latestPlanQuota("t_retention", "cred-1", "monthly")?.used).toBe(30);
     } finally {
       db.close();
     }

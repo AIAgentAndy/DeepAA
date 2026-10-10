@@ -2702,15 +2702,36 @@ function userPricingPath(dataDir: string): string {
 /**
  * 严格读取已经持久化的价格目录。只有文件不存在返回 undefined；损坏、超限和权限错误必须上抛，
  * 供自动导入区分“首次初始化”和“现有配置不可安全覆盖”。
+ *
+ * 结果按「文件 mtimeNs + size」指纹缓存：首屏多个接口（config-sync、价格目录、fx 快照）
+ * 各自全量读取几 MB 的 model-pricing.json 属纯重复 CPU。写入方全部走 atomicWritePricingFile
+ * （重命名新文件，mtime/size 必变）并主动清缓存；跨进程写由指纹自然失效兜底。
+ * 缓存返回共享对象：normalizePricingConfig 为纯函数（map 出新对象），调用方按只读契约使用。
  */
+interface PricingConfigCacheEntry {
+  mtimeNs: string;
+  size: number;
+  config: PricingConfigV2;
+}
+const pricingConfigCache = new Map<string, PricingConfigCacheEntry>();
+
 export async function readPersistedPricingConfig(dataDir: string): Promise<PricingConfigV2 | undefined> {
   const path = userPricingPath(dataDir);
+  let fingerprint: {mtimeNs: string; size: number};
   let raw: string;
   try {
-    raw = (await readPricingFileBounded(path)).toString("utf-8");
+    const read = await readPricingFileBounded(path);
+    fingerprint = {mtimeNs: read.mtimeNs.toString(), size: read.size};
+    raw = read.buffer.toString("utf-8");
   } catch (error) {
     if (isFileNotFound(error)) return undefined;
     throw error;
+  }
+
+  const cacheKey = resolve(path);
+  const cached = pricingConfigCache.get(cacheKey);
+  if (cached && cached.mtimeNs === fingerprint.mtimeNs && cached.size === fingerprint.size) {
+    return cached.config;
   }
 
   let parsed: unknown;
@@ -2722,7 +2743,9 @@ export async function readPersistedPricingConfig(dataDir: string): Promise<Prici
   if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as { models?: unknown }).models)) {
     throw new Error("本地模型价格配置缺少 models 数组，已保留原文件。");
   }
-  return normalizePricingConfig(parsed);
+  const config = normalizePricingConfig(parsed);
+  pricingConfigCache.set(cacheKey, {...fingerprint, config});
+  return config;
 }
 
 /** 读取价格配置：只有文件不存在时回退内置默认；损坏、超限或权限错误必须显式上抛。 */
@@ -2757,12 +2780,13 @@ export async function withPricingConfigMutation<T>(
   }
 }
 
-async function readPricingFileBounded(filePath: string): Promise<Buffer> {
+async function readPricingFileBounded(filePath: string): Promise<{buffer: Buffer; mtimeNs: bigint; size: number}> {
   const handle = await open(/* turbopackIgnore: true */ filePath, "r");
   try {
-    const before = await handle.stat();
+    // bigint 统计拿到 ns 级 mtime（缓存指纹用）；before/after 同口径可比。
+    const before = await handle.stat({bigint: true});
     if (!before.isFile()) throw new Error(`模型价格配置不是普通文件：${filePath}`);
-    if (before.size > MAX_PRICING_CONFIG_BYTES) {
+    if (before.size > BigInt(MAX_PRICING_CONFIG_BYTES)) {
       throw new Error(`模型价格配置超过 8 MiB 安全上限：${filePath}`);
     }
     const buffer = Buffer.alloc(Number(before.size));
@@ -2772,14 +2796,14 @@ async function readPricingFileBounded(filePath: string): Promise<Buffer> {
       if (bytesRead === 0) break;
       offset += bytesRead;
     }
-    const after = await handle.stat();
-    if (after.size > MAX_PRICING_CONFIG_BYTES) {
+    const after = await handle.stat({bigint: true});
+    if (after.size > BigInt(MAX_PRICING_CONFIG_BYTES)) {
       throw new Error(`模型价格配置超过 8 MiB 安全上限：${filePath}`);
     }
     if (after.size !== before.size || offset !== buffer.length) {
       throw new Error(`模型价格配置在读取期间发生变化：${filePath}`);
     }
-    return buffer;
+    return {buffer, mtimeNs: after.mtimeNs, size: Number(after.size)};
   } finally {
     await handle.close();
   }
@@ -2797,6 +2821,8 @@ async function atomicWritePricingFile(filePath: string, content: string): Promis
     await handle.close();
     handle = undefined;
     await rename(temporaryPath, filePath);
+    // 写后主动清读缓存（mtime 指纹兜底跨进程写；这里保证同进程写后立即可见）。
+    pricingConfigCache.delete(resolve(filePath));
     await syncDirectoryBestEffort(directory);
   } finally {
     await handle?.close().catch(() => undefined);
