@@ -32,9 +32,11 @@
  * 冷启动整文件解析按「每轮文件数 + 每轮字节」双预算分摊多轮，绝不整目录一次物化。
  */
 
-import {closeSync, openSync, readSync, readdirSync, statSync} from "node:fs";
+import {closeSync, fstatSync, openSync, readSync, readdirSync, statSync} from "node:fs";
 import {homedir} from "node:os";
 import {join} from "node:path";
+import {BoundedLruMap} from "../bounded-lru";
+import {openSeenProbeDatabase, probeSeenExchangeIds} from "../seen-probe";
 import type {
   AgentLocalSourceAdapter,
   LocalExchangeDetail,
@@ -43,6 +45,8 @@ import type {
   LocalSourceStatus,
   LocalUsageBatch,
   LocalUsageRecord,
+  PendingBatchQuery,
+  PendingBatchResult,
   PendingImportCandidate,
 } from "../types";
 
@@ -60,6 +64,16 @@ const CODEX_PROTOCOL_PATH = "/responses";
 /** 冷启动预算：单轮最多新解析的文件数 / 字节数（增量续析不受文件数预算约束）。 */
 const COLD_PARSE_FILES_PER_ROUND = 4;
 const COLD_PARSE_BYTES_PER_ROUND = 8 * 1024 * 1024;
+
+/**
+ * 正文缓存字节上限（2026-10-10 A 修复）：扫描态只保留元数据（records /
+ * recordDetails / 计数索引），items 正文进入进程级 LRU、按需在 readExchangeDetail
+ * 从磁盘重析——常驻内存与 30 天语料规模由此解耦。对齐 dsh 正文缓存 96MiB 的设计，
+ * codex 回放正文更肥，取更紧的 64MiB。
+ */
+const CONTENT_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+/** seen 反联探针单块候选数（每候选 2 键 → 800 个 IN 参数，主键索引查询）。 */
+const SEEN_PROBE_CHUNK = 400;
 
 /**
  * 会话内有序 item（wire 原始形态 + 解析出的方向/角色）。
@@ -88,6 +102,11 @@ interface RecordDetail {
   contextEnd: number;
   /** 该请求的响应 = items 在 outputIndices 下标处的切片。 */
   outputIndices: readonly number[];
+  /**
+   * 解析时点的 items 总数（重析完整性守卫，A 修复）：从磁盘重建的 items 少于该值
+   * 即判重建失败（文件被截短/轮转），绝不产出截断的上下文回放。
+   */
+  itemCount: number;
 }
 
 /** 解析进度缓存：rollout append-only，offset 只前进；半行跨轮缓冲。 */
@@ -100,7 +119,12 @@ interface RolloutFileCache {
   tail: Buffer;
   records: LocalUsageRecord[];
   recordDetails: Map<string, RecordDetail>;
-  items: SessionItem[];
+  /**
+   * 已消费的 item 总数（单调计数，A 修复）：扫描态不再保留 items 正文——索引
+   * （contextEnd / outputIndices）只依赖计数与方向，正文由 readExchangeDetail 按需
+   * 从磁盘重析并进入有界 LRU。
+   */
+  itemCount: number;
   /** 自上一 token_count 以来累积的 output 侧 item 下标（items 数组下标）。 */
   pendingOutputIndices: number[];
   /**
@@ -126,15 +150,144 @@ interface RolloutFileCache {
   lastActivityMs: number;
 }
 
-export function createCodexLocalSourceAdapter(options: {cliDir?: string} = {}): AgentLocalSourceAdapter {
+export function createCodexLocalSourceAdapter(options: {cliDir?: string; contentCacheMaxBytes?: number} = {}): AgentLocalSourceAdapter {
   const cliDir = options.cliDir ?? process.env.CODEX_CLI_DIR ?? join(homedir(), ".codex");
   const sessionsDir = join(cliDir, "sessions");
   const caches = new Map<string, RolloutFileCache>();
+  /** 正文 LRU（fileKey → 可续析条目）：字节预算有界，命中触达、超限逐出最旧。 */
+  const contentLru = new BoundedLruMap<string, ContentCacheEntry>({
+    maxBytes: options.contentCacheMaxBytes ?? CONTENT_CACHE_MAX_BYTES,
+    bytesOf: estimateContentEntryBytes,
+  });
+  /** 缓存内容版本（任何文件解析到新字节即 +1）：有序候选列表的失效判据。 */
+  let cachesVersion = 0;
+  let orderedCache: {version: number; list: PendingImportCandidate[]} | undefined;
+
+  /** 扫描 + 增量续析（readPendingCandidates / readPendingBatch 共用入口）。 */
+  const scanAndIndex = (floorEpochMs: number): void => {
+    const files = listRolloutFiles(sessionsDir, floorEpochMs);
+    let coldFiles = 0;
+    let coldBytes = 0;
+    let parsedAnyBytes = false;
+    // 文件按 mtime 倒序刷新：活跃会话（用户最关心）先获得解析预算。
+    for (const file of files) {
+      let cache = caches.get(file.fileKey);
+      if (cache && cache.mtimeMs === file.mtimeMs && cache.size === file.size && !cache.coldPending) {
+        continue;
+      }
+      if (!cache) {
+        cache = {
+          path: file.path, fileKey: file.fileKey, mtimeMs: file.mtimeMs, size: file.size,
+          offset: 0, tail: Buffer.alloc(0), records: [], recordDetails: new Map(),
+          itemCount: 0, pendingOutputIndices: [], pendingOutputTimings: [],
+          lastInputActivityMs: undefined,
+          sessionMeta: undefined, currentTurn: undefined, requestAnchorMs: undefined,
+          coldPending: false, lastActivityMs: file.mtimeMs,
+        };
+        caches.set(file.fileKey, cache);
+      }
+      // 增量续析（append-only：只读新增字节）；冷文件（offset=0）计入双预算，
+      // 预算耗尽标记 coldPending，下一轮继续——绝不整目录一次物化。
+      const isNewColdStart = cache.offset === 0;
+      if (isNewColdStart
+        && (coldFiles >= COLD_PARSE_FILES_PER_ROUND || coldBytes >= COLD_PARSE_BYTES_PER_ROUND)) {
+        cache.coldPending = true;
+        continue;
+      }
+      const parsedBytes = refreshRolloutCache(cache);
+      cache.coldPending = false;
+      // 签名必须随解析回写：cache 的 mtime/size 停留在建缓存时刻，会让任何被
+      // 追加过的文件永远命中不了「未变化跳过」，此后每轮都重走读取路径——即使
+      // 新字节为零也是一次缓冲分配（2026-10-10 修复，稳态每 2s 的分配 churn 根因）。
+      cache.mtimeMs = file.mtimeMs;
+      cache.size = file.size;
+      if (parsedBytes > 0) parsedAnyBytes = true;
+      if (isNewColdStart) {
+        coldFiles += 1;
+        coldBytes += parsedBytes;
+      }
+    }
+    if (parsedAnyBytes) cachesVersion += 1;
+  };
+
+  /**
+   * 有序候选（版本缓存）：provider 白名单过滤后按「session 最新活动倒序、会话内
+   * 完成时间正序、id 兜底」排序；窗口与模型面过滤按调用参数即时应用（floor 每
+   * tick 前移、模型面可随目标配置变化，不进缓存）。排序只在版本变化时重算——
+   * 稳态零排序成本（旧实现每次比较线性扫 caches，O(n·log n·文件数)/tick）。
+   */
+  const orderedCandidates = (): PendingImportCandidate[] => {
+    if (orderedCache !== undefined && orderedCache.version === cachesVersion) return orderedCache.list;
+    const activityBySession = new Map<string, number>();
+    for (const cache of caches.values()) {
+      if (cache.sessionMeta) activityBySession.set(cache.sessionMeta.sessionId, cache.lastActivityMs);
+    }
+    const candidates: PendingImportCandidate[] = [];
+    for (const cache of caches.values()) {
+      if (!cache.sessionMeta) continue;
+      for (const record of cache.records) {
+        if (!CODEX_ALLOWED_PROVIDER_IDS.includes(record.providerId as "openai")) continue;
+        candidates.push({
+          id: record.id,
+          sessionId: record.sessionId,
+          completedAt: record.completedAt ?? record.startedAt,
+          modelId: record.modelId,
+        });
+      }
+    }
+    candidates.sort((left, right) => {
+      const leftActivity = activityBySession.get(left.sessionId) ?? 0;
+      const rightActivity = activityBySession.get(right.sessionId) ?? 0;
+      if (leftActivity !== rightActivity) return rightActivity - leftActivity;
+      if (left.completedAt !== right.completedAt) return left.completedAt - right.completedAt;
+      return left.id < right.id ? -1 : 1;
+    });
+    orderedCache = {version: cachesVersion, list: candidates};
+    return candidates;
+  };
+
+  const candidatesForQuery = (floorEpochMs: number, allowedModels: ReadonlySet<string>): PendingImportCandidate[] => {
+    if (allowedModels.size === 0) return [];
+    return orderedCandidates().filter(candidate =>
+      candidate.completedAt >= floorEpochMs
+      && modelFaceMatch(candidate.modelId, allowedModels));
+  };
+
+  /**
+   * 正文按需解析（A 修复 + 2026-10-10 增量化）：LRU 命中且条数覆盖目标记录即用；
+   * 命中但条目落后于文件追加（活跃会话）→ 只续析 [条目前沿, 解析前沿) 增量并追加
+   * （取代全文件重析——活跃会话此前每 tick 全量重读重析，是 ~8MB/s 垃圾产出的
+   * 主源）；未命中（逐出/首次）→ 从 0 全量重建。条数仍不足（文件被截短/轮转）
+   * → undefined，绝不产出截断的上下文回放。
+   */
+  const resolveSessionItems = (cache: RolloutFileCache, minCount: number): SessionItem[] | undefined => {
+    const hit = contentLru.get(cache.fileKey);
+    if (hit !== undefined && hit.items.length >= minCount) return hit.items;
+    let entry = hit;
+    if (entry === undefined) {
+      const rebuilt = rebuildSessionItems(cache.path, cache.offset);
+      if (rebuilt === undefined) return undefined;
+      entry = rebuilt;
+    } else if (!advanceSessionItems(cache.path, entry, cache.offset)) {
+      return undefined;
+    }
+    if (entry.items.length < minCount) return undefined;
+    // 回填 LRU 同时按增长后的条目重估字节（可能触发对其它文件的逐出）。
+    contentLru.set(cache.fileKey, entry);
+    return entry.items;
+  };
 
   return {
     agentId: "codex",
     label: "Codex 官方直连",
     directImportEnabled: true,
+    /**
+     * 回填限流（2026-10-10 B 修复，插件式）：单次调度 tick 最多导入 2 批（≤30 条）。
+     * codex 详情重建与上下文回放的单条可达 MB 级字符串，限速使垃圾产出回到 GC
+     * 舒适区，避免重启回填期 RSS 冲到 GiB 级（用户确认「慢慢导入」）。未声明的
+     * 适配器（zcode/dsh）保持既有连续批语义，零影响。
+     */
+    backfillBatchesPerTick: 2,
     gatewayProviderMarkers: CODEX_GATEWAY_PROVIDER_MARKERS,
     allowedProviderIds: CODEX_ALLOWED_PROVIDER_IDS,
     officialUpstreamBaseUrl: CODEX_OFFICIAL_UPSTREAM_BASE_URL,
@@ -156,65 +309,33 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string} = {}): 
     },
 
     readPendingCandidates(floorEpochMs: number, allowedModels: ReadonlySet<string>): PendingImportCandidate[] {
-      const files = listRolloutFiles(sessionsDir, floorEpochMs);
-      let coldFiles = 0;
-      let coldBytes = 0;
-      const refreshed: RolloutFileCache[] = [];
-      // 文件按 mtime 倒序刷新：活跃会话（用户最关心）先获得解析预算。
-      for (const file of files) {
-        let cache = caches.get(file.fileKey);
-        if (cache && cache.mtimeMs === file.mtimeMs && cache.size === file.size && !cache.coldPending) {
-          refreshed.push(cache);
-          continue;
+      scanAndIndex(floorEpochMs);
+      return candidatesForQuery(floorEpochMs, allowedModels);
+    },
+
+    readPendingBatch(query: PendingBatchQuery): PendingBatchResult {
+      // D2 下推（2026-10-10 C）：与 readPendingCandidates 同一扫描、同一有序候选，
+      // 仅「seen 反联 + LIMIT」改为主键索引分块探针（公共 seen-probe 模块）——取代
+      // 调度器旧路径的「整表 seen 加载 + 全量候选 JS Set 过滤」（实测随历史线性放大）。
+      if (query.allowedModels.size === 0) return {records: [], mode: "chunked"};
+      scanAndIndex(query.floorEpochMs);
+      const ordered = candidatesForQuery(query.floorEpochMs, query.allowedModels);
+      const records: PendingImportCandidate[] = [];
+      const seenDb = openSeenProbeDatabase(query.dataDir);
+      try {
+        for (let start = 0; start < ordered.length && records.length < query.limit; start += SEEN_PROBE_CHUNK) {
+          const chunk = ordered.slice(start, start + SEEN_PROBE_CHUNK);
+          const seen = probeSeenExchangeIds(seenDb, query.seenExchangeIdPrefix, chunk.map(candidate => candidate.id));
+          for (const candidate of chunk) {
+            if (seen.has(candidate.id)) continue;
+            records.push(candidate);
+            if (records.length >= query.limit) break;
+          }
         }
-        if (!cache) {
-          cache = {
-            path: file.path, fileKey: file.fileKey, mtimeMs: file.mtimeMs, size: file.size,
-            offset: 0, tail: Buffer.alloc(0), records: [], recordDetails: new Map(),
-            items: [], pendingOutputIndices: [], pendingOutputTimings: [],
-            lastInputActivityMs: undefined,
-            sessionMeta: undefined, currentTurn: undefined, requestAnchorMs: undefined,
-            coldPending: false, lastActivityMs: file.mtimeMs,
-          };
-          caches.set(file.fileKey, cache);
-        }
-        // 增量续析（append-only：只读新增字节）；冷文件（offset=0）计入双预算，
-        // 预算耗尽标记 coldPending，下一轮继续——绝不整目录一次物化。
-        const isNewColdStart = cache.offset === 0;
-        if (isNewColdStart
-          && (coldFiles >= COLD_PARSE_FILES_PER_ROUND || coldBytes >= COLD_PARSE_BYTES_PER_ROUND)) {
-          cache.coldPending = true;
-          continue;
-        }
-        const parsedBytes = refreshRolloutCache(cache);
-        cache.coldPending = false;
-        if (isNewColdStart) {
-          coldFiles += 1;
-          coldBytes += parsedBytes;
-        }
-        refreshed.push(cache);
+      } finally {
+        try { seenDb.close(); } catch { /* 短命连接，下一批重开。 */ }
       }
-      // 候选 = 白名单 provider + 网关标记排除 + 窗口 + 模型面；目标顺序：
-      // session 按最新活动倒序（用户先看到最新会话），session 内按完成时间正序。
-      const candidates: PendingImportCandidate[] = [];
-      for (const cache of refreshed) {
-        if (!cache.sessionMeta) continue;
-        for (const record of cache.records) {
-          const completedAt = record.completedAt ?? record.startedAt;
-          if (completedAt < floorEpochMs) continue;
-          if (!CODEX_ALLOWED_PROVIDER_IDS.includes(record.providerId as "openai")) continue;
-          if (!modelFaceMatch(record.modelId, allowedModels)) continue;
-          candidates.push({id: record.id, sessionId: record.sessionId, completedAt, modelId: record.modelId});
-        }
-      }
-      candidates.sort((left, right) => {
-        const leftActivity = sessionActivity(caches, left.sessionId);
-        const rightActivity = sessionActivity(caches, right.sessionId);
-        if (leftActivity !== rightActivity) return rightActivity - leftActivity;
-        if (left.completedAt !== right.completedAt) return left.completedAt - right.completedAt;
-        return left.id < right.id ? -1 : 1;
-      });
-      return candidates;
+      return {records, mode: "chunked"};
     },
 
     hydrateUsageRecords(ids: readonly string[]): LocalUsageBatch {
@@ -237,11 +358,16 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string} = {}): 
       if (!cache) return Promise.resolve(undefined);
       const detail = ref.requestId !== undefined ? cache.recordDetails.get(ref.requestId) : undefined;
       if (!detail) return Promise.resolve(undefined);
+      // 正文按需解析（2026-10-10 A 修复）：items 不再常驻，LRU 命中且条数覆盖目标
+      // 记录即用，否则从磁盘重析；重建失败（文件被清理/截短）→ 详情缺失（用量入账
+      // 不受影响，与 dsh/zcode 的「短命正文、趁热导入」语义一致）。
+      const items = resolveSessionItems(cache, detail.itemCount);
+      if (items === undefined) return Promise.resolve(undefined);
       const meta = cache.sessionMeta;
-      const input = cache.items.slice(0, detail.contextEnd).map(item => itemWirePayload(item));
-      const response = aggregateResponse(cache.items, detail.outputIndices);
+      const input = items.slice(0, detail.contextEnd).map(item => itemWirePayload(item));
+      const response = aggregateResponse(items, detail.outputIndices);
       const lastOutputItem = detail.outputIndices
-        .map(index => cache.items[index])
+        .map(index => items[index])
         .filter((item): item is SessionItem => item !== undefined)
         .at(-1);
       return Promise.resolve({
@@ -378,7 +504,7 @@ function refreshRolloutCache(cache: RolloutFileCache): number {
   const merged = cache.tail.length > 0 ? Buffer.concat([cache.tail, raw]) : raw;
   let separator = merged.indexOf(0x0A);
   if (separator === -1) {
-    cache.tail = merged;
+    cache.tail = ownedTailBuffer(merged);
     return raw.length;
   }
   let lineStart = 0;
@@ -388,8 +514,124 @@ function refreshRolloutCache(cache: RolloutFileCache): number {
     lineStart = separator + 1;
     separator = merged.indexOf(0x0A, lineStart);
   }
-  cache.tail = merged.subarray(lineStart);
+  cache.tail = ownedTailBuffer(merged.subarray(lineStart));
   return raw.length;
+}
+
+/**
+ * 尾部残片必须独立持有（2026-10-10 修复）：subarray 视图会钉住整段读取缓冲的
+ * 底层 ArrayBuffer——rollout 行以 \n 结尾，正常轮次解析完尾部为 0 字节，但空
+ * 视图仍保留读取缓冲的全量内存（固定 32 MiB 分配时代 = 每文件 32 MiB 常驻，
+ * 实测把进程 RSS 推到 GiB 级）。
+ */
+function ownedTailBuffer(view: Buffer): Buffer {
+  return view.length === 0 ? Buffer.alloc(0) : Buffer.from(view);
+}
+
+/** 正文缓存条目（A 修复 + 2026-10-10 增量化）：items 随文件追加续析增长。 */
+interface ContentCacheEntry {
+  items: SessionItem[];
+  /** 已消费到的字节前沿（含尾部半行）。 */
+  offset: number;
+  /** 跨续析边界的半行缓冲（与 RolloutFileCache.tail 同语义）。 */
+  tail: Buffer;
+  /** 当前 turnId（与扫描态 currentTurn 同语义，续析与全量重建保持一致）。 */
+  turnId: string | undefined;
+}
+
+/**
+ * 单块字节的内容消费（全量重建与增量续析共用）：切行、尾部半行缓冲、
+ * turn_context / response_item 映射追加——同一段字节经本函数产出与扫描态
+ * 逐条一致的 items 序列。
+ */
+function consumeContentChunk(entry: ContentCacheEntry, raw: Buffer): void {
+  const merged = entry.tail.length > 0 ? Buffer.concat([entry.tail, raw]) : raw;
+  let separator = merged.indexOf(0x0A);
+  if (separator === -1) {
+    entry.tail = ownedTailBuffer(merged);
+    return;
+  }
+  let lineStart = 0;
+  while (separator !== -1) {
+    const trimmed = merged.subarray(lineStart, separator).toString("utf8").trim();
+    if (trimmed !== "") {
+      try {
+        const parsed = JSON.parse(trimmed) as {type?: string; ordinal?: number; payload?: Record<string, unknown>};
+        if (parsed.type === "turn_context" && parsed.payload) {
+          // 与扫描态 currentTurn 同语义：每个 turn_context 整体替换（缺 turn_id 即清空）。
+          entry.turnId = typeof parsed.payload.turn_id === "string" ? parsed.payload.turn_id : undefined;
+        } else if (parsed.type === "response_item" && parsed.payload) {
+          const item = mapResponseItemToSessionItem(parsed.ordinal ?? entry.items.length + 1, parsed.payload, entry.turnId);
+          if (item !== undefined) entry.items.push(item);
+        }
+      } catch {
+        // 坏行跳过（与扫描态一致）。
+      }
+    }
+    lineStart = separator + 1;
+    separator = merged.indexOf(0x0A, lineStart);
+  }
+  entry.tail = ownedTailBuffer(merged.subarray(lineStart));
+}
+
+/**
+ * 从磁盘全量重建正文条目（2026-10-10 A 修复）：从文件头重放到解析前沿
+ * （cache.offset），读取有界（每块 ≤32 MiB 循环推进）。失败（文件被清理/不可读）
+ * 返回 undefined。
+ */
+function rebuildSessionItems(path: string, parseFrontierOffset: number): ContentCacheEntry | undefined {
+  const entry: ContentCacheEntry = {items: [], offset: 0, tail: Buffer.alloc(0), turnId: undefined};
+  while (entry.offset < parseFrontierOffset) {
+    let raw: Buffer;
+    try {
+      raw = readFileSyncBounded(path, entry.offset);
+    } catch {
+      return undefined;
+    }
+    if (raw.length === 0) break;
+    entry.offset += raw.length;
+    consumeContentChunk(entry, raw);
+  }
+  return entry;
+}
+
+/**
+ * 增量续析（2026-10-10）：从条目已消费前沿推进到目标前沿，只处理新增字节并追加
+ * items——活跃会话不再每 tick 全文件重读重析。读取失败（文件被清理）返回 false；
+ * 文件截短（读到 EOF 仍不足）由调用方的条数守卫裁决。
+ */
+function advanceSessionItems(path: string, entry: ContentCacheEntry, targetOffset: number): boolean {
+  while (entry.offset < targetOffset) {
+    let raw: Buffer;
+    try {
+      raw = readFileSyncBounded(path, entry.offset);
+    } catch {
+      return false;
+    }
+    if (raw.length === 0) break;
+    entry.offset += raw.length;
+    consumeContentChunk(entry, raw);
+  }
+  return true;
+}
+
+/** 正文条目近似字节成本（LRU 预算口径）：字符数 ×2 覆盖 V8 双字节字符串，宁可高估。 */
+function estimateContentEntryBytes(entry: ContentCacheEntry): number {
+  let total = entry.tail.length;
+  for (const item of entry.items) {
+    total += 96;
+    if (item.text !== undefined) total += item.text.length * 2;
+    if (item.reasoningText !== undefined) total += item.reasoningText.length * 2;
+    if (item.toolOutput !== undefined) total += item.toolOutput.length * 2;
+    if (item.toolInput !== undefined && typeof item.toolInput === "object") {
+      try {
+        total += JSON.stringify(item.toolInput).length * 2;
+      } catch {
+        total += 2048;
+      }
+    }
+  }
+  return total;
 }
 
 function consumeRolloutLine(cache: RolloutFileCache, line: Buffer): void {
@@ -429,7 +671,7 @@ function consumeRolloutLine(cache: RolloutFileCache, line: Buffer): void {
     return;
   }
   if (parsed.type === "response_item" && parsed.payload) {
-    consumeResponseItem(cache, parsed.ordinal ?? cache.items.length + 1, parsed.payload, validTs ? timestampMs : undefined);
+    consumeResponseItem(cache, parsed.ordinal ?? cache.itemCount + 1, parsed.payload, validTs ? timestampMs : undefined);
     return;
   }
   if (parsed.type === "event_msg" && parsed.payload?.type === "item_completed") {
@@ -460,41 +702,41 @@ function consumeRolloutLine(cache: RolloutFileCache, line: Buffer): void {
   }
 }
 
-/** response_item → 会话 item（wire 原始字段保留，方向按 content/类型判定）。 */
-function consumeResponseItem(cache: RolloutFileCache, ordinal: number, payload: Record<string, unknown>, timestampMs: number | undefined): void {
+/**
+ * response_item → 会话 item 的纯映射（wire 原始字段保留，方向按 content/类型判定）。
+ * 2026-10-10 A 拆分：扫描计数路径与按需重析路径共用同一份映射，保证从磁盘重建的
+ * items 与原解析逐条一致。
+ */
+function mapResponseItemToSessionItem(ordinal: number, payload: Record<string, unknown>, turnId: string | undefined): SessionItem | undefined {
   const itemId = typeof payload.id === "string" ? payload.id : undefined;
-  const turnId = cache.currentTurn?.turnId;
   if (payload.type === "message") {
     const content = Array.isArray(payload.content) ? payload.content as Array<{type?: string; text?: string}> : [];
     const texts = content.map(part => typeof part.text === "string" ? part.text : "").filter(Boolean);
     const isOutput = content.some(part => part.type === "output_text");
     const role = typeof payload.role === "string" && payload.role ? payload.role : isOutput ? "assistant" : "user";
-    pushSessionItem(cache, {
+    return {
       ordinal, turnId,
       direction: isOutput ? "output" : "input",
       kind: "message", itemId, role,
       text: texts.join("\n"),
-    }, timestampMs);
-    return;
+    };
   }
   if (payload.type === "reasoning") {
     const summary = Array.isArray(payload.summary) ? payload.summary as Array<{text?: string}> : [];
-    pushSessionItem(cache, {
+    return {
       ordinal, turnId,
       direction: "output", kind: "reasoning", itemId,
       reasoningText: summary.map(part => typeof part.text === "string" ? part.text : "").filter(Boolean).join("\n"),
-    }, timestampMs);
-    return;
+    };
   }
   if (payload.type === "custom_tool_call") {
-    pushSessionItem(cache, {
+    return {
       ordinal, turnId,
       direction: "output", kind: "custom_tool_call", itemId,
       toolName: typeof payload.name === "string" ? payload.name : undefined,
       callId: typeof payload.call_id === "string" ? payload.call_id : undefined,
       toolInput: payload.input,
-    }, timestampMs);
-    return;
+    };
   }
   if (payload.type === "custom_tool_call_output") {
     // 实测 output 是 input_text 段数组（多段文本），拼接为 function_call_output 的字符串。
@@ -503,20 +745,29 @@ function consumeResponseItem(cache: RolloutFileCache, ordinal: number, payload: 
         .map(part => typeof part.text === "string" ? part.text : "")
         .filter(Boolean).join("\n")
       : typeof payload.output === "string" ? payload.output : undefined;
-    pushSessionItem(cache, {
+    return {
       ordinal, turnId,
       direction: "input", kind: "custom_tool_call_output", itemId,
       callId: typeof payload.call_id === "string" ? payload.call_id : undefined,
       toolOutput: outputText,
-    }, timestampMs);
+    };
   }
+  return undefined;
 }
 
-function pushSessionItem(cache: RolloutFileCache, item: SessionItem, _timestampMs: number | undefined): void {
+function consumeResponseItem(cache: RolloutFileCache, ordinal: number, payload: Record<string, unknown>, _timestampMs: number | undefined): void {
+  const item = mapResponseItemToSessionItem(ordinal, payload, cache.currentTurn?.turnId);
+  if (item !== undefined) pushSessionItem(cache, item);
+}
+
+function pushSessionItem(cache: RolloutFileCache, item: SessionItem): void {
   // 三修（2026-10-09）：response_item 的行时间戳是批量落盘时间（四行同毫秒，实测），
   // 不用于锚推进——锚只由 item_completed 的精确 payload 毫秒推进（见 consumeRolloutLine）。
-  const index = cache.items.length;
-  cache.items.push(item);
+  // A 修复（2026-10-10）：扫描态只推进计数与 output 索引，item 正文即弃（年轻代垃圾，
+  // 回填节奏由 backfillBatchesPerTick 约束）——正文只在 readExchangeDetail 的按需
+  // 重析中重建并进入有界 LRU。
+  const index = cache.itemCount;
+  cache.itemCount += 1;
   if (item.direction === "output") {
     cache.pendingOutputIndices.push(index);
   }
@@ -577,8 +828,10 @@ function consumeTokenCount(cache: RolloutFileCache, ordinalText: string, payload
   });
   cache.recordDetails.set(id, {
     // 请求上下文 = 当前全部 items 去掉本请求输出（output 侧尚未计入后续上下文）。
-    contextEnd: cache.items.length - cache.pendingOutputIndices.length,
+    contextEnd: cache.itemCount - cache.pendingOutputIndices.length,
     outputIndices: [...cache.pendingOutputIndices],
+    // 解析时点的 items 总数：重析完整性守卫（见 RecordDetail.itemCount）。
+    itemCount: cache.itemCount,
   });
   cache.pendingOutputIndices = [];
   cache.pendingOutputTimings = [];
@@ -647,13 +900,6 @@ function modelFaceMatch(modelId: string, allowedModels: ReadonlySet<string>): bo
   return false;
 }
 
-function sessionActivity(caches: Map<string, RolloutFileCache>, sessionId: string): number {
-  for (const cache of caches.values()) {
-    if (cache.sessionMeta?.sessionId === sessionId) return cache.lastActivityMs;
-  }
-  return 0;
-}
-
 function findCacheBySessionId(caches: Map<string, RolloutFileCache>, sessionId: string): RolloutFileCache | undefined {
   for (const cache of caches.values()) {
     if (cache.sessionMeta?.sessionId === sessionId) return cache;
@@ -687,8 +933,12 @@ function statSyncOrNull(path: string): {mtimeMs: number; size: number} | undefin
 function readFileSyncBounded(path: string, offset: number): Buffer {
   const handle = openSync(path, "r");
   try {
-    // 单轮单文件读取上限 32 MiB（增量续析场景实际只读新增尾部，远小于此）。
-    const buffer = Buffer.alloc(32 * 1024 * 1024);
+    // 单轮单文件读取上限 32 MiB，但缓冲按实际剩余字节分配（fstat 与读取同一
+    // fd，无 TOCTOU）：固定 32 MiB 分配会让「无新数据的轮次」也付出整段分配 +
+    // 清零成本（2026-10-10 修复）。无剩余字节时零分配直接返回。
+    const remaining = fstatSync(handle).size - offset;
+    if (remaining <= 0) return Buffer.alloc(0);
+    const buffer = Buffer.alloc(Math.min(32 * 1024 * 1024, remaining));
     // readSync 返回字节数（number）——按对象解构会得到 undefined 并放大成整个缓冲区，
     // 实测导致 offset 一轮跳 32MiB、冷启动预算立即耗尽（2026-10-09 首轮零导入根因）。
     const bytesRead = readSync(handle, buffer, 0, buffer.length, offset);

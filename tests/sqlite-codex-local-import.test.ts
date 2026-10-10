@@ -376,4 +376,59 @@ describe("Codex 官方直连本地导入", () => {
     assert.ok(items.some(item => item.semanticCategory === "user_real" && (item.textPreview ?? "").includes("继续")),
       `本轮用户输入缺失: ${JSON.stringify(items.map(item => item.semanticCategory))}`);
   });
+
+  test("回填限流（2026-10-10 B）：单 tick 最多 2 批（30 条），后续 tick 继续直至收尾", async () => {
+    // 新会话文件 40 条记录（此前测试已消费完固定夹具，候选只有本文件）。
+    const pacingKey = "rollout-fixture-pacing-00000000-0000-0000-0000-00000000000d";
+    const entries: Array<Partial<RolloutLine> & {type: string}> = [
+      {type: "session_meta", payload: {session_id: "sess-pacing", model_provider: "openai", cli_version: "0.161.0"}},
+    ];
+    for (let turn = 0; turn < 40; turn += 1) {
+      entries.push({type: "turn_context", payload: {turn_id: `tp${turn}`, model: "gpt-6.1-sol"}});
+      entries.push(userMessage(`msg_p${turn}`, `限流问题${turn}`));
+      entries.push(itemCompleted("UserMessage", T0 + 100_000 + turn * 4_000, T0 + 100_300 + turn * 4_000));
+      entries.push(tokenCount({input_tokens: 100, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 10, reasoning_output_tokens: 0, total_tokens: 110}));
+    }
+    await writeFile(join(sessionsDayDir, `${pacingKey}.jsonl`), rolloutLines(entries, 40));
+
+    const first = await runAgentLocalImportRound({dataDir, nowMs: NOW});
+    assert.equal(first, 30, `单 tick 导入 = backfillBatchesPerTick(2) × 15（实际 ${first}）`);
+    let total = first;
+    for (let round = 0; round < 6 && total < 40; round += 1) {
+      total += await runAgentLocalImportRound({dataDir, nowMs: NOW});
+    }
+    assert.equal(total, 40, "限速只影响节奏，若干 tick 内必须全部导入");
+    assert.equal(await runAgentLocalImportRound({dataDir, nowMs: NOW}), 0, "收尾后幂等零新增");
+  });
+
+  test("会话上下文缓存逐出（2026-10-10）：极小字节上限下导入仍完整（降级路径兜底）", async () => {
+    // 两个新会话：导入过程会填充 sessionCaches（skeletonBody = 完整请求体），
+    // 上限 1 字节必然逐出先前会话——逐出后走既有降级（timeline 重读 / SQLite
+    // 骨架库），导入完整性与正文不得受影响。
+    const evictA = "rollout-fixture-evict-00000000-0000-0000-0000-00000000000e";
+    const evictB = "rollout-fixture-evict-00000000-0000-0000-0000-00000000000f";
+    await writeFile(join(sessionsDayDir, `${evictA}.jsonl`), rolloutLines([
+      {type: "session_meta", payload: {session_id: "sess-evict-a", model_provider: "openai", cli_version: "0.161.0", base_instructions: "骨架指令A"}},
+      {type: "turn_context", payload: {turn_id: "te-a", model: "gpt-6.1-sol"}},
+      userMessage("msg_ea", "逐出会话A输入"),
+      itemCompleted("UserMessage", T0 + 150_000, T0 + 150_300),
+      tokenCount(officialUsageA),
+    ]));
+    await writeFile(join(sessionsDayDir, `${evictB}.jsonl`), rolloutLines([
+      {type: "session_meta", payload: {session_id: "sess-evict-b", model_provider: "openai", cli_version: "0.161.0", base_instructions: "骨架指令B"}},
+      {type: "turn_context", payload: {turn_id: "te-b", model: "gpt-6.1-sol"}},
+      userMessage("msg_eb", "逐出会话B输入"),
+      itemCompleted("UserMessage", T0 + 160_000, T0 + 160_300),
+      tokenCount(officialUsageA),
+    ]));
+    const imported = await runAgentLocalImportRound({dataDir, nowMs: NOW, sessionCacheMaxBytes: 1});
+    assert.equal(imported, 2, "极小缓存上限不得影响导入完整性");
+    const captureDir = join(dataDir, "captures", "v2");
+    const contents = await Promise.all((await readdir(captureDir))
+      .filter(name => name.startsWith("import-codex-"))
+      .map(name => readFile(join(captureDir, name), "utf8")));
+    const allRows = contents.join("\n");
+    assert.match(allRows, /逐出会话A输入/u, "被逐出会话的正文不得丢失");
+    assert.match(allRows, /逐出会话B输入/u, "后一会话的正文不得丢失");
+  });
 });

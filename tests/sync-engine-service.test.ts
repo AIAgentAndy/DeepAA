@@ -927,7 +927,7 @@ describe("同步时点对账补差（B 兜底）", () => {
         return new Response(JSON.stringify({success: true, data: {items: []}}), {status: 200, headers: {"content-type": "application/json"}});
       }
       if (url.endsWith("/api/pricing")) {
-        return new Response(JSON.stringify({success: true, data: {group_ratio: {}}}), {status: 200, headers: {"content-type": "application/json"}});
+        return new Response(JSON.stringify({success: true, data: [], group_ratio: {}}), {status: 200, headers: {"content-type": "application/json"}});
       }
       if (url.includes("/api/log/self")) {
         const params = new URL(url).searchParams;
@@ -1036,7 +1036,7 @@ describe("同步时点对账补差（B 兜底）", () => {
           : url.includes("/api/token/")
             ? {success: true, data: {items: [{id: 7, name: "唯一", key: "k", status: 1}]}}
             : url.endsWith("/api/pricing")
-              ? {success: true, data: {group_ratio: {}}}
+              ? {success: true, data: [], group_ratio: {}}
               : url.includes("/api/log/self/stat")
                 ? (statCalls++, {success: true, data: {quota: 15_000}})
                 : url.includes("/api/log/self")
@@ -1223,7 +1223,7 @@ describe("同步时点对账补差（B 兜底）", () => {
               {id: 7, name: "唯一", key: "secret-key", status: 1},
             ]}}
             : url.endsWith("/api/pricing")
-              ? {success: true, data: {group_ratio: {}}}
+              ? {success: true, data: [], group_ratio: {}}
               : url.includes("/api/log/self/stat")
                 ? {success: true, data: {quota: 15_000}}
                 : url.includes("/api/log/self")
@@ -1294,7 +1294,7 @@ describe("同步时点对账补差（B 兜底）", () => {
               {id: 7, name: "唯一", key: "secret-key", status: 1},
             ]}}
             : url.endsWith("/api/pricing")
-              ? {success: true, data: {group_ratio: {}}}
+              ? {success: true, data: [], group_ratio: {}}
               : url.includes("/api/log/self/stat")
                 ? {success: true, data: {quota: 20_000}}
                 : url.includes("/api/log/self")
@@ -1455,7 +1455,7 @@ describe("同步时点对账补差（B 兜底）", () => {
           : url.includes("/api/token/")
             ? {success: true, data: {items: [{id: 7, name: "唯一", key: "k", status: 1}]}}
             : url.endsWith("/api/pricing")
-              ? {success: true, data: {group_ratio: {}}}
+              ? {success: true, data: [], group_ratio: {}}
               : url.includes("/api/log/self/stat")
                 ? (statCalls++, {success: true, data: {quota: 0}})
                 : url.includes("/api/log/self")

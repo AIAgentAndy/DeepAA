@@ -1,6 +1,7 @@
 import type {SyncInput} from "../types";
 import {SyncAuthRequiredError} from "../types";
 import type {Sub2ApiPayloads} from "./sub2api";
+import {createPlaywrightDeadline} from "./playwright-deadline";
 
 const LOGIN_TIMEOUT_MS = 30_000;
 const TOKEN_WAIT_TIMEOUT_MS = 20_000;
@@ -22,6 +23,12 @@ export async function sub2ApiSyncViaPlaywright(
   const browser = await playwright.chromium.launch({
     headless: true,
     ...(channel ? {channel} : {}),
+  });
+  // 整体截止（2026-10-10 修复，锚点 = 浏览器启动后）：page.evaluate 无 Playwright
+  // 默认超时，页内 fetch 挂起会永久 pending——finally 的 close 不执行（浏览器泄漏）、
+  // 单飞调度器 running 永不释放。到期强制关浏览器并走正常同步失败路径。
+  const deadline = createPlaywrightDeadline(() => {
+    void browser.close().catch(() => undefined);
   });
   try {
     const page = await browser.newPage();
@@ -53,7 +60,7 @@ export async function sub2ApiSyncViaPlaywright(
       {timeout: TOKEN_WAIT_TIMEOUT_MS},
     ).catch(() => undefined);
 
-    const payloads = await page.evaluate(async () => {
+    const payloads = await deadline.race(page.evaluate(async () => {
       const token = localStorage.getItem("access_token") || localStorage.getItem("token") || "";
       const headers: Record<string, string> = {
         "content-type": "application/json",
@@ -61,9 +68,14 @@ export async function sub2ApiSyncViaPlaywright(
       };
       const grab = async (path: string): Promise<unknown> => {
         try {
+          // 页内单请求超时（字面量：evaluate 序列化不携带外部作用域）：站点挂起时
+          // 该端点快速失败为 null，不拖住整个 evaluate；整体兜底由外层 deadline 负责。
           const response = await fetch(path, {
             headers,
             credentials: "same-origin",
+            signal: typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+              ? AbortSignal.timeout(20_000)
+              : undefined,
           });
           return response.ok ? await response.json() : null;
         } catch {
@@ -75,7 +87,7 @@ export async function sub2ApiSyncViaPlaywright(
         keys: await grab("/api/v1/keys?page=1&page_size=200"),
         rates: await grab("/api/v1/groups/rates"),
       };
-    });
+    }));
 
     const selfData = payloads && typeof payloads === "object" && "profile" in payloads
       ? (payloads as Sub2ApiPayloads)
@@ -83,6 +95,7 @@ export async function sub2ApiSyncViaPlaywright(
     if (!selfData) throw new SyncAuthRequiredError("SYNC_PLAYWRIGHT_PAYLOAD_INVALID");
     return selfData;
   } finally {
+    deadline.clear();
     await browser.close().catch(() => undefined);
   }
 }

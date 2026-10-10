@@ -48,6 +48,22 @@ const MAX_SESSION_FILES_PER_SCAN = 240;
  */
 const MAX_SCAN_DECOMPRESSED_BYTES_PER_ROUND = 8 * 1024 * 1024;
 /**
+ * 单次解析失败收取的预算成本（2026-10-10 修复）：失败路径没有真实解压字节数可记，
+ * 按固定成本计入本轮预算。旧 break 条件要求「至少成功解析一个文件才检查预算」，
+ * 全部失败的轮次会对扫描上限内的文件逐一重解压且每 2s 重复一轮——fzstd 是纯
+ * JS 解压，一个解压后超限的活跃会话（>64 MiB 上限判定同样走失败路径）每轮即可
+ * 独占主线程十几秒。
+ */
+const FAILED_PARSE_COST_BYTES = 4 * 1024 * 1024;
+/**
+ * 解析失败退避（2026-10-10 修复）：连续失败按指数退避（8s → 16s → … 封顶 10
+ * 分钟），成功解析即清除。退避只按时间、不看签名——损坏/超限的活跃追加文件同样
+ * 受约束（旧实现每轮重试，超大活跃会话等于每 2s 全量重解压一次）；瞬时失败
+ * （写入中途被扫到）首轮退避 8s 后自愈，仍远小于网关行身份等待的 90s 窗口。
+ */
+const FAILED_PARSE_BACKOFF_BASE_MS = 8_000;
+const FAILED_PARSE_BACKOFF_MAX_MS = 10 * 60_000;
+/**
  * 正文缓存（events + assistant blocks）的解压字节总量上限，只在请求/响应重建
  * （`readExchangeDetail`）时使用，LRU 逐出最早使用的会话。
  *
@@ -194,6 +210,8 @@ export function createDshLocalSourceAdapter(
     scanDecompressedBytesPerRound?: number;
     /** 正文缓存字节上限覆盖（测试用；缺省 MAX_CACHE_TOTAL_BYTES）。 */
     bodyCacheMaxBytes?: number;
+    /** 解析失败退避基数覆盖（测试用；缺省 FAILED_PARSE_BACKOFF_BASE_MS）。 */
+    failureBackoffBaseMs?: number;
   } = {},
 ): AgentLocalSourceAdapter {
   // DSH_CLI_DIR：测试/多环境隔离入口（对齐 ZCODE_CLI_DIR 惯例）；缺省真实主目录。
@@ -204,6 +222,7 @@ export function createDshLocalSourceAdapter(
   const scanBytesPerRound = options.scanDecompressedBytesPerRound
     ?? MAX_SCAN_DECOMPRESSED_BYTES_PER_ROUND;
   const bodyCacheMaxBytes = options.bodyCacheMaxBytes ?? MAX_CACHE_TOTAL_BYTES;
+  const failureBackoffBaseMs = options.failureBackoffBaseMs ?? FAILED_PARSE_BACKOFF_BASE_MS;
 
   /** 正文缓存（LRU：Map 插入序即使用序；命中即重插）；只服务请求/响应重建。 */
   const cache = new Map<string, CacheEntry>();
@@ -220,6 +239,13 @@ export function createDshLocalSourceAdapter(
    * 不得被误判为收敛。0 = 收敛（本轮范围内可产的标注已全部积累）。
    */
   let lastScanPendingIndexFiles = Number.POSITIVE_INFINITY;
+  /**
+   * 解析失败退避缓存（path → 连续失败信息；进程内存级，重启后自然重试一轮）。
+   * 只约束 scanAndCollect 的周期扫描，不影响 readExchangeDetail 的按需重建。
+   */
+  const parseFailures = new Map<string, {failedAtMs: number; failCount: number}>();
+  const failureBackoffMs = (failCount: number): number =>
+    Math.min(failureBackoffBaseMs * 2 ** Math.max(0, failCount - 1), FAILED_PARSE_BACKOFF_MAX_MS);
 
   const noteUsageBytes = (bytes: number): void => {
     cacheTotalBytes += bytes;
@@ -397,7 +423,8 @@ export function createDshLocalSourceAdapter(
    * 1. 已建索引且 mtime/size 未变的文件**零解压**；
    * 2. 已变化文件（活跃会话，标注必须及时）与未建索引文件（冷启动/新会话回补）
    *    按 mtime 倒序解析，最新优先（网关行 90 s 标注窗口最先受益）；
-   * 3. 解析受单轮解压字节预算约束（至少解析一个文件保证前进），避免一次性
+   * 3. 解析受单轮解压字节预算约束（每轮至少尝试一个文件保证前进；解析失败同样
+   *    收取预算并进入退避，2026-10-10 修复全部失败轮次的无界重解压），避免一次性
    *    解压整个会话库独占主线程；
    * 4. 标注补齐统一放在**索引建完之后**：文件遍历顺序不再影响祖先链解析
    *    （子会话先于父会话被扫描时也能折到正确的根）。
@@ -424,16 +451,35 @@ export function createDshLocalSourceAdapter(
     unseen.sort(byNewest);
     let budget = scanBytesPerRound;
     let parsedThisRound = 0;
+    let attemptedThisRound = 0;
+    const nowMs = Date.now();
     for (const file of [...changed, ...unseen]) {
-      if (parsedThisRound > 0 && budget <= 0) break;
+      // 「至少成功一个才检查预算」会让全部失败的轮次无界重解压（2026-10-10 修复）：
+      // 改为至少「尝试」一个——失败同样收取预算，预算耗尽即止，剩余文件留待下一轮
+      //（退避进一步摊薄重试频率）。
+      if (attemptedThisRound > 0 && budget <= 0) break;
+      const failure = parseFailures.get(file.path);
+      if (failure !== undefined && nowMs - failure.failedAtMs < failureBackoffMs(failure.failCount)) {
+        continue;
+      }
       let parsed: {bytes: number} | undefined;
       try {
         parsed = parseSessionFileSync(file.path, file);
       } catch {
         parsed = undefined;
       }
-      // 解析失败不写索引：该文件下一轮仍是 unseen/changed，自动重试。
-      if (parsed === undefined) continue;
+      attemptedThisRound += 1;
+      // 解析失败不写索引：记录退避后自动重试（损坏/超限文件的重复解压由此从
+      // 每轮一次降为退避间隔一次；写入中途被扫到的瞬时失败 8s 后自愈）。
+      if (parsed === undefined) {
+        parseFailures.set(file.path, {
+          failedAtMs: nowMs,
+          failCount: (failure?.failCount ?? 0) + 1,
+        });
+        budget -= FAILED_PARSE_COST_BYTES;
+        continue;
+      }
+      parseFailures.delete(file.path);
       parsedThisRound += 1;
       budget -= parsed.bytes;
     }

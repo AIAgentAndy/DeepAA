@@ -19,6 +19,7 @@ import {
   type TimelineIndex,
 } from "./parts-rebuilder";
 import {buildSyntheticExchange, ImportCaptureFileWriter, materializeLargeBodies} from "./synthetic-capture";
+import {BoundedLruMap} from "./bounded-lru";
 import {
   extractPromptSkeleton,
   loadLatestPromptSkeleton,
@@ -39,6 +40,14 @@ import type {LocalUsageRecord, PendingImportCandidate} from "./types";
  */
 export const LOCAL_IMPORT_INTERVAL_MS = 2_000;
 export const LOCAL_IMPORT_BATCH_LIMIT = 15;
+/**
+ * 会话上下文缓存字节上限（2026-10-10 用户确认）：timeline（zcode 全消息索引）与
+ * 请求骨架体按会话有界保留、超限逐出最久未用——此前无淘汰的无限保留在 web 进程
+ * 堆上限（768M）下会成为 OOM 引信。逐出后走既有降级：timeline 按需重读
+ * （readSessionTimeline，每批每会话至多一次）、骨架回退 SQLite prompt-skeleton
+ * 库（loadLatestPromptSkeleton 的「borrowed」路径），业务语义不变。
+ */
+const SESSION_CONTEXT_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 export {LOCAL_IMPORT_LOOKBACK_DAYS} from "./windows";
 import {LOCAL_IMPORT_LOOKBACK_DAYS_MS} from "./windows";
 /** 满载续批的安全上限：防异常数据源导致单次调度无限循环。 */
@@ -77,12 +86,10 @@ export function startAgentLocalImportScheduler(options: {dataDir: string}): Agen
     return globalState.__deepaaAgentLocalImportScheduler;
   }
   const writers = new Map<string, ImportCaptureFileWriter>();
-  // session 上下文缓存（LRU ≤4）：timeline 每会话只读一次，回放 O(1) 复用；
-  // skeleton 保留最近一份 rollout body（system/tools 骨架），正文源缺失时降级使用。
-  const sessionCaches = new Map<string, {
-    timeline?: TimelineIndex;
-    skeletonBody?: string;
-  }>();
+  // session 上下文缓存：timeline 每会话只读一次（命中 O(1) 复用）、skeleton 保留
+  // 最近一份 rollout body（system/tools 骨架），正文源缺失时降级使用——字节预算
+  // 有界（2026-10-10），逐出走 timeline 重读 / SQLite 骨架兜底。
+  const sessionCaches = createSessionCacheStore(SESSION_CONTEXT_CACHE_MAX_BYTES);
   /** 终态闸门首延时刻（exchangeId → 首次延迟时的 nowMs），成功导入后清理。 */
   const finalityDeferrals = new Map<string, number>();
   let stopped = false;
@@ -134,13 +141,18 @@ export async function runAgentLocalImportRound(options: {
   /** 时钟注入（测试）；缺省系统时间。 */
   nowMs?: number;
   writers?: Map<string, ImportCaptureFileWriter>;
-  sessionCaches?: Map<string, SessionContextCache>;
+  sessionCaches?: SessionCacheStore;
+  /** 会话上下文缓存字节上限覆盖（测试用；缺省 SESSION_CONTEXT_CACHE_MAX_BYTES）。 */
+  sessionCacheMaxBytes?: number;
   /** 终态闸门首延时刻（跨轮持久，成功导入后清理）。 */
   finalityDeferrals?: Map<string, number>;
 }): Promise<number> {
   const writers = options.writers ?? new Map<string, ImportCaptureFileWriter>();
-  const sessionCaches = options.sessionCaches ?? new Map<string, SessionContextCache>();
+  const sessionCaches = options.sessionCaches
+    ?? createSessionCacheStore(options.sessionCacheMaxBytes ?? SESSION_CONTEXT_CACHE_MAX_BYTES);
   const finalityDeferrals = options.finalityDeferrals ?? new Map<string, number>();
+  /** 单 tick 回填限流账本（B 修复）：agentId → 本轮已导入批次数；随轮次创建即重置。 */
+  const backfillBudgets = new Map<AgentId, number>();
   let totalImported = 0;
   for (let batch = 0; batch < MAX_CONTINUOUS_BATCHES; batch += 1) {
     const processed = await runOneBatchRound({
@@ -149,6 +161,7 @@ export async function runAgentLocalImportRound(options: {
       sessionCaches,
       finalityDeferrals,
       nowMs: options.nowMs ?? Date.now(),
+      backfillBudgets,
     });
     totalImported += processed;
     if (processed < LOCAL_IMPORT_BATCH_LIMIT) break;
@@ -159,6 +172,38 @@ export async function runAgentLocalImportRound(options: {
 /** 终态判定：响应与上下文都必须是最终状态。 */
 function isRebuildFinal(rebuilt: RebuiltExchange): boolean {
   return rebuilt.responseFinalized && rebuilt.contextFinalized;
+}
+
+/** 会话上下文缓存存储（结构接口）：生产实现为字节预算有界 LRU，测试可注入裸 Map。 */
+interface SessionCacheStore {
+  get(key: string): SessionContextCache | undefined;
+  set(key: string, value: SessionContextCache): unknown;
+}
+
+/** 会话上下文近似字节成本（×2 覆盖双字节字符串，宁可高估）：timeline parts + 骨架体。 */
+function estimateSessionContextBytes(cache: SessionContextCache): number {
+  let total = 128;
+  if (cache.skeletonBody !== undefined) total += cache.skeletonBody.length * 2;
+  const timeline = cache.timeline;
+  if (timeline !== undefined) {
+    for (const message of timeline.order) {
+      total += 64;
+      for (const part of message.parts) {
+        total += 64;
+        if (part.text !== undefined) total += part.text.length * 2;
+        if (part.toolOutput !== undefined) total += part.toolOutput.length * 2;
+        if (part.reason !== undefined) total += part.reason.length * 2;
+      }
+    }
+  }
+  return total;
+}
+
+function createSessionCacheStore(maxBytes: number): SessionCacheStore {
+  return new BoundedLruMap<string, SessionContextCache>({
+    maxBytes,
+    bytesOf: estimateSessionContextBytes,
+  });
 }
 
 /**
@@ -196,16 +241,26 @@ async function harvestPromptSkeletons(
 async function runOneBatchRound(options: {
   dataDir: string;
   writers: Map<string, ImportCaptureFileWriter>;
-  sessionCaches: Map<string, SessionContextCache>;
+  sessionCaches: SessionCacheStore;
   finalityDeferrals: Map<string, number>;
   nowMs: number;
+  /** 单 tick 回填限流账本（B 修复；测试直调可省略 = 不限流）。 */
+  backfillBudgets?: Map<AgentId, number>;
 }): Promise<number> {
-  const {dataDir, writers, sessionCaches, finalityDeferrals, nowMs} = options;
+  const {dataDir, writers, sessionCaches, finalityDeferrals, nowMs, backfillBudgets} = options;
   /** 本批内已强制重载过 timeline 的 session（有界重载：每批每 session 至多一次）。 */
   const reloadedSessions = new Set<string>();
   // 全部适配器按注册表轮询；当前注册 zcode。disabled 的适配器跳过（不记失败）。
   let totalImported = 0;
   for (const adapter of AGENT_LOCAL_SOURCE_ADAPTERS) {
+    // 插件式回填限流（2026-10-10 B）：声明 backfillBatchesPerTick 的适配器单 tick
+    // 最多导入 N 批——codex 的正文重析/上下文回放单条可达 MB 级字符串，限速使垃圾
+    // 产出回到 GC 舒适区。未声明的适配器（zcode/dsh）行为零变化（不限流）。
+    const backfillCap = adapter.backfillBatchesPerTick;
+    if (backfillCap !== undefined
+      && (backfillBudgets?.get(adapter.agentId) ?? 0) >= backfillCap) {
+      continue;
+    }
     const startedAt = Date.now();
     let db: DeepaaDatabase | undefined;
     try {
@@ -458,6 +513,11 @@ async function runOneBatchRound(options: {
         await writer.appendBatch(filteredExchanges);
         for (const exchange of filteredExchanges) markSeen.run(exchange.exchangeId, new Date().toISOString());
         totalImported += filteredExchanges.length;
+      }
+      // 本适配器实际消费了一批候选即计入限流账本（含全部被网关碰撞过滤的情形——
+      // 详情重建工作照常发生，垃圾产出同样发生）。
+      if (backfillCap !== undefined && batchRecords.length > 0 && backfillBudgets) {
+        backfillBudgets.set(adapter.agentId, (backfillBudgets.get(adapter.agentId) ?? 0) + 1);
       }
       // pendingSettled（可观测标记）：pendingRemaining === 0 = 本轮批未取满 → 窗口内
       // 已无待导入候选（满批时保守保持 false；恰好整除的边界由下一轮空批收尾，

@@ -177,6 +177,15 @@ export interface AgentLocalSourceAdapter {
    */
   readonly directImportEnabled?: boolean;
 
+  /**
+   * 回填限流（2026-10-10 B 修复，插件式，用户确认「慢慢导入」）：单次调度 tick 内
+   * 该适配器最多导入的批次数（每批 ≤ LOCAL_IMPORT_BATCH_LIMIT 条）。未声明 = 不限
+   * （既有连续批语义，zcode/dsh 零影响）。声明动机：codex 的详情重建与上下文回放
+   * 单条可达 MB 级字符串，限速使垃圾产出回到 GC 舒适区，避免重启回填期 RSS 冲到
+   * GiB 级尖峰；实时增量（不满批）不受影响。
+   */
+  readonly backfillBatchesPerTick?: number;
+
   /** 数据目录探测（macOS/Windows）+ 本地 schema 版本；绝不创建目录。 */
   discover(): Promise<LocalSourceStatus>;
 

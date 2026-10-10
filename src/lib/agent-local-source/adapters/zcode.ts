@@ -30,6 +30,7 @@ import type {
   TimelinePart,
 } from "../types";
 import {deepaaDatabasePath} from "../../db/connection";
+import {probeSeenExchangeIds} from "../seen-probe";
 
 /** 网关 provider 标记（config-sync 写入的自有条目键 + 历史名）；黑名单作防御性双保险。 */
 const ZCODE_GATEWAY_PROVIDER_MARKERS = ["deepaa-gateway", "llm-inspector-gateway"] as const;
@@ -193,17 +194,9 @@ export function createZcodeLocalSourceAdapter(options: ZcodeAdapterOptions = {})
       seenDb.pragma(`busy_timeout = ${busyTimeoutMs}`);
       src = openReadonly();
       const probeSeen = (ids: readonly string[]): Set<string> => {
-        const keys = ids.flatMap(id => [`${query.seenExchangeIdPrefix}${id}`, id]);
-        const rows = seenDb!.prepare(
-          `SELECT exchange_id FROM agent_local_import_seen WHERE exchange_id IN (${keys.map(() => "?").join(", ")})`,
-        ).all(...keys) as Array<{exchange_id: string}>;
-        const seen = new Set<string>();
-        for (const row of rows) {
-          seen.add(row.exchange_id.startsWith(query.seenExchangeIdPrefix)
-            ? row.exchange_id.slice(query.seenExchangeIdPrefix.length)
-            : row.exchange_id);
-        }
-        return seen;
+        // 公共探针（2026-10-10 C 抽取）：SQL 与前缀剥离语义逐字迁往 seen-probe 模块，
+        // 本处仅委托——zcode 与 codex 的 seen 反联从此同一份实现。
+        return probeSeenExchangeIds(seenDb!, query.seenExchangeIdPrefix, ids);
       };
       const providerArgs = [...ZCODE_ALLOWED_PROVIDER_IDS, ...ZCODE_GATEWAY_PROVIDER_MARKERS];
       const modelHoles = [...query.allowedModels].map(() => "?").join(", ");

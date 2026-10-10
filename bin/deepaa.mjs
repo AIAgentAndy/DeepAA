@@ -210,6 +210,12 @@ export function buildDeepaaProcessSpecs(input) {
         // node:sqlite 在文档口径仍标 experimental：抑制其一次性 ExperimentalWarning，
         // 避免每次启动在用户终端/日志里制造噪音（仅 web 进程会打开数据库）。
         "--disable-warning=ExperimentalWarning",
+        // web 进程 V8 老生代堆上限（2026-10-10 用户确认 768M）：进程级旗标，只约束
+        // 本 web 进程树——代理 / next build / 任何其它 Node 进程不受影响。堆逼近上限
+        // 时 GC 提前收割瞬态垃圾（导入回放/派生解析的大字符串），把活跃使用期的
+        // RSS 峰值钉住（实测无上限时可拖到 1.4G+）。仅生产服务设置：dev 编译自身
+        // 需要更大堆，不设。
+        ...(input.production ? ["--max-old-space-size=768"] : []),
         nextCli,
         input.production ? "start" : "dev",
         "-p",
