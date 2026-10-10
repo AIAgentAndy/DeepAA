@@ -255,12 +255,16 @@ test("凭据预检：全量探测缓存去重、定向同步零 spawn（2026-10-
     mkdir(join(root, "zcode", "v2"), {recursive: true}),
   ]);
   // 计数 helper：记录被探测的 credentialId；probe-missing 模拟凭据不存在。
+  // 必须是带 node shebang 的 .mjs：引擎在 Windows 上经 process.execPath 启动、
+  // POSIX 上直接执行 shebang，纯 .sh 脚本在 Windows 宿主上永远无法执行。
   const probeLog = join(root, "probe.log");
-  const helperPath = join(root, "credential-helper-counter.sh");
+  const helperPath = join(root, "credential-helper-counter.mjs");
   await writeFile(helperPath, [
-    "#!/bin/sh",
-    `printf '%s\\n' "$2" >> ${JSON.stringify(probeLog)}`,
-    'case "$2" in probe-missing) exit 1 ;; *) exit 0 ;; esac',
+    "#!/usr/bin/env node",
+    `import {appendFileSync} from "node:fs";`,
+    `const id = process.argv[3];`,
+    `appendFileSync(${JSON.stringify(probeLog)}, id + "\\n");`,
+    `process.exit(id === "probe-missing" ? 1 : 0);`,
     "",
   ].join("\n"), {mode: 0o755});
   const paths: CliSyncPaths = {

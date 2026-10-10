@@ -31,7 +31,8 @@ const RESET_TARGETS = [
   { relativePath: "deepaa.sqlite", kind: "file" },
   { relativePath: "deepaa.sqlite-wal", kind: "file" },
   { relativePath: "deepaa.sqlite-shm", kind: "file" },
-  { relativePath: join("captures", "v2"), kind: "directory" },
+  // 报告口径使用平台稳定的正斜杠；join() 在 Windows 上会自行归一化。
+  { relativePath: "captures/v2", kind: "directory" },
   { relativePath: "blobs", kind: "directory" },
 ] as const;
 

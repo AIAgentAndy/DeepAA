@@ -608,7 +608,7 @@ test("profile-patch 解析失败（非顶层数组）原样返回，绝不破坏
 test("布局探测：settings.yaml.imported 迁移痕迹切换 profile-patch，目录存在性限定写入目标", async () => {
   const {mkdtempSync, mkdirSync, writeFileSync, existsSync} = await import("node:fs");
   const {tmpdir} = await import("node:os");
-  const {join} = await import("node:path");
+  const {join, posix} = await import("node:path");
   const dshHome = mkdtempSync(join(tmpdir(), "dsh-layout-"));
   // 无迁移痕迹：legacy 布局。
   const legacyCtx = createCliSyncContext({
@@ -632,10 +632,12 @@ test("布局探测：settings.yaml.imported 迁移痕迹切换 profile-patch，�
   const resolved = dshCliConfigAdapter.resolvePaths(migratedCtx);
   const plan = dshCliConfigAdapter.build(migratedCtx, resolved);
   expect(plan.artifacts.filter(item => item.specId === "dsh-profile-patch")).toHaveLength(1);
-  expect(resolved.filePaths["dsh-profile-patch:web"]).toBe(join(dshHome, "profiles", "web", "cordis.patch.yml"));
+  // ctx 钉在 platform:"darwin"（posix 路径规则），期望值必须同样按 posix 拼接，
+  // 否则 Windows 宿主上宿主 join 会产出全反斜杠路径。
+  expect(resolved.filePaths["dsh-profile-patch:web"]).toBe(posix.join(dshHome, "profiles", "web", "cordis.patch.yml"));
   // legacy 布局的 settings.yaml 路径解析与 DSH_HOME 对齐（既有注入语义不变）。
   const legacyResolved = dshCliConfigAdapter.resolvePaths(legacyCtx);
-  expect(legacyResolved.filePaths["dsh-settings"]).toBe(join(dshHome, "settings.yaml"));
+  expect(legacyResolved.filePaths["dsh-settings"]).toBe(posix.join(dshHome, "settings.yaml"));
   expect(existsSync(dshHome)).toBe(true);
 });
 

@@ -715,7 +715,9 @@ describe("Node reverse proxy", () => {
     const store = {
       createBodyCollector: () => realStore.createBodyCollector(),
       async record(input: Parameters<ProxyExchangeStore["record"]>[0]) {
-        await delay(200);
+        // 持久化人为拖长到 2s：断言语义是「响应远早于持久化完成」，宽阈值可吸收
+        // 慢 CI 的进程/文件系统抖动（旧 180ms/200ms 组合在慢机器上必然偶发超时）。
+        await delay(2000);
         persisted = true;
         return realStore.record(input);
       },
@@ -737,7 +739,7 @@ describe("Node reverse proxy", () => {
     });
     await response.text();
 
-    expect(Date.now() - startedAt).toBeLessThan(180);
+    expect(Date.now() - startedAt).toBeLessThan(1500);
     expect(persisted).toBe(false);
     await waitFor(() => persisted);
   });
