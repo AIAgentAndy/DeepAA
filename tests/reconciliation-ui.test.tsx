@@ -19,7 +19,8 @@ describe("Token 价格站点结算视图", () => {
     const source = await readFile(
       new URL("../src/components/token-pricing-content.tsx", import.meta.url), "utf8",
     );
-    expect(source).toContain("<ReconciliationPanel targetId={filters.target} onApplied=");
+    // 2026-10-10 供应商多选：单选时下传 targetId，多选/未选退回全量口径（undefined）。
+    expect(source).toContain("targetId={filters.target && !filters.target.includes(\",\") ? filters.target : undefined}");
     expect(source).not.toContain("applyReconciliation(window.id)");
     expect(source).not.toContain("按站点补差");
     const panel = await readFile(

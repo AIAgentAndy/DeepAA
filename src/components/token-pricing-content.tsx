@@ -84,6 +84,7 @@ const PLAN_ESTIMATE_PENDING_HINT
   = "套餐/订阅请求按额度差分估算（近似），以下行暂无估算金额（均会自动收敛）：①最近一次额度刻度跳动之后的新请求——下一个刻度自动补算；②早于最早额度快照的历史请求——已结算证据充分（≥5 行且市价 ≥￥1）后按比率兜底自动补算；③计费窗口重置的整数刻度零头——按 0.5% 中点自动补算。已估算金额为入账时冻结值，不受后续补算影响。";
 
 interface TokenPricingFilters {
+  /** 供应商多选（2026-10-10）：逗号分隔 target_id；空=全部（默认）。单值链接（徽标/仪表盘深链）兼容。 */
   target: string;
   agent: string;
   session: string;
@@ -97,7 +98,7 @@ interface TokenPricingFilters {
   end: string;
   tz: string;
   includeAuxiliary: string;
-  /** 估算待补筛选（2026-10-09 #5）：""=全部（默认）、"1"=仅待补（徽标跳转落地）。 */
+  /** 估算待补筛选（2026-10-09 #5；2026-10-10 增排除）：""=全部（默认）、"1"=仅待补（徽标跳转落地）、"exclude"=排除待补。 */
   pending: string;
   /** 仪表盘追溯过滤：计费通道（逗号多值）。 */
   channel: string;
@@ -412,9 +413,14 @@ export function TokenPricingContent() {
         })}`}
       />
 
-      <ReconciliationPanel targetId={filters.target} onApplied={() => setRefreshNonce(current => current + 1)} />
+      <ReconciliationPanel
+        /* 对账面板按单目标过滤（API 为单值 targetId）：恰好选中一个供应商时下传，
+           多选/未选时退回全量口径（与「全部（默认）」一致），不做跨目标拼接。 */
+        targetId={filters.target && !filters.target.includes(",") ? filters.target : undefined}
+        onApplied={() => setRefreshNonce(current => current + 1)}
+      />
       <div className="token-filter-panel">
-        <SearchableSelectField label="供应商" value={filters.target} options={facets?.targets || []} onChange={value => updateFilter("target", value)} />
+        <SearchableMultiSelectField label="供应商" value={filters.target} options={facets?.targets || []} onChange={value => updateFilter("target", value)} />
         <SearchableSelectField label="Agent" value={filters.agent} options={facets?.agents || []} onChange={value => updateFilter("agent", value)} />
         <SearchableSelectField label="Session" value={filters.session} options={facets?.sessions || []} onChange={value => updateFilter("session", value)} />
         <SearchableSelectField
@@ -458,6 +464,7 @@ export function TokenPricingContent() {
           <select value={filters.pending} onChange={event => updateFilter("pending", event.currentTarget.value)}>
             <option value="">全部（默认）</option>
             <option value="1">仅待补</option>
+            <option value="exclude">排除待补</option>
           </select>
         </label>
         <FilterMultiSelect
@@ -882,6 +889,103 @@ function SearchableSelectField({ label, value, options, onChange, disabled = fal
   );
 }
 
+/** 可搜索多选字段（2026-10-10 供应商多选）：value 为逗号分隔；空=全部。
+ *  复用 token-select-menu（搜索框）与 token-result-option（复选行）样式；
+ *  提交值按 facet 顺序稳定排列，facet 之外的已选值（窗口外深链）保序保留在尾部。 */
+function SearchableMultiSelectField({ label, value, options, onChange }: {
+  label: string;
+  value: string;
+  options: TokenPricingOption[];
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const selected = useMemo(() => new Set(value ? value.split(",") : []), [value]);
+  const optionOrder = useMemo(() => options.map(option => option.value), [options]);
+  const filteredOptions = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return options;
+    return options.filter(option => `${option.label} ${option.value}`.toLowerCase().includes(query));
+  }, [options, search]);
+  const selectedLabels = options
+    .filter(option => selected.has(option.value))
+    .map(option => option.label);
+  const triggerLabel = selected.size === 0
+    ? "全部"
+    : selectedLabels.length > 0 ? selectedLabels.join("+") : `已选 ${selected.size} 项`;
+
+  function commit(next: Set<string>) {
+    const ordered = [
+      ...optionOrder.filter(item => next.has(item)),
+      ...[...next].filter(item => !optionOrder.includes(item)),
+    ];
+    onChange(ordered.join(","));
+  }
+
+  function toggle(nextValue: string) {
+    const next = new Set(selected);
+    if (next.has(nextValue)) next.delete(nextValue);
+    else next.add(nextValue);
+    commit(next);
+  }
+
+  return (
+    <div
+      className="token-filter-field token-search-field"
+      onBlur={event => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
+      <span>{label}</span>
+      <button
+        type="button"
+        className="token-select-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen(current => !current)}
+      >
+        <span title={triggerLabel}>{triggerLabel}</span>
+      </button>
+      {open ? (
+        <div className="token-select-menu" role="listbox" aria-label={`${label}多选`}>
+          <input
+            aria-label={`${label}搜索`}
+            autoFocus
+            placeholder="搜索"
+            value={search}
+            onChange={event => setSearch(event.currentTarget.value)}
+          />
+          <div className="token-result-quick-row" role="group" aria-label={`${label}快捷操作`}>
+            <button
+              type="button"
+              title="选中当前搜索匹配的全部选项（与已选项合并）"
+              onClick={() => commit(new Set([...selected, ...filteredOptions.map(option => option.value)]))}
+            >全选</button>
+            <button
+              type="button"
+              title="清除已选，恢复全部"
+              onClick={() => commit(new Set())}
+            >清空</button>
+          </div>
+          {filteredOptions.map(option => {
+            const active = selected.has(option.value);
+            return (
+              <label
+                key={`${option.value}:${option.vendor || option.vendors?.join("|") || ""}`}
+                className="token-result-option"
+              >
+                <input type="checkbox" checked={active} onChange={() => toggle(option.value)} />
+                <span title={option.label}>{option.label}</span>
+              </label>
+            );
+          })}
+          {filteredOptions.length === 0 ? <small>无匹配项</small> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function SummaryBox({ label, value, subLabel, accent = false }: { label: string; value: ReactNode; subLabel: ReactNode; accent?: boolean }) {
   return (
     <article className={`token-summary-box${accent ? " accent" : ""}`}>
@@ -1274,7 +1378,7 @@ function filtersFromSearchParams(searchParams: URLSearchParams, globalTzValue: s
   const tz = TIME_ZONE_OPTIONS.some(option => option.value === globalTzValue) ? globalTzValue : DEFAULT_TIME_ZONE;
   const tzOffset = timeZoneOffsetMinutes(tz);
   return {
-    target: searchParams.get("target") || "",
+    target: normalizeCommaFilterValue(searchParams.get("target")),
     agent: searchParams.get("agent") || "",
     session: searchParams.get("session") || "",
     thread: searchParams.get("thread") || "",
@@ -1287,7 +1391,7 @@ function filtersFromSearchParams(searchParams: URLSearchParams, globalTzValue: s
     end: isoToDatetimeLocalValue(searchParams.get("end"), tzOffset),
     tz,
     includeAuxiliary: searchParams.get("includeAuxiliary") === "yes" ? "yes" : "no",
-    pending: searchParams.get("pending") === "1" ? "1" : "",
+    pending: normalizePendingFilterValue(searchParams.get("pending")),
     channel: normalizeChannelFilter(searchParams.get("channel")),
     result: normalizeResultFilter(searchParams.get("result")),
     tokenComponent: normalizeTokenComponentFilter(searchParams.get("tokenComponent")),
@@ -1312,7 +1416,7 @@ function queryFromFilters(filters: TokenPricingFilters): string {
   // tz 不写入查询串（2026-09-17 全站时区统一）：时间边界已在客户端换算为绝对 UTC，
   // 服务端查询与时区无关；时区仅存于右上角全局偏好。
   if (filters.includeAuxiliary === "yes") params.set("includeAuxiliary", "yes");
-  if (filters.pending === "1") params.set("pending", "1");
+  if (filters.pending) params.set("pending", filters.pending);
   if (filters.channel) params.set("channel", filters.channel);
   if (filters.result && filters.result !== DEFAULT_RESULT_FILTER) params.set("result", filters.result);
   if (filters.tokenComponent) params.set("tokenComponent", filters.tokenComponent);
@@ -1320,6 +1424,27 @@ function queryFromFilters(filters: TokenPricingFilters): string {
   params.set("offset", String(filters.offset));
   if (filters.cursor) params.set("cursor", filters.cursor);
   return params.toString();
+}
+
+/** 供应商多选 URL 值归一（2026-10-10）：trim、去空、大小写不敏感去重（保首现顺序）；
+ *  与后端 splitCommaValues 同口径，保证回写 URL 与查询语义一致。 */
+function normalizeCommaFilterValue(value: string | null): string {
+  const seen = new Set<string>();
+  const values: string[] = [];
+  for (const item of (value ?? "").split(",")) {
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    values.push(trimmed);
+  }
+  return values.join(",");
+}
+
+/** 估算待补筛选 URL 值归一："1"/"exclude" 透传，其余（含缺省）收敛为空。 */
+function normalizePendingFilterValue(value: string | null): string {
+  return value === "1" || value === "exclude" ? value : "";
 }
 
 function normalizePageSize(value: string | null): number {

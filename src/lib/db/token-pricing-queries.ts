@@ -124,14 +124,16 @@ interface QueryContext {
   hasExplicitDateRange: boolean;
   start: string;
   end: string;
-  target?: string;
+  /** 供应商（target_id）多选（2026-10-10）：逗号分隔解析、大小写不敏感；空数组=不过滤。 */
+  targets: string[];
   agent?: string;
   model?: string;
   vendor?: string;
   schedule?: string;
   includeAuxiliary: boolean;
-  /** 估算待补筛选（2026-10-09 #5）：仅套餐/订阅通道 plan_estimated_status='unavailable' 行。 */
-  estimatePending: boolean;
+  /** 估算待补筛选（2026-10-09 #5 徽标跳转；2026-10-10 增排除）：
+   *  "1"=仅待补（plan_estimated_status='unavailable'）；"exclude"=排除待补（其余行，含按量 NULL）。 */
+  estimatePending: "1" | "exclude" | undefined;
   channel?: string;
   /**
    * 请求结果多选（逗号分隔 token）：success / failure / cancelled / incomplete / reconciled；
@@ -526,13 +528,13 @@ function resolveQueryContext(
     selectionRequested,
     selectionValid: !selectionRequested || path !== undefined,
     hasExplicitDateRange: explicitStart !== undefined || explicitEnd !== undefined,
-    target: normalized(filters.get("target")),
+    targets: splitCommaValues(filters.get("target")),
     agent: normalized(filters.get("agent")),
     model: normalized(filters.get("model")),
     vendor: normalized(filters.get("vendor")),
     schedule: normalized(filters.get("schedule")),
     includeAuxiliary: filters.get("includeAuxiliary") === "yes",
-    estimatePending: filters.get("pending") === "1",
+    estimatePending: normalizePendingFilter(filters.get("pending")),
     channel: normalized(filters.get("channel")),
     result: normalizeResultFilter(filters.get("result")),
     tokenComponent: normalized(filters.get("tokenComponent")),
@@ -602,7 +604,7 @@ function buildLedgerWhere(context: QueryContext): {
     params.push(context.start, context.end);
   }
   if (!context.selectionValid) where.push("1 = 0");
-  addCaseInsensitiveExact(where, params, "u.target_id", context.target);
+  addCaseInsensitiveIn(where, params, "u.target_id", context.targets);
   addCaseInsensitiveExact(where, params, "u.agent_name", context.agent);
   if (context.schedule) {
     where.push("json_extract(u.pricing_snapshot_json, '$.scheduleLabel') = ?");
@@ -685,10 +687,13 @@ function buildLedgerWhere(context: QueryContext): {
     // 默认不展示辅助/未识别请求：unknown 模型在账本中均为辅助、探测或未识别行，费用恒为 0。
     where.push("u.model <> 'unknown'");
   }
-  if (context.estimatePending) {
+  if (context.estimatePending === "1") {
     // 估算待补筛选（2026-10-09 #5 徽标跳转）：只看套餐/订阅通道待补行；
     // 按量行 plan_estimated_status 为 NULL，天然排除，无需通道条件。
     where.push("u.plan_estimated_status = 'unavailable'");
+  } else if (context.estimatePending === "exclude") {
+    // 排除待补（2026-10-10）：待补行不展示；按量行 status 为 NULL，保留。
+    where.push("(u.plan_estimated_status IS NULL OR u.plan_estimated_status <> 'unavailable')");
   }
   return { where, params };
 }
@@ -717,7 +722,7 @@ function loadFacets(
     db,
     targetFacetSql,
     targetFacetParams,
-    context.target ? [context.target] : [],
+    context.targets,
     "SELECT target_id AS value, target_id AS label_value FROM usage_ledger WHERE target_id = ? LIMIT 1",
     simpleOption,
   );
@@ -736,7 +741,7 @@ function loadFacets(
 
   const sessionWhere = ["1 = 1"];
   const sessionParams: unknown[] = [];
-  addCaseInsensitiveExact(sessionWhere, sessionParams, "target_id", context.target);
+  addCaseInsensitiveIn(sessionWhere, sessionParams, "target_id", context.targets);
   addCaseInsensitiveExact(sessionWhere, sessionParams, "agent_name", context.agent);
   const sessions = loadFacet(
     db,
@@ -1095,6 +1100,35 @@ function normalized(value: string | null): string {
   return value?.trim() || "";
 }
 
+/** 逗号多值解析（trim、去空、大小写不敏感去重，保留首现顺序）：供应商等多选筛选用。 */
+function splitCommaValues(value: string | null): string[] {
+  const seen = new Set<string>();
+  const values: string[] = [];
+  for (const item of (value ?? "").split(",")) {
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    values.push(trimmed);
+  }
+  return values;
+}
+
+/** 多值精确匹配（大小写不敏感）：单值退化为 =，多值 IN；空数组不加条件。 */
+function addCaseInsensitiveIn(
+  where: string[],
+  params: unknown[],
+  column: string,
+  values: readonly string[],
+): void {
+  if (values.length === 0) return;
+  where.push(values.length === 1
+    ? `LOWER(${column}) = ?`
+    : `LOWER(${column}) IN (${values.map(() => "?").join(",")})`);
+  params.push(...values.map(value => value.toLowerCase()));
+}
+
 /** 多值精确匹配（大小写不敏感语义与单值一致：此处类名均为小写字面量，直接 IN）。 */
 function addCaseInsensitiveExactList(
   where: string[],
@@ -1104,6 +1138,12 @@ function addCaseInsensitiveExactList(
 ): void {
   where.push(`${column} IN (${values.map(() => "?").join(",")})`);
   params.push(...values);
+}
+
+/** 估算待补筛选："1"=仅待补、"exclude"=排除待补；缺省与未知值=全部。 */
+function normalizePendingFilter(value: string | null): "1" | "exclude" | undefined {
+  const trimmed = value?.trim().toLowerCase() ?? "";
+  return trimmed === "1" || trimmed === "exclude" ? trimmed : undefined;
 }
 
 /** 结果 token → 账本 result_class 集合；失败与不完整各管各的值域，all=显式全选不过滤。 */

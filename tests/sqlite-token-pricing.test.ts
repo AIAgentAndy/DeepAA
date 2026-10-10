@@ -1202,7 +1202,7 @@ test("套餐零积分（错峰免费活动）真实成本按 0 折算，绝不�
   assert.ok(dollarItem?.planEstimateDetail?.consumed !== undefined);
 });
 
-test("估算待补筛选（2026-10-09 #5 徽标跳转）：pending=1 只看待补行，按量行天然排除", async () => {
+test("估算待补筛选（2026-10-09 #5 徽标跳转）：pending=1 只看待补行，按量行天然排除；pending=exclude 反向排除待补行", async () => {
   const fixture = await createSqliteFixture();
   fixtures.push(fixture);
   const sourceId = fixture.db.prepare(
@@ -1258,6 +1258,84 @@ test("估算待补筛选（2026-10-09 #5 徽标跳转）：pending=1 只看待�
   assert.equal(pendingOnly.items.length, 1);
   assert.equal(pendingOnly.items[0]?.exchangeId, "ex-pending");
   assert.equal(pendingOnly.summary.planEstimatedPendingCount, 1);
+
+  const pendingExcluded = await query({pending: "exclude"});
+  // 排除待补：待补行剔除，已结算行与按量行（status NULL）保留；排序 created_at DESC。
+  assert.deepEqual(pendingExcluded.items.map(item => item.exchangeId), ["ex-payg", "ex-settled"]);
+  assert.equal(pendingExcluded.summary.planEstimatedPendingCount, 0);
+});
+
+test("供应商多选（2026-10-10）：target 逗号多值大小写不敏感命中、去重，facets 保留已选值", async () => {
+  const fixture = await createSqliteFixture();
+  fixtures.push(fixture);
+  const sourceId = fixture.db.prepare(
+    `INSERT INTO ingestion_sources(
+      relative_path, file_id, byte_offset, scan_offset, file_size,
+      processed_count, status, updated_at
+    ) VALUES('captures/v2/target-multi-fixture.jsonl', 'target-multi-fixture', 0, 0,
+      1000000, 0, 'ready', '2026-07-17T00:00:00.000Z')
+    RETURNING id`,
+  ).pluck().get() as number;
+  const insertRef = fixture.db.prepare(
+    `INSERT INTO raw_exchange_refs(
+      exchange_id, capture_session_id, source_id, byte_offset,
+      line_length_bytes, captured_at, completed_at, target_id,
+      target_name, agent_name, agent_fingerprint_id, model, status,
+      is_streaming, request_body_bytes, response_body_bytes
+    ) VALUES(?, 'capture-multi', ?, ?, 256, ?, ?, ?, 'Multi Target', 'codex', 'fp',
+      'glm-5.3', 200, 0, 64, 64)`,
+  );
+  const insertLedger = fixture.db.prepare(
+    `INSERT INTO usage_ledger(
+      exchange_id, target_id, agent_fingerprint_id, agent_name, model,
+      vendor, rate_multiplier, input_tokens, cache_read_tokens,
+      cache_write_tokens, output_tokens, vendor_cost, actual_cost,
+      duration_ms, usage_source, usage_confidence, pricing_snapshot_json,
+      result_class, billing_channel, created_at
+    ) VALUES(?, ?, 'fp', 'codex', 'glm-5.3', 'zhipu-cn', 1,
+      100, 0, 0, 50, 1, 1, 1000, 'provider', 'exact', '{}', 'success',
+      'pay_as_you_go', ?)`,
+  );
+  const seeds = [
+    ["ex-a1", "target-a", "2026-07-17T00:00:00.000Z"],
+    ["ex-a2", "target-a", "2026-07-17T00:01:00.000Z"],
+    ["ex-b1", "target-b", "2026-07-17T00:02:00.000Z"],
+    ["ex-c1", "target-C", "2026-07-17T00:03:00.000Z"],
+  ] as const;
+  for (const [exchangeId, targetId, createdAt] of seeds) {
+    insertRef.run(exchangeId, sourceId, 1024, createdAt, createdAt, targetId);
+    insertLedger.run(exchangeId, targetId, createdAt);
+  }
+
+  const query = (extra: Record<string, string>) => loadTokenPricingState(new URLSearchParams({
+    start: "2026-07-16T00:00:00.000Z",
+    end: "2026-07-18T00:00:00.000Z",
+    ...extra,
+  }), { db: fixture.db, dataDir: fixture.dataDir });
+
+  const unfiltered = await query({});
+  assert.equal(unfiltered.items.length, 4);
+
+  // 多选命中 target-a 与 target-C（大小写不敏感），排除 target-b。
+  const multi = await query({target: "target-a,target-c"});
+  assert.deepEqual(
+    multi.items.map(item => item.exchangeId).sort(),
+    ["ex-a1", "ex-a2", "ex-c1"],
+  );
+
+  // 重复/大小写混写值去重后语义不变。
+  const deduped = await query({target: "TARGET-A, target-a,,target-C"});
+  assert.equal(deduped.items.length, 3);
+
+  // 单值路径（仪表盘/徽标深链）不受影响。
+  const single = await query({target: "target-b"});
+  assert.deepEqual(single.items.map(item => item.exchangeId), ["ex-b1"]);
+
+  // 已选值在 facet 中保留（含被过滤窗口外的 target-C 也能补齐展示）。
+  assert.deepEqual(
+    multi.facets.targets.map(option => option.value),
+    ["target-a", "target-C", "target-b"],
+  );
 });
 
 test("聚合取代语义：用量载体补差行计入请求与 Token，被取代原行的估算量排他（2026-09-29）", async () => {

@@ -8482,6 +8482,15 @@ html[data-theme="dark"] .fullscreen-section-header .fullscreen-copy-btn.copied {
   font-size: 12px;
 }
 
+/* 可搜索多选（2026-10-10 供应商）：复选行里的 checkbox 不吃搜索框 input 规则。 */
+.token-select-menu .token-result-option input[type="checkbox"] {
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+
 .token-select-menu button {
   min-height: 30px;
   border: 0;
