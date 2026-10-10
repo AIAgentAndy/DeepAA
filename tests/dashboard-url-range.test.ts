@@ -7,9 +7,9 @@ import {
   wallHourToInstant,
 } from "@/lib/dashboard-url-range";
 
-/* 仪表盘 URL 时间参数（2026-10-10 与会话追踪页统一 UTC ISO，读路径兼容旧墙钟书签）。 */
+/* 仪表盘 URL 时间参数（2026-10-10 与会话追踪页统一 UTC ISO；墙钟读兼容已在开放前移除）。 */
 
-describe("parseDashboardRangeQuery 双格式读取", () => {
+describe("parseDashboardRangeQuery 严格 ISO 读取", () => {
   test("UTC ISO 链接按东八区换算为墙钟串并标记 explicit", () => {
     const parsed = parseDashboardRangeQuery("start=2026-10-08T16:00:00.000Z&end=2026-10-09T16:00:00.000Z");
     expect(parsed).toEqual({start: "2026-10-09T00:00", end: "2026-10-10T00:00", explicit: true});
@@ -22,22 +22,21 @@ describe("parseDashboardRangeQuery 双格式读取", () => {
     expect(parsed).toEqual({start: "2026-10-09T00:00", end: "2026-10-10T01:00", explicit: true});
   });
 
-  test("旧墙钟书签字符串原样保留并标记 explicit", () => {
-    const parsed = parseDashboardRangeQuery("start=2026-10-09T00:00&end=2026-10-10T00:00");
-    expect(parsed).toEqual({start: "2026-10-09T00:00", end: "2026-10-10T00:00", explicit: true});
+  test("墙钟串不再接受（2026-10-10 移除兼容，URL 契约单一为 UTC ISO）", () => {
+    expect(parseDashboardRangeQuery("start=2026-10-09T00:00&end=2026-10-10T00:00").explicit).toBe(false);
   });
 
   test("end <= start 视为未携带", () => {
-    expect(parseDashboardRangeQuery("start=2026-10-09T00:00&end=2026-10-09T00:00").explicit).toBe(false);
     expect(parseDashboardRangeQuery("start=2026-10-09T16:00:00.000Z&end=2026-10-09T16:00:00.000Z").explicit).toBe(false);
+    expect(parseDashboardRangeQuery("start=2026-10-09T16:00:00.000Z&end=2026-10-09T15:00:00.000Z").explicit).toBe(false);
   });
 
   test("混格式 / 缺参 / 非法值视为未携带", () => {
     expect(parseDashboardRangeQuery("start=2026-10-08T16:00:00.000Z&end=2026-10-10T00:00").explicit).toBe(false);
-    expect(parseDashboardRangeQuery("start=2026-10-09T00:00").explicit).toBe(false);
+    expect(parseDashboardRangeQuery("start=2026-10-08T16:00:00.000Z").explicit).toBe(false);
     expect(parseDashboardRangeQuery("").explicit).toBe(false);
     expect(parseDashboardRangeQuery("start=not-a-date&end=2026-10-10T00:00").explicit).toBe(false);
-    expect(parseDashboardRangeQuery("start=2026-13-01T00:00&end=2026-10-10T00:00").explicit).toBe(false);
+    expect(parseDashboardRangeQuery("start=2026-13-01T00:00Z&end=2026-10-10T00:00Z").explicit).toBe(false);
   });
 });
 

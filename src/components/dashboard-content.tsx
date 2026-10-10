@@ -168,7 +168,7 @@ function parseInitialRange(initialQuery: string): InitialDashboardRange {
   const parsed = parseDashboardRangeQuery(initialQuery, offsetMinutes);
   if (parsed.explicit) {
     // tz URL 参数已废弃（2026-09-17 全站时区统一受右上角偏好控制）：旧链接里的 tz 直接忽略。
-    // UTC ISO 链接是绝对时刻；旧墙钟书签按东八区缺省解释（双格式兼容，2026-10-10）。
+    // UTC ISO 链接是绝对时刻；墙钟读兼容已于 2026-10-10 移除（产品未开放，URL 契约单一化）。
     return {start: parsed.start, end: parsed.end, tz: DEFAULT_TIME_ZONE, explicit: true};
   }
   return {...defaultRange(offsetMinutes), tz: DEFAULT_TIME_ZONE, explicit: false};

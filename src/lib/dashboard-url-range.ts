@@ -1,9 +1,8 @@
 /**
  * 仪表盘 URL 时间参数编解码（2026-10-10 与会话追踪页统一）：
- * - URL start/end 统一写 UTC ISO 绝对时刻（与 workbench-time-range / token-pricing
- *   一致），链接不再依赖查看者的时区偏好，任何时区打开都是同一段数据窗口；
- * - 读路径双格式兼容：旧墙钟书签（YYYY-MM-DDTHH:mm）继续可用，按东八区缺省
- *   解释（timezones.ts「非法或缺省一律回退东八区」原则）；
+ * - URL start/end 单一格式：UTC ISO 绝对时刻（与 workbench-time-range / token-pricing
+ *   一致），链接不依赖查看者的时区偏好，任何时区打开都是同一段数据窗口；
+ *   早期墙钟串读兼容已在产品开放前随契约单一化移除（2026-10-10 用户确认）；
  * - 组件内部状态仍是当前时区的墙钟串（HourPicker 依赖），墙钟 ↔ 绝对时刻的
  *   边界换算集中在本模块；
  * - 小时粒度：绝对时刻一律先向下取整到小时（UTC 时钟取整），与服务端
@@ -12,8 +11,6 @@
 
 const HOUR_MS = 60 * 60 * 1_000;
 
-/** 组件内部墙钟串格式（datetime-local 小时粒度，分钟可为任意值的历史输入）。 */
-const WALL_HOUR_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/u;
 /** 带时区标记的绝对 ISO（Z 或 ±HH:MM 偏移），兼容 toISOString 输出与会话页链接。 */
 const ABSOLUTE_ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/u;
 
@@ -61,33 +58,23 @@ export interface DashboardRangeQuery {
 }
 
 /**
- * 解析 /dashboard 的 start/end URL 参数（双格式兼容）：
- * - UTC ISO（含 ±HH:MM 偏移写法）：绝对时刻先取整到小时，再换算成 offsetMinutes
- *   时区的墙钟串；
- * - 旧墙钟书签：按 offsetMinutes 解释（页面首帧为东八区缺省），字符串原样保留。
- * 两端格式必须一致且 end > start，否则视为未携带（explicit=false，由调用方兜底默认）。
+ * 解析 /dashboard 的 start/end URL 参数：只接受 UTC ISO（含 ±HH:MM 偏移写法）。
+ * 绝对时刻先取整到小时，再换算成 offsetMinutes 时区的墙钟串；两端必须同为有效
+ * ISO 且 end > start，否则视为未携带（explicit=false，由调用方兜底默认）。
  */
 export function parseDashboardRangeQuery(query: string, offsetMinutes = 480): DashboardRangeQuery {
   const params = new URLSearchParams(query);
   const start = params.get("start")?.trim();
   const end = params.get("end")?.trim();
-  if (start && end) {
-    if (ABSOLUTE_ISO_RE.test(start) && ABSOLUTE_ISO_RE.test(end)) {
-      const startMs = Date.parse(start);
-      const endMs = Date.parse(end);
-      if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) {
-        return {
-          start: instantToWallHour(floorHour(startMs), offsetMinutes),
-          end: instantToWallHour(floorHour(endMs), offsetMinutes),
-          explicit: true,
-        };
-      }
-    } else if (WALL_HOUR_RE.test(start) && WALL_HOUR_RE.test(end)) {
-      const startMs = wallHourToInstant(start, offsetMinutes);
-      const endMs = wallHourToInstant(end, offsetMinutes);
-      if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) {
-        return {start, end, explicit: true};
-      }
+  if (start && end && ABSOLUTE_ISO_RE.test(start) && ABSOLUTE_ISO_RE.test(end)) {
+    const startMs = Date.parse(start);
+    const endMs = Date.parse(end);
+    if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) {
+      return {
+        start: instantToWallHour(floorHour(startMs), offsetMinutes),
+        end: instantToWallHour(floorHour(endMs), offsetMinutes),
+        explicit: true,
+      };
     }
   }
   return {start: "", end: "", explicit: false};
