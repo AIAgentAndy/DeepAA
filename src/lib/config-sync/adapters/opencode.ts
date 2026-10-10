@@ -12,6 +12,7 @@ import {
   OPENCODE_PROVIDER_PREFIX,
   assertNoRealSecrets,
 } from "@/lib/config-sync/core/placeholder-auth";
+import {GATEWAY_PROVIDER_DISPLAY_NAMES} from "@/lib/config-sync/core/gateway-provider-names";
 import {
   boundTargetsForAgent,
   defaultModelOf,
@@ -46,12 +47,6 @@ const OPENCODE_GLOBAL_SPEC: CliConfigFileSpec = {
     "small_model",
   ],
   description: "OpenCode 全局配置（opencode.jsonc）受管 provider 与默认模型",
-};
-
-const OPENCODE_MODEL_NAMES: Record<WireApi, string> = {
-  responses: "Responses",
-  chat_completions: "Chat Completions",
-  messages: "Anthropic Messages",
 };
 
 const OPENCODE_NPM: Record<WireApi, string> = {
@@ -149,7 +144,7 @@ export const opencodeCliConfigAdapter: AgentCliConfigAdapter = {
       const providerId = OPENCODE_PROVIDERS.find(provider => provider.endsWith(`-${openCodeProviderSuffix(wireApi)}`))!;
       providers[providerId] = {
         npm: OPENCODE_NPM[wireApi],
-        name: `DeepAA 网关（${OPENCODE_MODEL_NAMES[wireApi]}）`,
+        name: GATEWAY_PROVIDER_DISPLAY_NAMES[wireApi],
         options: {
           baseURL: `${context.gatewayBaseUrl}/opencode/v1`,
           apiKey: context.gatewayBearerToken,

@@ -5,6 +5,7 @@ import {
   GATEWAY_PLACEHOLDER_TOKEN,
   assertNoRealSecrets,
 } from "@/lib/config-sync/core/placeholder-auth";
+import {GATEWAY_PROVIDER_DISPLAY_NAMES} from "@/lib/config-sync/core/gateway-provider-names";
 import {
   boundTargetsForAgent,
   defaultModelOf,
@@ -96,25 +97,21 @@ type ZcodeRouteWire = (typeof ZCODE_WIRE_PREFERENCE)[number];
 const ZCODE_ROUTES: Readonly<Record<ZcodeRouteWire, {
   key: string;
   kind: "anthropic" | "openai" | "openai-compatible";
-  name: string;
   baseURL: (gatewayBaseUrl: string) => string;
 }>> = {
   messages: {
     key: ZCODE_GATEWAY_PROVIDER_KEY,
     kind: "anthropic",
-    name: "DeepAA 网关",
     baseURL: gatewayBaseUrl => `${gatewayBaseUrl}/zcode`,
   },
   responses: {
     key: ZCODE_GATEWAY_RESPONSES_PROVIDER_KEY,
     kind: "openai",
-    name: "DeepAA 网关（Responses）",
     baseURL: gatewayBaseUrl => `${gatewayBaseUrl}/zcode/v1`,
   },
   chat_completions: {
     key: ZCODE_GATEWAY_CHAT_PROVIDER_KEY,
     kind: "openai-compatible",
-    name: "DeepAA 网关（Chat）",
     baseURL: gatewayBaseUrl => `${gatewayBaseUrl}/zcode/v1`,
   },
 };
@@ -374,7 +371,7 @@ export const zcodeCliConfigAdapter: AgentCliConfigAdapter = {
       if (Object.keys(models).length === 0) continue;
       const route = ZCODE_ROUTES[wire];
       additions[route.key] = {
-        name: route.name,
+        name: GATEWAY_PROVIDER_DISPLAY_NAMES[wire],
         kind: route.kind,
         options: {
           apiKey: GATEWAY_PLACEHOLDER_TOKEN,
@@ -412,7 +409,7 @@ export const zcodeCliConfigAdapter: AgentCliConfigAdapter = {
         targets: [...perTargetCounts.entries()].map(([targetId, models]) => ({targetId, models})),
       }),
       activeNotes: [
-        "已按协议新增自定义供应商「DeepAA 网关」系列条目（anthropic / Responses / Chat 按需落条目），真实密钥由网关按目标从系统凭据库注入",
+        "已按协议新增自定义供应商「DeepAA 网关（Messages/Responses/Chat Completions）」系列条目（按需落条目），真实密钥由网关按目标从系统凭据库注入",
         "新架构 ZCode 会自动加载最新供应商与模型（约 1 秒，免重启）；同时写 legacy config.json 兜底（旧版 ZCode 或个人层文件被删后的导入源）",
       ],
       warnings,
@@ -810,7 +807,7 @@ function renderPersonalInjectInstruction(
     }
     rules.push({
       providerId: route.key,
-      providerName: route.name,
+      providerName: GATEWAY_PROVIDER_DISPLAY_NAMES[wire],
       apiType: ZCODE_PERSONAL_API_TYPE[wire],
       baseUrl: route.baseURL(gatewayBaseUrl),
       modelIds,

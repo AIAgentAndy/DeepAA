@@ -515,15 +515,19 @@ test("三协议注入：messages/responses/chat 模型分流到对应网关条�
   // messages（defaultBinding 优先）进主条目。
   const anthropicRoute = merged.provider["deepaa-gateway"];
   expect(anthropicRoute.kind).toBe("anthropic");
+  // 分组显示名统一三协议文案（2026-10-10）：ZCode 侧无后缀主条目承载 messages。
+  expect(anthropicRoute.name).toBe("DeepAA 网关（Messages）");
   expect(Object.keys(anthropicRoute.models)).toEqual(["glm-5.3_relay"]);
   // responses → kind "openai"（App 官方 apiFormat↔kind 映射），baseURL 带 /v1。
   const responsesRoute = merged.provider["deepaa-gateway-responses"];
   expect(responsesRoute.kind).toBe("openai");
+  expect(responsesRoute.name).toBe("DeepAA 网关（Responses）");
   expect(responsesRoute.options.baseURL).toBe("http://127.0.0.1:3211/zcode/v1");
   expect(Object.keys(responsesRoute.models)).toEqual(["gpt-5.6-sol_relay"]);
   // chat → kind "openai-compatible"。
   const chatRoute = merged.provider["deepaa-gateway-chat"];
   expect(chatRoute.kind).toBe("openai-compatible");
+  expect(chatRoute.name).toBe("DeepAA 网关（Chat Completions）");
   expect(Object.keys(chatRoute.models)).toEqual(["deepseek-chat_relay"]);
   // 自还原因子挂在条目内部（deepaaManaged），不再有独立 state 供应商。
   expect(merged.provider["deepaa-state"]).toBeUndefined();
@@ -705,13 +709,14 @@ test("个人层注入：三路由 rules 全量重建受管键，迁移残留与�
   expect(byId.get("deepaa-gateway").config.api).toEqual({type: "anthropic-messages", baseUrl: "http://127.0.0.1:3211/zcode"});
   expect(byId.get("deepaa-gateway-responses").config.api).toEqual({type: "openai-responses", baseUrl: "http://127.0.0.1:3211/zcode/v1"});
   expect(byId.get("deepaa-gateway-chat").config.api).toEqual({type: "openai-chat-completions", baseUrl: "http://127.0.0.1:3211/zcode/v1"});
-  for (const [providerId, modelId] of [
-    ["deepaa-gateway", "glm-5.3_catapi.chat"],
-    ["deepaa-gateway-responses", "gpt-6.1-sol_catapi.chat"],
-    ["deepaa-gateway-chat", "deepseek-v4.1-flash_catapi.chat"],
+  for (const [providerId, modelId, providerName] of [
+    ["deepaa-gateway", "glm-5.3_catapi.chat", "DeepAA 网关（Messages）"],
+    ["deepaa-gateway-responses", "gpt-6.1-sol_catapi.chat", "DeepAA 网关（Responses）"],
+    ["deepaa-gateway-chat", "deepseek-v4.1-flash_catapi.chat", "DeepAA 网关（Chat Completions）"],
   ] as const) {
     const rule = byId.get(providerId);
-    expect(rule.providerName).toBeTruthy();
+    // 旧盘上无后缀的 providerName（fixture 中的「DeepAA 网关」）被统一文案全量重建覆盖。
+    expect(rule.providerName).toBe(providerName);
     expect(rule.enabled).toBe(true);
     expect(rule.config.group).toBe("standard-personal");
     expect(rule.config.access).toEqual({type: "api-key", apiKey: "deepaa-gateway"});

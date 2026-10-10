@@ -217,6 +217,10 @@ test("三协议路由：chat/responses/messages 模型分流，默认模型落�
   const settings = plan.artifacts.find(artifact => artifact.specId === "dsh-settings")!;
   const parsed = parseYaml(settings.content) as Record<string, any>;
   const providers = parsed["llm-pi-ai"].providers;
+  // 分组显示名统一三协议文案（2026-10-10）：dsh 侧无后缀主路由承载 chat_completions。
+  expect(providers["deepaa-gateway"].displayName).toBe("DeepAA 网关（Chat Completions）");
+  expect(providers["deepaa-gateway-responses"].displayName).toBe("DeepAA 网关（Responses）");
+  expect(providers["deepaa-gateway-anthropic"].displayName).toBe("DeepAA 网关（Messages）");
   // chat（defaultBinding 优先）主路由沿用既有 provider id。
   expect(providers["deepaa-gateway"].api).toBe("openai-completions");
   expect(providers["deepaa-gateway"].baseURL).toBe("http://127.0.0.1:3211/dsh/v1");

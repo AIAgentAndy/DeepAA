@@ -124,6 +124,10 @@ test("OpenCode 活跃链路生成三个受管 provider 且模型按 wire API 过
   expect(Object.keys(messagesModels)).toEqual(["claude-sonnet-4-5_shared-provider"]);
   expect(content.model).toBe("opencode-deepaa-gateway-responses/deepseek-v4-flash_shared-provider");
   expect(content.small_model).toBe(content.model);
+  // 分组显示名统一三协议文案（2026-10-10）。
+  expect(providers["opencode-deepaa-gateway-anthropic"]!.name).toBe("DeepAA 网关（Messages）");
+  expect(providers["opencode-deepaa-gateway-responses"]!.name).toBe("DeepAA 网关（Responses）");
+  expect(providers["opencode-deepaa-gateway-chat"]!.name).toBe("DeepAA 网关（Chat Completions）");
   expect(providers["opencode-deepaa-gateway-responses"]).toMatchObject({
     npm: "@ai-sdk/openai",
     options: {baseURL: "http://127.0.0.1:3211/opencode/v1", apiKey: "deepaa-gateway"},

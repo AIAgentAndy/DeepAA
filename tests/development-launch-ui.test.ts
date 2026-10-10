@@ -250,6 +250,24 @@ describe("development launch UI source", () => {
     expect(source).toContain("if (resetModel || (!modelModified && !modelUserPickedRef.current))");
   });
 
+  test("切换默认供应商不得重置启动形态：客户端形态值保留、普通终端清空回填（2026-10-10 用户确认）", async () => {
+    const source = await readFile("src/components/development-launch-dialog.tsx", "utf8");
+    // 历史缺陷：切供应商 effect 无条件 setTerminal("")，把默认「Codex 客户端」
+    // （codex-client）清空后由预检 chooseAvailableTerminal 回填成普通终端，
+    // 表现为「一切供应商启动方式就变回 Terminal」。
+    const switchStart = source.indexOf("// 切换默认供应商：清空模型/密钥等目标相关状态并按新目标重跑预检。");
+    const switchEnd = source.indexOf("}, [activeTargetId]);", switchStart);
+    expect(switchStart).toBeGreaterThan(-1);
+    expect(switchEnd).toBeGreaterThan(switchStart);
+    const switchBody = source.slice(switchStart, switchEnd);
+    expect(switchBody).not.toContain('setTerminal("")');
+    // 特殊形态值（codex-client / dsh-app）与供应商无关，切换时保留；
+    // 普通终端仍清空，由新目标 preferredTerminal 预检回填。
+    expect(switchBody).toContain("setTerminal(current => SPECIAL_LAUNCH_TERMINAL_IDS.has(current) ? current : \"\")");
+    // 预检回填路径对特殊形态值的保护保持不变。
+    expect(source).toContain("if (preferred && SPECIAL_LAUNCH_TERMINAL_IDS.has(preferred)) return preferred;");
+  });
+
   test("弹窗不改动默认链：只有点「打开 {Agent}」才写配置并同步 CLI", async () => {
     const service = await readFile("src/lib/development-launch/service.ts", "utf8");
     // 弹窗内的三个接口都只读：capabilities / preflight / select-directory。

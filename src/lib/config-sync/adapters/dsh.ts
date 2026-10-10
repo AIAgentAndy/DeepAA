@@ -9,6 +9,7 @@ import {
   GATEWAY_PLACEHOLDER_TOKEN,
   assertNoRealSecrets,
 } from "@/lib/config-sync/core/placeholder-auth";
+import {GATEWAY_PROVIDER_DISPLAY_NAMES} from "@/lib/config-sync/core/gateway-provider-names";
 import {
   boundTargetsForAgent,
   defaultModelOf,
@@ -102,27 +103,23 @@ type DshRouteWire = (typeof DSH_WIRE_PREFERENCE)[number];
 const DSH_ROUTES: Readonly<Record<DshRouteWire, {
   id: string;
   api: "openai-completions" | "openai-responses" | "anthropic-messages";
-  displayName: string;
   baseURL: (gatewayBaseUrl: string) => string;
   compat?: Record<string, unknown>;
 }>> = {
   chat_completions: {
     id: DSH_PROVIDER_ID,
     api: "openai-completions",
-    displayName: "DeepAA 网关",
     baseURL: gatewayBaseUrl => `${gatewayBaseUrl}/dsh/v1`,
     compat: {supportsDeveloperRole: false, maxTokensField: "max_tokens"},
   },
   responses: {
     id: DSH_PROVIDER_RESPONSES_ID,
     api: "openai-responses",
-    displayName: "DeepAA 网关（Responses）",
     baseURL: gatewayBaseUrl => `${gatewayBaseUrl}/dsh/v1`,
   },
   messages: {
     id: DSH_PROVIDER_ANTHROPIC_ID,
     api: "anthropic-messages",
-    displayName: "DeepAA 网关（Anthropic）",
     baseURL: gatewayBaseUrl => `${gatewayBaseUrl}/dsh`,
   },
 };
@@ -548,7 +545,7 @@ function buildManagedSections(
     if (models.length === 0) continue;
     const route = DSH_ROUTES[wire];
     providers[route.id] = {
-      displayName: route.displayName,
+      displayName: GATEWAY_PROVIDER_DISPLAY_NAMES[wire],
       apiKeyEnv: DSH_API_KEY_ENV,
       api: route.api,
       baseURL: route.baseURL(context.gatewayBaseUrl),

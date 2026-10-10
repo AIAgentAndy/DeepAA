@@ -43,3 +43,9 @@ incremental_lines.txt
 
 # 隔离验证实例的 Next 构建产物（DEEPAA_NEXT_DIST_DIR）
 .next-verify/
+
+# ─── 本地私有资料（维护者本机存在，不随仓库发布）──
+# 已跟踪的 docs/logo/logo.png 与 docs/ui-redesign-v4/demo.css 不受忽略规则影响。
+/AGENTS.md
+/docs/
+/public/deepaa-logo-review*.html

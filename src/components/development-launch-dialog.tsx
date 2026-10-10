@@ -237,7 +237,7 @@ export function DevelopmentLaunchDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 切换默认供应商：清空模型/密钥/终端等目标相关状态并按新目标重跑预检。
+  // 切换默认供应商：清空模型/密钥等目标相关状态并按新目标重跑预检。
   const targetSwitchRanRef = useRef(false);
   useEffect(() => {
     if (!targetSwitchRanRef.current) {
@@ -246,7 +246,10 @@ export function DevelopmentLaunchDialog({
     }
     setPreflight(null);
     setCredentialId(target.development?.defaultCredentials?.[cli] || "");
-    setTerminal("");
+    // 启动形态与供应商无关（codex-client / dsh-app 是客户端形态值）：切换供应商不得
+    // 把「Codex 客户端」重置回终端形态；普通终端选择仍是目标相关状态，清空后由
+    // 新目标预检回填 preferredTerminal。
+    setTerminal(current => SPECIAL_LAUNCH_TERMINAL_IDS.has(current) ? current : "");
     setSelectedModel("");
     setModelSource("unset");
     setModelModified(false);
