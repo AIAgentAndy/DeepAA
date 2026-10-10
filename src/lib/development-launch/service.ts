@@ -702,6 +702,22 @@ export class DevelopmentLaunchService {
           console.error("[deepaa] development launch preference persist failed", error);
         });
       }
+      // 模型经受管配置承载的 Agent（opencode v2 TUI 无 -m 旗标，声明
+      // modelFromManagedConfig）：启动前把本次所选模型预落库为默认，随后
+      // preSyncManagedConfig 写入受管配置 model 字段，TUI 启动即读到所选
+      // 模型；失败不阻断（回退已存默认模型）。
+      if (strategy.modelFromManagedConfig && resolvedModel && this.configProvider.updateConfig) {
+        await this.configProvider.updateConfig({
+          agentConnectionPatch: {
+            agent: cli,
+            action: "connect",
+            defaultTargetId: target.id,
+            defaultModelId: resolvedModel,
+          },
+        }).catch(error => {
+          console.error("[deepaa] development launch model pre-persist failed", error);
+        });
+      }
       const effectiveLaunchMode = strategy.fixedLaunchMode ?? input.launchMode;
       const prepared = await prepareDevelopmentLaunch({
         tempRoot: this.tempRoot,
@@ -1087,6 +1103,14 @@ async function cleanupExpiredLaunchArtifacts(tempRoot: string): Promise<void> {
   try {
     for await (const entry of directory) {
       if (++processed > MAX_CLEANUP_ENTRIES) break;
+      // Windows 固化 CLI 启动脚本（platform-windows writeWindowsCliLaunchScript）
+      // 与启动计划目录同规则：24 小时后回收；macOS 不产生该类文件，行为不变。
+      if (!entry.isDirectory() && /^launch_[A-Za-z0-9._-]+\.ps1$/.test(entry.name)) {
+        const filePath = join(tempRoot, entry.name);
+        const fileMetadata = await stat(filePath).catch(() => undefined);
+        if (fileMetadata && fileMetadata.mtimeMs < cutoff) await rm(filePath, {force: true});
+        continue;
+      }
       if (!entry.isDirectory() || !/^launch_[A-Za-z0-9._-]+$/.test(entry.name)) continue;
       const path = join(tempRoot, entry.name);
       const metadata = await stat(path).catch(() => undefined);

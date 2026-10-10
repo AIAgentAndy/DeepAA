@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import {
   MacDevelopmentPlatformAdapter,
   buildMacDirectoryPickerCommand,
@@ -14,6 +14,7 @@ import {
 } from "../src/lib/development-launch/platform-windows.js";
 import {
   createDevelopmentPlatformAdapter,
+  runDevelopmentCommand,
   type CommandSpec,
   terminalProcessOptions,
   unsupportedDevelopmentCapabilities,
@@ -211,6 +212,67 @@ describe("development launch platform adapters", () => {
     expect(command.args.join(" ")).toContain("FolderBrowserDialog");
   });
 
+  test("Windows 目录选择对话框带 TopMost 属主并在弹出前写就绪标记（2026-10-11 置顶修复）", () => {
+    const script = buildWindowsDirectoryPickerCommand("C:\\Windows").args.join(" ");
+
+    // 属主 TopMost（能传播的上下文直接受益）+ 就绪标记先于 ShowDialog。
+    expect(script).toContain("$owner.TopMost = $true");
+    expect(script).toContain("ShowDialog($owner)");
+    expect(script).toContain("__DEEPAA_DIALOG_UP__");
+    expect(script.indexOf("__DEEPAA_DIALOG_UP__")).toBeLessThan(script.indexOf("ShowDialog($owner)"));
+    // 确定性置顶：伴随子进程对对话框本体 SetWindowPos(HWND_TOPMOST)，
+    // 不依赖属主样式传播（实测 Next.js 服务端上下文传播失效，对话框被压底不可见）。
+    expect(script).toContain("SetWindowPos");
+    expect(script).toContain("[IntPtr](-1)");
+    expect(script).toContain("__PICKER_PID__");
+  });
+
+  test("Windows 选择目录：就绪超时映射为 DIRECTORY_PICKER_NOT_SHOWN", async () => {
+    const runOptions: unknown[] = [];
+    const adapter = new WindowsDevelopmentPlatformAdapter({
+      run: async (_command, options) => {
+        runOptions.push(options);
+        throw new Error("COMMAND_NOT_READY");
+      },
+    });
+
+    await expect(adapter.selectDirectory()).rejects.toThrow("DIRECTORY_PICKER_NOT_SHOWN");
+    expect(runOptions[0]).toMatchObject({
+      timeoutMs: 5 * 60_000,
+      readyMarker: "__DEEPAA_DIALOG_UP__",
+      readyTimeoutMs: 30_000,
+    });
+  });
+
+  test("Windows 选择目录：剥离就绪标记后解析所选路径", async () => {
+    const root = await mkdtemp(join(tmpdir(), "platform-picker-path-"));
+    tempRoots.push(root);
+    const adapter = new WindowsDevelopmentPlatformAdapter({
+      run: async () => ({
+        stdout: `__DEEPAA_DIALOG_UP__${root}`,
+        stderr: "",
+        exitCode: 0,
+      }),
+    });
+
+    const selection = await adapter.selectDirectory();
+
+    expect(selection.cancelled).toBe(false);
+    expect(selection.path).toBe(await realpath(root));
+  });
+
+  test("Windows 选择目录：就绪标记与取消标记同块到达仍判取消", async () => {
+    const adapter = new WindowsDevelopmentPlatformAdapter({
+      run: async () => ({
+        stdout: "__DEEPAA_DIALOG_UP____DEEPAA_CANCELLED__",
+        stderr: "",
+        exitCode: 0,
+      }),
+    });
+
+    expect(await adapter.selectDirectory()).toEqual({cancelled: true});
+  });
+
   test("Windows Terminal 使用固定 PowerShell 脚本直接执行参数数组", () => {
     const cliArgs = ["-C", "C:\\开发\\demo", "-m", "gpt-5.6"];
     const command = buildWindowsTerminalCommand({
@@ -233,19 +295,79 @@ describe("development launch platform adapters", () => {
     expect(command.args.join(" ")).not.toContain("launch.json");
   });
 
-  test("传统 PowerShell 保持独立窗口且不伪造标签页能力", () => {
+  test("传统 PowerShell 经 cmd start 新控制台执行固化脚本（2026-10-11 可见性修复）", () => {
     const command = buildWindowsTerminalCommand({
       terminalId: "powershell",
-      terminalExecutable: "C:\\Program Files\\WindowsApps\\wt.exe",
+      terminalExecutable: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       powershellExecutable: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      systemRoot: "C:\\Windows",
       executablePath: "C:\\tools\\codex.cmd",
       args: ["-m", "gpt-5.6"],
       environment: {},
       projectDir: "C:\\demo",
+      launcherScriptPath: "C:\\Temp\\deepaa-launch\\launch_abc.ps1",
     });
 
-    expect(command.args).not.toContain("new-tab");
-    expect(command.args).not.toContain("-w");
+    // DETACHED 直接 spawn powershell 实测无控制台；必须经 cmd /c start 建新控制台。
+    expect(command.command.toLowerCase()).toContain("cmd.exe");
+    expect(command.args.slice(0, 3)).toEqual(["/c", "start", '"DeepAA"']);
+    expect(command.args).toContain("-NoExit");
+    expect(command.args).toContain("-File");
+    expect(command.args.at(-1)).toBe("C:\\Temp\\deepaa-launch\\launch_abc.ps1");
+    // CLI 细节全部走固化脚本，不进命令行（规避 cmd 引号二次解析）。
+    expect(command.args.join(" ")).not.toContain("codex.cmd");
+    expect(command.args.join(" ")).not.toContain("new-tab");
+    expect(command.args.join(" ")).not.toContain("-w");
+  });
+
+  test("powershell 终端启动固化脚本内容并保持可见形态", async () => {
+    const root = await mkdtemp(join(tmpdir(), "platform-terminal-launch-"));
+    tempRoots.push(root);
+    const systemRoot = join(root, "windows");
+    const powershell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    await mkdir(dirname(powershell), {recursive: true});
+    await writeFile(powershell, "x", "utf8");
+    const tempRoot = join(root, "launch");
+    const launched: CommandSpec[] = [];
+    const adapter = new WindowsDevelopmentPlatformAdapter({
+      env: {PATH: "", SystemRoot: systemRoot},
+      tempRoot,
+      launch: async command => { launched.push(command); },
+    });
+
+    await adapter.openTerminal({
+      terminalId: "powershell",
+      projectDir: "D:\\项目 'demo'",
+      executablePath: "C:\\Users\\andy\\AppData\\Roaming\\npm\\opencode.cmd",
+      args: ["D:\\项目 'demo'", "-m", "model_x"],
+      environment: {OPENCODE_API_KEY: "sk 'value'"},
+    });
+
+    expect(launched).toHaveLength(1);
+    expect(launched[0].command.toLowerCase()).toContain("cmd.exe");
+    expect(launched[0].args).toContain("start");
+    const scriptPath = launched[0].args.at(-1)!;
+    const script = await readFile(scriptPath, "utf8");
+    expect(script).toContain("$ErrorActionPreference = 'Stop'");
+    expect(script).toContain("$env:OPENCODE_API_KEY = 'sk ''value'''");
+    expect(script).toContain("Set-Location -LiteralPath 'D:\\项目 ''demo'''");
+    expect(script).toContain("& 'C:\\Users\\andy\\AppData\\Roaming\\npm\\opencode.cmd' @('D:\\项目 ''demo''', '-m', 'model_x')");
+  });
+
+  test("Windows 可执行解析 PATHEXT 优先于无扩展名 sh shim（2026-10-11 修复）", async () => {
+    const root = await mkdtemp(join(tmpdir(), "platform-pathtext-"));
+    tempRoots.push(root);
+    const npmBin = join(root, "npm");
+    await mkdir(npmBin, {recursive: true});
+    // npm 目录典型布局：无扩展名 sh shim + .cmd 才是 Windows 可执行入口。
+    await writeFile(join(npmBin, "opencode"), "#!/bin/sh\n", "utf8");
+    await writeFile(join(npmBin, "opencode.cmd"), "@echo off\n", "utf8");
+    const adapter = new WindowsDevelopmentPlatformAdapter({
+      env: {PATH: npmBin},
+      homeDir: join(root, "home"),
+    });
+
+    expect(await adapter.resolveExecutable("opencode")).toBe(join(npmBin, "opencode.cmd"));
   });
 
   test("rejects unsupported desktop platforms", () => {
@@ -467,6 +589,33 @@ describe("development launch platform adapters", () => {
     expect(result.agents.claude).toMatchObject({available: true, executablePath: join(pathDir, "claude")});
     expect(result.agents.opencode).toMatchObject({available: true, executablePath: join(pathDir, "opencode")});
     expect(commands.every(command => !command.args.includes("--version"))).toBe(true);
+  });
+
+  test("runDevelopmentCommand：就绪标记到点未见即终止并报 COMMAND_NOT_READY", async () => {
+    // 子进程不输出标记且保持存活：就绪超时（500ms）先于总超时（5s）触发。
+    await expect(runDevelopmentCommand({
+      command: process.execPath,
+      args: ["-e", "setTimeout(() => {}, 15000)"],
+    }, {
+      timeoutMs: 5_000,
+      readyMarker: "__READY__",
+      readyTimeoutMs: 500,
+    })).rejects.toThrow("COMMAND_NOT_READY");
+  });
+
+  test("runDevelopmentCommand：见到就绪标记后就绪超时不再计时，仅受总超时约束", async () => {
+    // 子进程立刻输出标记，随后存活 1.2s（超过 500ms 就绪窗口）后正常退出。
+    const result = await runDevelopmentCommand({
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('__READY__'); setTimeout(() => process.exit(0), 1200)"],
+    }, {
+      timeoutMs: 5_000,
+      readyMarker: "__READY__",
+      readyTimeoutMs: 500,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("__READY__");
   });
 });
 

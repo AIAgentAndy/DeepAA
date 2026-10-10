@@ -39,8 +39,10 @@ describe("buildDevelopmentLaunchCommand (opencode)", () => {
     // 项目目录必须是第一个位置参数；主命令没有 --dir 选项。
     expect(command.args[0]).toBe(baseInput.projectDir);
     expect(command.args).not.toContain("--dir");
-    expect(command.args[command.args.length - 2]).toBe("-m");
-    expect(command.args[command.args.length - 1]).toBe(expectedModel);
+    // opencode v2 TUI 已移除 -m 旗标（实测 v2.0.26 Unrecognized flag: -m 拒参
+    // 退出）：模型走受管配置默认（modelFromManagedConfig：启动前预落库 +
+    // preSync 写入 model 字段），v1 同样读取该配置字段。
+    expect(command.args).toEqual([baseInput.projectDir]);
   });
 
   test("headless 形态保留 run 子命令的合法 --dir", () => {

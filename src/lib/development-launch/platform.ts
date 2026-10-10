@@ -19,9 +19,20 @@ export interface CommandResult {
   exitCode: number;
 }
 
+export interface DevelopmentCommandOptions {
+  timeoutMs?: number;
+  /**
+   * 就绪标记：子进程 stdout 中出现该子串即视为「就绪」（如目录选择对话框已弹出，
+   * 正在等待用户交互）。就绪后就绪超时不再计时，仅保留 timeoutMs 总超时，避免
+   * 用户慢慢挑目录时被误杀；到点未见标记则终止进程并抛 COMMAND_NOT_READY。
+   */
+  readyMarker?: string;
+  readyTimeoutMs?: number;
+}
+
 export type DevelopmentCommandRunner = (
   command: CommandSpec,
-  options?: { timeoutMs?: number },
+  options?: DevelopmentCommandOptions,
 ) => Promise<CommandResult>;
 
 export type DevelopmentTerminalLauncher = (
@@ -95,7 +106,7 @@ export function unsupportedDevelopmentCapabilities(
 
 export async function runDevelopmentCommand(
   spec: CommandSpec,
-  options: { timeoutMs?: number } = {},
+  options: DevelopmentCommandOptions = {},
 ): Promise<CommandResult> {
   return await new Promise((resolvePromise, reject) => {
     const child = spawn(spec.command, spec.args, {
@@ -106,10 +117,13 @@ export async function runDevelopmentCommand(
     let stderr = "";
     let outputBytes = 0;
     let settled = false;
+    let readySeen = options.readyMarker === undefined;
+    let readyTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(readyTimer);
       callback();
     };
     const append = (current: string, chunk: Buffer | string): string => {
@@ -123,7 +137,13 @@ export async function runDevelopmentCommand(
       return current + value;
     };
 
-    child.stdout.on("data", chunk => { stdout = append(stdout, chunk); });
+    child.stdout.on("data", chunk => {
+      stdout = append(stdout, chunk);
+      if (!readySeen && stdout.includes(options.readyMarker!)) {
+        readySeen = true;
+        clearTimeout(readyTimer);
+      }
+    });
     child.stderr.on("data", chunk => { stderr = append(stderr, chunk); });
     child.once("error", error => finish(() => reject(error)));
     child.once("close", code => finish(() => resolvePromise({
@@ -139,6 +159,14 @@ export async function runDevelopmentCommand(
       finish(() => reject(new Error("COMMAND_TIMEOUT")));
     }, options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS);
     timer.unref();
+
+    if (options.readyMarker !== undefined) {
+      readyTimer = setTimeout(() => {
+        child.kill();
+        finish(() => reject(new Error("COMMAND_NOT_READY")));
+      }, options.readyTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS);
+      readyTimer.unref();
+    }
   });
 }
 

@@ -188,12 +188,9 @@ describe("development launch commands", () => {
   test("OpenCode 启动命令按 wire API 选择 provider，支持 TUI/headless/恢复", () => {
     const base = opencodeInput();
     const tui = buildDevelopmentLaunchCommand(base);
-    // TUI 形态：主命令用位置参数传项目目录（不支持 --dir，见 launch-plan 注释）。
-    expect(tui.args).toEqual([
-      "/Users/andy/项目/demo",
-      "-m",
-      "opencode-deepaa-gateway-responses/gpt-5.6_catapi.chat",
-    ]);
+    // TUI 形态：主命令用位置参数传项目目录（不支持 --dir，见 launch-plan 注释）；
+    // v2 TUI 无 -m 旗标，模型走受管配置默认（modelFromManagedConfig）。
+    expect(tui.args).toEqual(["/Users/andy/项目/demo"]);
     expect(tui.environment.DEEPAA_GATEWAY_TOKEN).toBe("deepaa-gateway");
 
     const resumed = buildDevelopmentLaunchCommand({
@@ -218,9 +215,13 @@ describe("development launch commands", () => {
       "opencode-deepaa-gateway-responses/gpt-5.6_catapi.chat",
     );
 
+    // wire API 变体的 provider 差异仅体现在 headless -m（TUI 无旗标，模型经
+    // 受管配置默认承载；provider 由 preSync 按同一 wireApi 解析写入配置）。
     const chat = buildDevelopmentLaunchCommand({
       ...base,
       opencodeWireApi: "chat_completions",
+      launchMode: "headless",
+      task: "帮我修复测试",
     });
     expect(chat.args.at(-1)).toBe(
       "opencode-deepaa-gateway-chat/gpt-5.6_catapi.chat",
@@ -228,6 +229,8 @@ describe("development launch commands", () => {
     const messages = buildDevelopmentLaunchCommand({
       ...base,
       opencodeWireApi: "messages",
+      launchMode: "headless",
+      task: "帮我修复测试",
     });
     expect(messages.args.at(-1)).toBe(
       "opencode-deepaa-gateway-anthropic/gpt-5.6_catapi.chat",

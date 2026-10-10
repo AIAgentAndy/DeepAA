@@ -46,11 +46,15 @@ export const opencodeLaunchStrategy: import("./types").AgentLaunchStrategy = {
     if (input.launchMode === "headless") {
       if (typeof input.task !== "string" || !input.task.trim()) throw new Error("TASK_REQUIRED");
       const task = validateText(input.task, "TASK_REQUIRED", 4096);
+      // headless 走 run 子命令：v1/v2 均支持 --model/-m（实测 v2.0.26）。
       return {args: ["run", task, "--dir", input.projectDir, "-m", model], environment: {}};
     }
-    // TUI 形态：opencode 主命令只接受位置参数作为项目目录，不支持 --dir；
+    // TUI 形态：opencode v2 TUI 已移除 -m 旗标（实测 v2.0.26 Unrecognized
+    // flag: -m 拒参退出），模型经 modelFromManagedConfig 声明走受管配置默认
+    // （service 启动前预落库 + preSync 写入 model 字段），v1 同样读取该配置。
+    // 主命令只接受位置参数作为项目目录，不支持 --dir；
     // 传 --dir 会被 yargs 判为未知选项并打印 help 而非启动 TUI。
-    const args = [input.projectDir, "-m", model];
+    const args = [input.projectDir];
     if (input.resumeSessionId) {
       args.push("--session", input.resumeSessionId);
     }

@@ -1,5 +1,6 @@
-import { access, realpath, stat } from "fs/promises";
-import { homedir } from "os";
+import { access, mkdir, realpath, stat, writeFile } from "fs/promises";
+import { randomUUID } from "crypto";
+import { homedir, tmpdir } from "os";
 import { basename, delimiter, extname, join } from "path";
 import type { DevelopmentCli, PlatformCapabilities, TerminalCapability } from "./types";
 import {LAUNCH_EXECUTABLE_BY_AGENT, agentLaunchStrategy, launchStrategyList} from "./strategies";
@@ -15,12 +16,80 @@ import {
   launchDevelopmentTerminal,
 } from "./platform";
 
+/**
+ * 目录选择对话框就绪标记：脚本在 ShowDialog 阻塞等待用户前写入 stdout，
+ * Node 侧据此判定「对话框已弹出」，就绪超时到点未见标记则终止并报
+ * DIRECTORY_PICKER_NOT_SHOWN（对话框被环境吞掉时不再干等总超时）。
+ */
+const DIRECTORY_PICKER_READY_MARKER = "__DEEPAA_DIALOG_UP__";
+const DIRECTORY_PICKER_READY_TIMEOUT_MS = 30_000;
+const DIRECTORY_PICKER_TOTAL_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * 置顶伴随进程（经 -EncodedCommand 注入隐藏子进程运行）：主进程对话框出现后，
+ * 找到其可见的 #32770 对话框并直接 SetWindowPos(HWND_TOPMOST) + 请求前置。
+ * 实测（2026-10-11）：仅凭属主窗体 TopMost（句柄未创建时设置）在部分后台进程
+ * 上下文（如 Next.js 服务端拉起）不会传播到对话框（对话框 NOTOPMOST、被压在
+ * 浏览器等窗口后且无任务栏入口，用户完全看不见）；对对话框本体施加置顶是
+ * 上下文无关的确定性修复。新拉起的子进程有短暂前台权限，置顶后通常可一并
+ * 拿到焦点；即使焦点被前台锁拒绝，置顶也保证可见可点。
+ */
+const DIRECTORY_PICKER_FORCE_TOPMOST_HELPER = String.raw`
+Add-Type -TypeDefinition @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public class DeepAAPickerTopmost {
+  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern int GetClassName(IntPtr hWnd, StringBuilder sb, int max);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+}
+"@
+$pickerPid = __PICKER_PID__
+$deadline = [DateTime]::UtcNow.AddSeconds(25)
+while ([DateTime]::UtcNow -lt $deadline) {
+  Start-Sleep -Milliseconds 150
+  $script:found = [IntPtr]::Zero
+  $cb = {
+    param($hWnd, $lParam)
+    $wpid = 0
+    [Void][DeepAAPickerTopmost]::GetWindowThreadProcessId($hWnd, [Ref]$wpid)
+    if ($wpid -eq $pickerPid -and [DeepAAPickerTopmost]::IsWindowVisible($hWnd)) {
+      $cls = New-Object System.Text.StringBuilder 256
+      [Void][DeepAAPickerTopmost]::GetClassName($hWnd, $cls, 256)
+      if ($cls.ToString() -eq '#32770') { $script:found = $hWnd; return $false }
+    }
+    return $true
+  }
+  [Void][DeepAAPickerTopmost]::EnumWindows($cb, [IntPtr]::Zero)
+  if ($script:found -ne [IntPtr]::Zero) {
+    [Void][DeepAAPickerTopmost]::SetWindowPos($script:found, [IntPtr](-1), 0, 0, 0, 0, 0x3)
+    [Void][DeepAAPickerTopmost]::SetForegroundWindow($script:found)
+    break
+  }
+}`;
+
 const DIRECTORY_PICKER_SCRIPT = String.raw`
 Add-Type -AssemblyName System.Windows.Forms
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$owner.ShowInTaskbar = $false
 $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
 $dialog.Description = '选择项目目录'
 $dialog.ShowNewFolderButton = $false
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+$forcer = @'
+${DIRECTORY_PICKER_FORCE_TOPMOST_HELPER}
+'@
+$forcer = $forcer.Replace('__PICKER_PID__', [string]$PID)
+$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($forcer))
+Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand', $encoded)
+[Console]::Out.Write('${DIRECTORY_PICKER_READY_MARKER}')
+[Console]::Out.Flush()
+if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
   [Console]::Out.Write($dialog.SelectedPath)
 } else {
   [Console]::Out.Write('__DEEPAA_CANCELLED__')
@@ -46,6 +115,44 @@ export function windowsPowerShellPath(systemRoot = process.env.SystemRoot || "C:
   return join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 }
 
+export function windowsCmdPath(systemRoot = process.env.SystemRoot || "C:\\Windows"): string {
+  return join(systemRoot, "System32", "cmd.exe");
+}
+
+/** PowerShell 单引号字面量：内嵌单引号翻倍，任何内容安全固化进脚本。 */
+function powershellSingleQuoted(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+const CLI_LAUNCH_ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * 固化 CLI 启动脚本（tempRoot 下 launch_<uuid>.ps1）：环境变量、工作目录与
+ * 参数全部烘焙进文件，cmd /c start 只携带简单路径参数，规避 cmd 对引号与
+ * JSON 参数的二次解析破坏（实测 2026-10-11）。脚本由 service 的
+ * cleanupExpiredLaunchArtifacts 按 24h 规则回收。
+ */
+async function writeWindowsCliLaunchScript(input: {
+  tempRoot: string;
+  executablePath: string;
+  args: string[];
+  environment: Record<string, string>;
+  projectDir: string;
+}): Promise<string> {
+  await mkdir(input.tempRoot, {recursive: true});
+  const scriptPath = join(input.tempRoot, `launch_${randomUUID().replaceAll("-", "")}.ps1`);
+  const lines = [
+    "$ErrorActionPreference = 'Stop'",
+    ...Object.entries(input.environment)
+      .filter(([key]) => CLI_LAUNCH_ENV_KEY_PATTERN.test(key))
+      .map(([key, value]) => `$env:${key} = ${powershellSingleQuoted(String(value))}`),
+    `Set-Location -LiteralPath ${powershellSingleQuoted(input.projectDir)}`,
+    `& ${powershellSingleQuoted(input.executablePath)} @(${input.args.map(powershellSingleQuoted).join(", ")})`,
+  ];
+  await writeFile(scriptPath, lines.join("\r\n"), "utf8");
+  return scriptPath;
+}
+
 export function buildWindowsDirectoryPickerCommand(systemRoot?: string): CommandSpec {
   return {
     command: windowsPowerShellPath(systemRoot),
@@ -61,6 +168,9 @@ export function buildWindowsTerminalCommand(input: {
   args: string[];
   environment: Record<string, string>;
   projectDir: string;
+  systemRoot?: string;
+  /** powershell 终端：已固化的启动脚本路径（writeWindowsCliLaunchScript 产物）。 */
+  launcherScriptPath?: string;
 }): CommandSpec {
   const powershellArguments = [
     "-NoLogo",
@@ -88,9 +198,25 @@ export function buildWindowsTerminalCommand(input: {
     };
   }
   if (input.terminalId === "powershell") {
+    // DETACHED + stdio ignore 直接 spawn powershell 实测无控制台（进程即死或
+    // 不可见，CLI 静默失败）；cmd /c start 为目标进程显式创建新控制台（用户
+    // 会话实测窗口可见可点，2026-10-11）。CLI 细节全部走 -File 固化脚本。
+    if (!input.launcherScriptPath) throw new Error("TERMINAL_NOT_FOUND");
     return {
-      command: input.powershellExecutable,
-      args: powershellArguments,
+      command: windowsCmdPath(input.systemRoot),
+      args: [
+        "/c",
+        "start",
+        '"DeepAA"',
+        input.powershellExecutable,
+        "-NoLogo",
+        "-NoProfile",
+        "-NoExit",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        input.launcherScriptPath,
+      ],
     };
   }
   throw new Error("TERMINAL_NOT_FOUND");
@@ -102,12 +228,14 @@ export class WindowsDevelopmentPlatformAdapter implements DevelopmentPlatformAda
   private readonly launch: DevelopmentTerminalLauncher;
   private readonly env: NodeJS.ProcessEnv;
   private readonly homeDir: string;
+  private readonly tempRoot: string;
 
   constructor(options: PlatformAdapterOptions = {}) {
     this.run = options.run || runDevelopmentCommand;
     this.launch = options.launch || launchDevelopmentTerminal;
     this.env = options.env || process.env;
     this.homeDir = options.homeDir || homedir();
+    this.tempRoot = options.tempRoot || join(tmpdir(), "deepaa-launch");
   }
 
   /**
@@ -164,10 +292,18 @@ export class WindowsDevelopmentPlatformAdapter implements DevelopmentPlatformAda
 
   async selectDirectory(): Promise<DirectorySelection> {
     const result = await this.run(buildWindowsDirectoryPickerCommand(this.env.SystemRoot), {
-      timeoutMs: 5 * 60_000,
+      timeoutMs: DIRECTORY_PICKER_TOTAL_TIMEOUT_MS,
+      readyMarker: DIRECTORY_PICKER_READY_MARKER,
+      readyTimeoutMs: DIRECTORY_PICKER_READY_TIMEOUT_MS,
+    }).catch((error: unknown) => {
+      if (error instanceof Error && error.message === "COMMAND_NOT_READY") {
+        throw new Error("DIRECTORY_PICKER_NOT_SHOWN");
+      }
+      throw error;
     });
     if (result.exitCode !== 0) throw new Error("DIRECTORY_PICKER_FAILED");
-    const selected = result.stdout.trim();
+    // stdout 形如「<就绪标记><所选路径>」：剥离标记后解析，兼容标记与路径同块到达。
+    const selected = result.stdout.split(DIRECTORY_PICKER_READY_MARKER).join("").trim();
     if (!selected || selected === "__DEEPAA_CANCELLED__") return { cancelled: true };
     const canonicalPath = await realpath(selected);
     if (!(await stat(canonicalPath)).isDirectory()) throw new Error("INVALID_PROJECT_DIR");
@@ -257,6 +393,29 @@ export class WindowsDevelopmentPlatformAdapter implements DevelopmentPlatformAda
     const selected = terminals.find(item => item.id === request.terminalId && item.available);
     if (!selected?.executablePath) throw new Error("TERMINAL_NOT_FOUND");
     const powershellExecutable = windowsPowerShellPath(this.env.SystemRoot);
+    if (request.terminalId === "powershell") {
+      // 传统 PowerShell：先固化 CLI 启动脚本，再经 cmd /c start 建新控制台
+      //（直接 DETACHED spawn 实测无控制台，见 buildWindowsTerminalCommand 注释）。
+      const launcherScriptPath = await writeWindowsCliLaunchScript({
+        tempRoot: this.tempRoot,
+        executablePath: request.executablePath,
+        args: request.args,
+        environment: request.environment,
+        projectDir: request.projectDir,
+      });
+      await this.launch(buildWindowsTerminalCommand({
+        terminalId: request.terminalId,
+        terminalExecutable: selected.executablePath,
+        powershellExecutable,
+        systemRoot: this.env.SystemRoot,
+        executablePath: request.executablePath,
+        args: request.args,
+        environment: request.environment,
+        projectDir: request.projectDir,
+        launcherScriptPath,
+      }), "win32");
+      return;
+    }
     await this.launch(buildWindowsTerminalCommand({
       terminalId: request.terminalId,
       terminalExecutable: selected.executablePath,
@@ -277,13 +436,19 @@ async function findWindowsExecutable(name: string, env: NodeJS.ProcessEnv): Prom
   return null;
 }
 
-/** 字面路径优先，其次按 PATHEXT 追加扩展名（兼容 .exe / .cmd）。 */
+/**
+ * 扩展名解析（Windows）：PATHEXT 后缀优先，字面路径兜底。npm 等包管理器在
+ * Windows 同时落地无扩展名 sh shim（供 Git Bash/WSL）与 .cmd/.exe（供
+ * CreateProcess）；字面优先会命中 sh 脚本，PowerShell `&` 无法执行导致 CLI
+ * 启动静默失败（实测 2026-10-11，opencode / npx 均踩中）。
+ */
 async function findWindowsExecutableWithExtensions(
   candidate: string,
   env: NodeJS.ProcessEnv,
 ): Promise<string | null> {
-  if (await pathExists(candidate)) return candidate;
-  if (extname(candidate)) return null;
+  if (extname(candidate)) {
+    return await pathExists(candidate) ? candidate : null;
+  }
   const extensions = (env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
     .split(";")
     .filter(Boolean)
@@ -292,7 +457,7 @@ async function findWindowsExecutableWithExtensions(
     const withExtension = `${candidate}${extension}`;
     if (await pathExists(withExtension)) return withExtension;
   }
-  return null;
+  return await pathExists(candidate) ? candidate : null;
 }
 
 async function pathExists(path: string): Promise<boolean> {

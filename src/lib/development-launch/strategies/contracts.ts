@@ -74,6 +74,13 @@ export interface AgentLaunchDeclarations {
   /** headless 一次性任务内容消费（opencode）。 */
   consumesHeadlessTask?: boolean;
   /**
+   * 模型选择由受管配置默认模型承载（无 CLI 旗标）：opencode v2 TUI 已移除
+   * -m 旗标（实测 v2.0.26 Unrecognized flag: -m 直接拒参退出），启动前须把
+   * 本次所选模型预落库（service 扩展 pre-execute patch），随 preSync 写入
+   * 受管配置 model 字段，TUI 启动即读到所选模型。声明驱动，勿写 agent 分派。
+   */
+  modelFromManagedConfig?: boolean;
+  /**
    * 官方直连形态启动（2026-10-09 用户确认，本期仅 codex）：CLI 形态为官方模式
    * （cliSyncEnabled=false，受管层已清空）时，启动不注入任何网关参数、不写受管
    * 配置（含 config.toml 顶层默认模型——否则指向已删除的 provider），原生拉起
@@ -143,6 +150,7 @@ export const AGENT_LAUNCH_DECLARATIONS: Readonly<Record<AgentId, AgentLaunchDecl
     requiresTempSettings: false,
     consumesLaunchPreferences: true,
     consumesHeadlessTask: true,
+    modelFromManagedConfig: true,
     manualOverrideKeys: [],
     launchPreferenceFields: ["modelReasoningEffort", "modelContextWindow"],
     capabilityProbe: "path",
