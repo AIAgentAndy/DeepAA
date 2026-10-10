@@ -50,12 +50,14 @@ jobs:
           emit() {
             local log="$1"
             [ -f "$log" ] || return 0
+            local clean="${log%.log}-clean.log"
+            sed 's/\x1b\[[0-9;]*m//g' "$log" > "$clean" || cp "$log" "$clean"
             local count=0
             while IFS= read -r line; do
               printf '::error title=%s::%s\n' "$log" "$(printf '%s' "$line" | cut -c1-220)"
               count=$((count+1))
               if [ "$count" -ge 10 ]; then break; fi
-            done < <(grep -E "^not ok|^# fail [1-9]|^ FAIL |Unhandled|failed" "$log" | grep -v "0 failed" | head -40)
+            done < <(grep -E "FAIL |not ok [1-9]|^# fail [1-9]|Unhandled|AssertionError|TypeError:" "$clean" | grep -v "0 failed" | head -40)
           }
           emit vitest-output.log
           emit sqlite-output.log
