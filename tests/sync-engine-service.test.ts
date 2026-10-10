@@ -754,6 +754,136 @@ describe("同步周期与保存后立即同步", () => {
     }
   });
 
+  test("档位+付款周期取价自动回填（2026-10-10）：显式档位优先且不依赖套餐名带档位词，按周期取折算月价", async () => {
+    const fetchImpl = (async () => new Response(JSON.stringify({
+      limits: [{detail: {limit: 100, remaining: 40, resetTime: 1_780_329_600_000}}],
+    }), {status: 200, headers: {"content-type": "application/json"}})) as typeof fetch;
+    const planCatalog: ProviderCatalog = {
+      publishedAt: "2026-09-04",
+      providers: {
+        "moonshot-cn": {
+          name: "Kimi / Moonshot（中国区）",
+          brandId: "moonshot",
+          pricingProviderId: "moonshot-cn",
+          region: "cn",
+          category: "cn_official",
+          planTiers: [
+            {id: "lite", name: "Kimi For Coding 尝鲜版", monthlyFee: 19, billingCycles: {monthly: 19, quarterly: 15.2, yearly: 12.7}},
+            {id: "pro", name: "Kimi For Coding 标准版", monthlyFee: 49, billingCycles: {monthly: 49, quarterly: 39.2, yearly: 39}},
+          ],
+          models: [],
+        },
+      },
+    };
+    const fixture = await createPlanFixture(fetchImpl, {planCatalog});
+    try {
+      // 目标已显式选择档位 pro + 付款周期 quarterly，未录月费：即使上游套餐名
+      // 「Kimi For Coding」不带档位词（对两个档位构成歧义），也按显式档位命中。
+      const current = fixture.configStore.getConfig();
+      await fixture.configStore.updateConfig({
+        expectedRevision: current.revision,
+        targetPatch: {id: "target-1", target: {pricing: {planTier: "pro", planBillingCycle: "quarterly"}}},
+      });
+      const {sync} = await fixture.service.savePlanSyncConfig({
+        targetId: "target-1",
+        providerType: "kimi-coding",
+        credentialId: "cred-good",
+        expectedRevision: fixture.configStore.getConfig().revision,
+      });
+      expect(sync).toEqual({ok: true, authRequired: false, message: null});
+      const saved = fixture.configStore.getConfig().targets.find(target => target.id === "target-1");
+      // Pro 按季折算月价 39.2（而非按月价 49）；档位与周期随回填保留在 pricing。
+      expect(saved?.pricing?.planMonthlyFee).toBe(39.2);
+      expect(saved?.pricing?.planTier).toBe("pro");
+      expect(saved?.pricing?.planBillingCycle).toBe("quarterly");
+    } finally {
+      fixture.db.close();
+    }
+  });
+
+  test("档位+付款周期取价自动回填：显式档位不在目录内时退回套餐名匹配，歧义仍不回填", async () => {
+    const fetchImpl = (async () => new Response(JSON.stringify({
+      limits: [{detail: {limit: 100, remaining: 40, resetTime: 1_780_329_600_000}}],
+    }), {status: 200, headers: {"content-type": "application/json"}})) as typeof fetch;
+    const planCatalog: ProviderCatalog = {
+      publishedAt: "2026-09-04",
+      providers: {
+        "moonshot-cn": {
+          name: "Kimi / Moonshot（中国区）",
+          brandId: "moonshot",
+          pricingProviderId: "moonshot-cn",
+          region: "cn",
+          category: "cn_official",
+          planTiers: [
+            {id: "lite", name: "Kimi For Coding 尝鲜版", monthlyFee: 19, billingCycles: {monthly: 19, quarterly: 15.2, yearly: 12.7}},
+            {id: "pro", name: "Kimi For Coding 标准版", monthlyFee: 49, billingCycles: {monthly: 49, quarterly: 39.2, yearly: 39}},
+          ],
+          models: [],
+        },
+      },
+    };
+    const fixture = await createPlanFixture(fetchImpl, {planCatalog});
+    try {
+      const current = fixture.configStore.getConfig();
+      await fixture.configStore.updateConfig({
+        expectedRevision: current.revision,
+        targetPatch: {id: "target-1", target: {pricing: {planTier: "not-in-catalog", planBillingCycle: "yearly"}}},
+      });
+      const {sync} = await fixture.service.savePlanSyncConfig({
+        targetId: "target-1",
+        providerType: "kimi-coding",
+        credentialId: "cred-good",
+        expectedRevision: fixture.configStore.getConfig().revision,
+      });
+      expect(sync).toEqual({ok: true, authRequired: false, message: null});
+      const saved = fixture.configStore.getConfig().targets.find(target => target.id === "target-1");
+      // 无效档位 id 不命中 → 退回套餐名匹配；「Kimi For Coding」对两档位歧义 → 不回填。
+      expect(saved?.pricing?.planMonthlyFee).toBeUndefined();
+    } finally {
+      fixture.db.close();
+    }
+  });
+
+  test("档位+付款周期取价自动回填：未显式选档位时按套餐名匹配并按周期取折算月价", async () => {
+    const fetchImpl = (async () => new Response(JSON.stringify({
+      limits: [{detail: {limit: 100, remaining: 40, resetTime: 1_780_329_600_000}}],
+    }), {status: 200, headers: {"content-type": "application/json"}})) as typeof fetch;
+    const planCatalog: ProviderCatalog = {
+      publishedAt: "2026-09-04",
+      providers: {
+        "moonshot-cn": {
+          name: "Kimi / Moonshot（中国区）",
+          brandId: "moonshot",
+          pricingProviderId: "moonshot-cn",
+          region: "cn",
+          category: "cn_official",
+          planTiers: [{name: "Kimi For Coding 标准版", monthlyFee: 49, billingCycles: {monthly: 49, quarterly: 39.2, yearly: 39}}],
+          models: [],
+        },
+      },
+    };
+    const fixture = await createPlanFixture(fetchImpl, {planCatalog});
+    try {
+      // 只选付款周期未显式选档位：按套餐名唯一命中档位后按周期取折算月价。
+      const current = fixture.configStore.getConfig();
+      await fixture.configStore.updateConfig({
+        expectedRevision: current.revision,
+        targetPatch: {id: "target-1", target: {pricing: {planBillingCycle: "quarterly"}}},
+      });
+      const {sync} = await fixture.service.savePlanSyncConfig({
+        targetId: "target-1",
+        providerType: "kimi-coding",
+        credentialId: "cred-good",
+        expectedRevision: fixture.configStore.getConfig().revision,
+      });
+      expect(sync).toEqual({ok: true, authRequired: false, message: null});
+      const saved = fixture.configStore.getConfig().targets.find(target => target.id === "target-1");
+      expect(saved?.pricing?.planMonthlyFee).toBe(39.2);
+    } finally {
+      fixture.db.close();
+    }
+  });
+
   test("plan-config API 拒绝值域外的同步周期", async () => {
     const nonce = getLaunchNonceStore().issue();
     const response = await savePlanConfig(new Request(

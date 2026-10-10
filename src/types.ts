@@ -228,6 +228,13 @@ export interface ProxyTargetPricingPolicy {
    * market_share 估算按「条目 × 档位」解析模型月度额度作分母。
    */
   planTier?: string;
+  /**
+   * 套餐付款周期（2026-10-10 智谱 Coding Plan）：目录档位 billingCycles 键
+   * （monthly/quarterly/yearly）。与 planTier/套餐名匹配一起决定目录折算月价
+   * （如 Pro 按季 430.4/月），作为套餐同步月费自动回填的取价依据；
+   * 不影响已手动录入的月费（回填守卫仍以 planMonthlyFee 为准）。
+   */
+  planBillingCycle?: "monthly" | "quarterly" | "yearly";
   currency?: string;
   /**
    * 结算展示币种元数据（2026-09-15 名实收口）：官方预设带出——cn 区 CNY、global 区 USD、

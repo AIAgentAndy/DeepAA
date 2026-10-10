@@ -17,7 +17,6 @@ import {activeDisplayPromotion, overlayDisplayRates, promotionWindowLabel} from 
 import {ModelDiscoveryTable} from "./model-discovery-table";
 import {ProviderCatalogReview} from "./provider-catalog-review";
 import {usePricingCatalogPicker} from "./use-pricing-catalog-picker";
-import {ZcodeLocalImportHint} from "./zcode-local-import-hint";
 import type {ProviderCatalogReview as ProviderCatalogReviewData} from "@/lib/provider-catalog/service";
 import type {ModelPriceEntry} from "@/lib/pricing";
 import {formatOriginalPrice} from "@/lib/money-display";
@@ -278,7 +277,6 @@ export function ProxyResourcesTab(props: ProxyResourcesTabProps) {
   }
 
   return <div className={styles.tabStack}>
-    <ZcodeLocalImportHint presetId={presetId} agents={boundProtocolAgentIds} variant="tab" />
     <section className={styles.card}>
       {officialPreset ? <>
         <header className={styles.cardHeader}><div><h3>预设目录模型</h3></div>{presetId ? <button type="button" className={styles.secondaryButton} disabled={busy || props.providerCatalogLoading} onClick={() => void props.onRefreshProviderCatalog(presetId, true)}><RefreshCw size={16} /> {props.providerCatalogLoading ? "加载中…" : "刷新预设模型"}</button> : null}</header>

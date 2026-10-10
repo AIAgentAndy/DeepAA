@@ -979,6 +979,7 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
     secretAccessKey?: string;
     planMonthlyFee?: number;
     planTier?: string;
+    planBillingCycle?: "monthly" | "quarterly" | "yearly";
     syncIntervalMinutes?: number;
   }): Promise<void> {
     if (!selectedTarget || !selectedTargetPersisted) throw new Error("请先保存供应商，再配置套餐同步");
@@ -992,23 +993,40 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
         credentialId: input.credentialId,
         accessKeyId: input.accessKeyId,
         secretAccessKey: input.secretAccessKey,
-        planTier: input.planTier,
+        // plan-config API 只接受 opencode-go 档位（其余 PLAN_TIER_UNSUPPORTED）；其它
+        // 供应商的档位/付款周期（2026-10-10）走下方目标 pricing 补丁与月费同链落盘。
+        planTier: input.providerType === "opencode-go" ? input.planTier : undefined,
         syncIntervalMinutes: input.syncIntervalMinutes,
         expectedRevision: persistedConfigRef.current.revision,
       });
-      if (input.planMonthlyFee !== selectedTarget.pricing?.planMonthlyFee) {
+      // 月费/档位/周期任一变化时随保存一并落盘（2026-10-10 档位+周期）：与月费同走
+      // 目标 pricing 补丁通道；同步钩子自动回填按「档位 × 付款周期」取目录折算月价。
+      const clientTierPatch = input.providerType !== "opencode-go";
+      const pricingMetaChanged = (clientTierPatch && input.planTier !== undefined && input.planTier !== selectedTarget.pricing?.planTier)
+        || (input.planBillingCycle !== undefined && input.planBillingCycle !== selectedTarget.pricing?.planBillingCycle);
+      if (input.planMonthlyFee !== selectedTarget.pricing?.planMonthlyFee || pricingMetaChanged) {
         /* 月费币种随手工录入一并落盘（2026-09-28）：显式 settlementCurrency 优先，
            缺失时按预设目录币种补写（无 UI 选择器，币种始终跟随官方预设目录），
            消除「只写数字不写币种」导致派生端误按 CNY 处理美元月费的缺口。 */
-        const feeCurrency = selectedTarget.pricing?.settlementCurrency
+        // opencode-go 档位已由服务端随保存落盘（config revision 已 bump）：先刷新
+        // 最新配置再合并，避免本地缓存 revision 触发 409，或用旧 pricing 基底把
+        // 服务端刚写入的档位回退掉。
+        let pricingBase = selectedTarget.pricing;
+        if (input.providerType === "opencode-go") {
+          const latest = await reloadProxyConfig(true);
+          pricingBase = latest.targets.find(item => item.id === selectedTarget.id)?.pricing ?? pricingBase;
+        }
+        const feeCurrency = pricingBase?.settlementCurrency
           ?? derivePresetCurrency(resolveOfficialPresetForTarget(selectedTarget));
         await mutateProxyConfig({
           targetPatch: {
             id: selectedTarget.id,
             target: {
               pricing: {
-                ...selectedTarget.pricing,
+                ...pricingBase,
                 planMonthlyFee: input.planMonthlyFee,
+                ...(clientTierPatch && input.planTier !== undefined ? {planTier: input.planTier} : {}),
+                ...(input.planBillingCycle !== undefined ? {planBillingCycle: input.planBillingCycle} : {}),
                 ...(feeCurrency ? {settlementCurrency: feeCurrency} : {}),
               },
             },

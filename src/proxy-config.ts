@@ -1184,6 +1184,13 @@ function normalizeTargetPricing(value: unknown): ProxyTargetPricingPolicy {
     && /^[a-z0-9][a-z0-9-]{0,63}$/u.test(raw.planTier)
     ? raw.planTier
     : undefined;
+  // 付款周期保留（2026-10-10 智谱 Coding Plan）：目录 billingCycles 键值域，
+  // 与档位一起决定自动回填取哪档折算月价；归一化不得剥除。
+  const planBillingCycle = raw.planBillingCycle === "monthly"
+    || raw.planBillingCycle === "quarterly"
+    || raw.planBillingCycle === "yearly"
+    ? raw.planBillingCycle
+    : undefined;
   // 结算字段保留（2026-09-15 断链修复）：官方预设带出的结算币种与用户显式配置的
   // 结算系数此前被归一化剥除（目标字段恒为空），派生期覆盖与月费币种判定全部失效。
   const settlementCurrency = raw.settlementCurrency === "CNY" || raw.settlementCurrency === "USD"
@@ -1205,6 +1212,7 @@ function normalizeTargetPricing(value: unknown): ProxyTargetPricingPolicy {
     ...(vendor ? {vendor} : {}),
     ...(planMonthlyFee === undefined ? {} : {planMonthlyFee}),
     ...(planTier ? {planTier} : {}),
+    ...(planBillingCycle ? {planBillingCycle} : {}),
     ...(typeof raw.currency === "string" ? {currency: raw.currency} : {}),
     ...(settlementCurrency ? {settlementCurrency} : {}),
     ...(settlementFx === undefined ? {} : {settlementFx}),

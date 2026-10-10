@@ -58,7 +58,7 @@ import {resolveOfficialPresetForTarget} from "@/lib/provider-preset-capabilities
 import {derivePresetCurrency} from "@/lib/provider-presets";
 import {runPlanEstimateBackfill} from "@/lib/plan-estimate/backfill";
 import {loadProviderCatalog} from "@/lib/provider-catalog/cache";
-import {matchPlanTierMonthlyFee} from "@/lib/provider-catalog/plan-tiers";
+import {matchPlanTierMonthlyFee, resolvePlanTierFee} from "@/lib/provider-catalog/plan-tiers";
 import type {ProviderCatalog} from "@/lib/provider-catalog/types";
 import {
   SyncAuthRequiredError,
@@ -855,8 +855,12 @@ export class SyncService {
 
   /**
    * 套餐同步成功后按官方目录档位表回填月费：仅当用户尚未手动录入
-   * （pricing.planMonthlyFee === undefined）且同步返回的套餐名能命中目录档位时生效；
-   * best-effort，任何失败只记日志，不影响同步结果。
+   * （pricing.planMonthlyFee === undefined）且档位可命中时生效；best-effort，
+   * 任何失败只记日志，不影响同步结果。
+   * 取价（2026-10-10 智谱 Coding Plan）：目标已显式选择档位（pricing.planTier）
+   * 时优先按档位 id 精确命中，不依赖上游 planName 是否带档位词；否则按套餐名
+   * 匹配。月费按付款周期（pricing.planBillingCycle）取目录折算价（如 Pro 按季
+   * 430.4/月），缺省周期保持按月价（兼容旧行为）。
    */
   private async autofillPlanMonthlyFeeFromCatalog(
     target: ProxyTarget,
@@ -871,7 +875,13 @@ export class SyncService {
       const catalog = await loadPlanCatalog();
       const provider = catalog?.providers[preset.catalogKey];
       if (!provider?.planTiers?.length) return undefined;
-      const monthlyFee = matchPlanTierMonthlyFee(provider.planTiers, planNames);
+      const cycle = target.pricing?.planBillingCycle;
+      const pinnedTier = target.pricing?.planTier
+        ? provider.planTiers.find(tier => tier.id === target.pricing?.planTier)
+        : undefined;
+      const monthlyFee = pinnedTier
+        ? resolvePlanTierFee(pinnedTier, cycle)
+        : matchPlanTierMonthlyFee(provider.planTiers, planNames, cycle);
       if (monthlyFee === undefined) return undefined;
       /* 月费币种随回填一并落盘（2026-09-28）：显式 settlementCurrency 优先，
          缺失时按目录供应商币种兜底（provider.currency；目录行缺声明时退注册表预设币种），

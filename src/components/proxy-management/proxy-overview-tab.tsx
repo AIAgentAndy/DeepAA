@@ -9,6 +9,7 @@ import {PROVIDER_PRESETS, derivePresetCurrency, resolveProviderAccountCapability
 import {billingChannelLabel} from "@/lib/preset-family";
 import {planProviderLabelFromPlugins} from "@/lib/provider-plugins/meta";
 import {resolveOfficialPresetForTarget} from "@/lib/provider-preset-capabilities";
+import {resolvePlanTierFee, type PlanBillingCycle} from "@/lib/provider-catalog/plan-tiers";
 import {subscriptionLoginMissingNotice, subscriptionNetworkNotice, subscriptionReloginNotice} from "@/lib/subscription-display";
 import {resolvePlanProviderForTarget} from "@/lib/sync-engine/plan-provider";
 import {isRateUnconfirmed, rateWarningBadgeLabel, rateWarningTitle, resolveRateWarning} from "@/lib/sync-engine/rate-warning";
@@ -30,6 +31,13 @@ import {
 } from "@/lib/sync-engine/types";
 import type {ProxyConfig, ProxyTarget} from "@/types";
 import styles from "./proxy-management.module.css";
+
+/** 付款周期下拉选项（2026-10-10 用户确认）：value 与目录档位 billingCycles 键一致。 */
+const PLAN_BILLING_CYCLE_OPTIONS: ReadonlyArray<{value: PlanBillingCycle; label: string}> = [
+  {value: "monthly", label: "按月"},
+  {value: "quarterly", label: "按季"},
+  {value: "yearly", label: "按年"},
+];
 
 interface ProxyOverviewTabProps {
   config: ProxyConfig;
@@ -55,6 +63,8 @@ interface ProxyOverviewTabProps {
     secretAccessKey?: string;
     planMonthlyFee?: number;
     planTier?: string;
+    /** 付款周期（2026-10-10）：与档位一起随月费落盘 pricing，随目录折算价联动。 */
+    planBillingCycle?: PlanBillingCycle;
     syncIntervalMinutes?: number;
   }) => Promise<void>;
   /** 立即同步套餐时间窗。 */
@@ -185,9 +195,14 @@ export function ProxyOverviewTab({config, target, credentials, syncStatus, syncS
       ? ""
       : String(target.pricing.planMonthlyFee),
     // OpenCode Go 档位必选（上游 usage 不返回档位标识，2026-09-30）：默认 go。
-    planTier: target.pricing?.planTier || "go",
+    // 其它供应商（2026-10-10 档位+周期下拉）：默认不选，由用户显式确认。
+    planTier: target.pricing?.planTier
+      || ((syncStatus?.plan.config?.providerType || resolvePlanProviderForTarget(target)) === "opencode-go" ? "go" : ""),
+    planBillingCycle: target.pricing?.planBillingCycle || "",
     syncIntervalMinutes: syncStatus?.plan.config?.syncIntervalMinutes ?? DEFAULT_SYNC_INTERVAL_MINUTES,
   }));
+  // 月费手动改写标记（2026-10-10）：档位/周期联动只在未手动改写时自动填价。
+  const [planFeeTouched, setPlanFeeTouched] = useState(false);
   const hasProtocol = Boolean(target.openaiUrl || target.anthropicUrl);
   const hasModels = target.supportedModels.length > 0;
   const targetCredentials = credentials.filter(item => item.targetId === target.id);
@@ -215,24 +230,45 @@ export function ProxyOverviewTab({config, target, credentials, syncStatus, syncS
     : "中转站（基于Sub2API或NEW API）";
   /** 官方预设只有能通过 API Key 查询余额/身份时才展示账号信息；无余额供应商整卡隐藏。 */
   const targetPreset = resolveOfficialPresetForTarget(target);
-  /* 档位选项来自目录（planTiers，如 OpenCode Go go $10 / go-plus $40）；只在表单需要
-     时拉取一次，目录不可达时回退为手填 id 输入（服务端仍会做格式与目录归属校验）。 */
-  const [planTierOptions, setPlanTierOptions] = useState<Array<{id: string; name: string; monthlyFee: number}>>([]);
+  /* 档位选项来自目录（planTiers，如 OpenCode Go go $10 / go-plus $40、智谱 Lite/Pro/Max）；
+     有预设即拉取一次（2026-10-10 放宽：档位+周期下拉不再限 opencode-go），无档位的供应商
+     响应不含 planTiers、状态保持空即不渲染下拉；目录不可达时 opencode-go 回退手填 id 输入。 */
+  const [planTierOptions, setPlanTierOptions] = useState<Array<{id: string; name: string; monthlyFee: number; billingCycles?: {monthly: number; quarterly?: number; yearly?: number}}>>([]);
   const planPresetId = targetPreset?.id;
   useEffect(() => {
-    if (planDraft.providerType !== "opencode-go" || planTierOptions.length > 0) return;
+    if (planTierOptions.length > 0) return;
     if (!planPresetId) return;
     let cancelled = false;
     void fetch(`/api/provider-catalog?preset=${encodeURIComponent(planPresetId)}`, {cache: "no-store"})
       .then(response => response.ok ? response.json() : undefined)
-      .then((body: {planTiers?: Array<{id: string; name: string; monthlyFee: number}>} | undefined) => {
+      .then((body: {planTiers?: Array<{id: string; name: string; monthlyFee: number; billingCycles?: {monthly: number; quarterly?: number; yearly?: number}}>} | undefined) => {
         if (!cancelled && body?.planTiers?.length) setPlanTierOptions(body.planTiers);
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [planDraft.providerType, planTierOptions.length, planPresetId]);
+  }, [planTierOptions.length, planPresetId]);
+  /** 「套餐档位 + 付款周期」下拉（2026-10-10 用户确认）：目录多档位且含付款周期折算价
+   *  的供应商展示（智谱/Kimi/MiniMax/Qwen 等）；单选、必选、默认不选，保存必须显式确认。
+   *  OpenCode Go 无周期概念，维持原档位 radio；无档位供应商月费保持手填。 */
+  const tierCycleSelectsEnabled = planDraft.providerType !== "opencode-go"
+    && planTierOptions.length >= 2
+    && planTierOptions.some(tier => tier.billingCycles);
+  const selectedPlanTierOption = planTierOptions.find(tier => tier.id === planDraft.planTier);
+  /** 周期选项按所选档位实际维护的折算价过滤（未选档位时展示全部周期）。 */
+  const planCycleOptions = PLAN_BILLING_CYCLE_OPTIONS.filter(option =>
+    selectedPlanTierOption?.billingCycles
+      ? selectedPlanTierOption.billingCycles[option.value] !== undefined
+      : true);
+  /** 档位+周期联动目录折算月价：齐选且月费未被手动改写时填入（保留两位小数）。 */
+  function tierCycleFee(tierId: string, cycle: string): number | undefined {
+    if (!tierId || !cycle || planFeeTouched) return undefined;
+    const tier = planTierOptions.find(item => item.id === tierId);
+    if (!tier) return undefined;
+    const fee = resolvePlanTierFee(tier, cycle as PlanBillingCycle);
+    return Number.isFinite(fee) ? Math.round(fee * 100) / 100 : undefined;
+  }
   const accountSyncSupported = !targetPreset || targetPreset.accountSync?.balance === "supported";
   /* 币种展示上下文（2026-09-28；2026-10-06 与入账级联对齐）：余额/月费/美元额度按
      「原值（约￥等值）」展示，按各金额自身币种解析——官方预设（任意目录币种）非人民币
@@ -261,11 +297,12 @@ export function ProxyOverviewTab({config, target, credentials, syncStatus, syncS
       planMonthlyFee: target.pricing?.planMonthlyFee === undefined
         ? ""
         : String(target.pricing.planMonthlyFee),
-      // 档位回填已保存值（opencode-go）；其它供应商保持草稿缺省。
+      // 档位/周期回填已保存值（opencode-go 档位、其它供应商档位+周期）；未保存时保持草稿当前值。
       planTier: target.pricing?.planTier || current.planTier,
+      planBillingCycle: target.pricing?.planBillingCycle || current.planBillingCycle,
       syncIntervalMinutes: planConfig.syncIntervalMinutes,
     }));
-  }, [planConfig, target.pricing?.planMonthlyFee]);
+  }, [planConfig, target.pricing?.planMonthlyFee, target.pricing?.planTier, target.pricing?.planBillingCycle]);
   // 密钥列表是异步加载的：加载完成/变化后回填默认选中，目标有密钥而套餐密钥
   // 未选或已失效时自动选第一条，免去用户再手动下拉；已保存过的套餐密钥优先。
   const targetCredentialIdKey = targetCredentials.map(item => item.id).join("|");
@@ -400,8 +437,11 @@ export function ProxyOverviewTab({config, target, credentials, syncStatus, syncS
       {/* 套餐用量：只对声明 planSync 适配器的供应商展示；与控制台账号同步独立。 */}
       {planProvider || planConfig ? <section className={`${styles.card} ${planHighlight ? styles.cardHighlight : ""}`}>
         <header className={styles.cardHeader}>
-          <div>
+          <div className={styles.cardHeaderMain}>
             <h3><Gauge size={17} /> 套餐用量</h3>
+            {/* 智谱官方预设套餐常驻直连观测说明（2026-10-10 用户确认）：紧随标题下方，
+                不限是否已接入 ZCode；列宽收敛在右侧操作区之前，接近「修改套餐」即自然换行。 */}
+            {target.presetId === "zhipu-coding-plan" ? <p className={styles.planDirectObserveNote}>官方直连观测：为了享用官方 ZCode 的专有积分折扣（打折67%），使用 ZCode 工作时，请选择 ZCode 官方自带模型即可。该部分请求不经过本网关，由 DeepAA 直连观测机制自动导入并派生账单及相关链路数据（原因是：ZCode 客户端签名机制限制，经网关流量不享受ZCode专有折扣）。</p> : null}
           </div>
           <div className={styles.inlineActions}>
             {!planConfig && planDismissed ? <button type="button" className={styles.secondaryButton} onClick={() => setPlanDismissed(false)}>展开设置</button> : null}
@@ -412,7 +452,8 @@ export function ProxyOverviewTab({config, target, credentials, syncStatus, syncS
 
         {planConfig ? <dl className={styles.accountSummary}>
           <div><dt>套餐适配器</dt><dd>{planProviderLabel(planConfig.providerType)}</dd></div>
-          {planConfig.providerType === "opencode-go" && target.pricing?.planTier ? <div><dt>套餐档位</dt><dd>{planTierOptions.find(tier => tier.id === target.pricing?.planTier)?.name ?? target.pricing.planTier}</dd></div> : null}
+          {target.pricing?.planTier ? <div><dt>套餐档位</dt><dd>{planTierOptions.find(tier => tier.id === target.pricing?.planTier)?.name ?? target.pricing.planTier}</dd></div> : null}
+          {target.pricing?.planBillingCycle ? <div><dt>付款周期</dt><dd>{PLAN_BILLING_CYCLE_OPTIONS.find(option => option.value === target.pricing?.planBillingCycle)?.label ?? target.pricing.planBillingCycle}</dd></div> : null}
           <div><dt>套餐同步密钥</dt><dd>{planConfig.providerType === "openai-subscription" || planConfig.providerType === "anthropic-subscription" ? "自动读取本机 CLI 登录凭据（只读）" : planConfig.credentialId ? targetCredentials.find(item => item.id === planConfig.credentialId)?.label || "密钥已移除" : planConfig.hasAccessKey && planConfig.hasSecretKey ? "火山 AK/SK 已保护保存" : "未配置"}</dd></div>
           <div><dt>套餐月费</dt><dd>{target.pricing?.planMonthlyFee === undefined ? "未录入" : formatMoneyWithCnyEquivalent(target.pricing.planMonthlyFee, planFeeCurrency, displayFxFor(planFeeCurrency))}</dd></div>
           <div><dt>最近同步</dt><dd>{planConfig.lastSyncAt ? formatRelativeTime(planConfig.lastSyncAt) : "尚未同步"}</dd></div>
@@ -446,13 +487,26 @@ export function ProxyOverviewTab({config, target, credentials, syncStatus, syncS
             setPlanError("请选择套餐档位（Go / Go Plus）");
             return;
           }
+          // 档位 + 付款周期必选且默认不选（2026-10-10 用户确认）：保存必须显式确认，
+          // 目录按「档位 × 周期」精准匹配折算月价（如 Pro 按季 430.4/月）。
+          if (tierCycleSelectsEnabled) {
+            if (!planDraft.planTier) {
+              setPlanError("请选择套餐档位");
+              return;
+            }
+            if (!planDraft.planBillingCycle) {
+              setPlanError("请选择付款周期");
+              return;
+            }
+          }
           void onSavePlanConfig({
             providerType: planDraft.providerType,
             credentialId: planDraft.providerType === "volcengine-plan" || planDraft.providerType === "volcengine-coding-plan" ? undefined : planDraft.credentialId,
             accessKeyId: planDraft.providerType === "volcengine-plan" || planDraft.providerType === "volcengine-coding-plan" ? planDraft.accessKeyId : undefined,
             secretAccessKey: planDraft.providerType === "volcengine-plan" || planDraft.providerType === "volcengine-coding-plan" ? planDraft.secretAccessKey : undefined,
             planMonthlyFee: monthlyFee,
-            planTier: planDraft.providerType === "opencode-go" ? planDraft.planTier.trim() : undefined,
+            planTier: planDraft.providerType === "opencode-go" ? planDraft.planTier.trim() : (tierCycleSelectsEnabled ? planDraft.planTier : undefined),
+            planBillingCycle: tierCycleSelectsEnabled && planDraft.planBillingCycle ? planDraft.planBillingCycle as PlanBillingCycle : undefined,
             syncIntervalMinutes: planDraft.syncIntervalMinutes,
           }).then(() => setEditingPlan(false)).catch(error => setPlanError(error instanceof Error ? error.message : "保存失败"));
         }}>
@@ -474,7 +528,25 @@ export function ProxyOverviewTab({config, target, credentials, syncStatus, syncS
               </label>
             ))}</div></div>
             : <label className={styles.field}><span>套餐档位 id（必选）</span><input value={planDraft.planTier} onChange={event => setPlanDraft({...planDraft, planTier: event.currentTarget.value})} placeholder="目录档位读取中…可手填，如 go / go-plus" /></label>) : null}
-          <label className={styles.field}><span>套餐月费（{planFeeCurrency === "USD" ? "美元 USD" : "人民币 CNY"}）</span><input inputMode="decimal" value={planDraft.planMonthlyFee} onChange={event => setPlanDraft({...planDraft, planMonthlyFee: event.currentTarget.value})} placeholder={`可选，例如 ${planFeeCurrency === "USD" ? "10" : "199"}（按预设目录币种）`} /></label>
+          {tierCycleSelectsEnabled ? <>
+            <label className={styles.field}><span>套餐档位（必选，与付款周期一起决定目录折算月价）</span><select value={planDraft.planTier} onChange={event => {
+              const tierId = event.currentTarget.value;
+              // 切换档位后，已选周期在新档位无对应折算价时清空强制重选。
+              const tier = planTierOptions.find(item => item.id === tierId);
+              const cycleKept = !planDraft.planBillingCycle
+                || !tier?.billingCycles
+                || tier.billingCycles[planDraft.planBillingCycle as PlanBillingCycle] !== undefined;
+              const nextCycle = cycleKept ? planDraft.planBillingCycle : "";
+              const fee = tierCycleFee(tierId, nextCycle);
+              setPlanDraft({...planDraft, planTier: tierId, planBillingCycle: nextCycle, ...(fee !== undefined ? {planMonthlyFee: String(fee)} : {})});
+            }}><option value="">请选择套餐档位</option>{planTierOptions.map(tier => <option key={tier.id} value={tier.id}>{tier.name}</option>)}</select></label>
+            <label className={styles.field}><span>付款周期（必选）</span><select value={planDraft.planBillingCycle} onChange={event => {
+              const cycle = event.currentTarget.value;
+              const fee = tierCycleFee(planDraft.planTier, cycle);
+              setPlanDraft({...planDraft, planBillingCycle: cycle, ...(fee !== undefined ? {planMonthlyFee: String(fee)} : {})});
+            }}><option value="">请选择付款周期</option>{planCycleOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+          </> : null}
+          <label className={styles.field}><span>套餐月费（{planFeeCurrency === "USD" ? "美元 USD" : "人民币 CNY"}）</span><input inputMode="decimal" value={planDraft.planMonthlyFee} onChange={event => {setPlanFeeTouched(true); setPlanDraft({...planDraft, planMonthlyFee: event.currentTarget.value});}} placeholder={`可选，例如 ${planFeeCurrency === "USD" ? "10" : "199"}（按预设目录币种）`} /></label>
           <label className={styles.field}><span>同步周期</span><select value={planDraft.syncIntervalMinutes} onChange={event => setPlanDraft({...planDraft, syncIntervalMinutes: Number(event.currentTarget.value)})}>{SYNC_INTERVAL_MINUTES_CHOICES.map(minutes => <option key={minutes} value={minutes}>{minutes}分钟</option>)}</select></label>
           {/* 未完成「保存套餐并开启同步」前（无论首次还是再次进入），引导文案常驻表单内部左下，与保存按钮同行；完成后编辑时不重复展示。
               「暂不设置」仅未配置期间出现：点击收起表单，可随时从头部「展开设置」再次进入。 */}

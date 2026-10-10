@@ -504,6 +504,66 @@ describe("代理管理 V3 页面结构", () => {
     expect(wizard).toContain("explicit && models.includes(explicit)");
   });
 
+  test("向导 Agent 默认不预勾（2026-10-10 用户确认）：新建为空、重开按接入事实推导，「本次关联模型」文案收敛", async () => {
+    const wizard = await readFile(`${componentDir}/proxy-onboarding-wizard.tsx`, "utf8");
+    // 新建供应商（requireCredentialEntry）不预勾任何 Agent，完成阶段校验至少一个。
+    expect(wizard).toContain("(initialAgents\n    || (requireCredentialEntry ? [] : deriveOnboardingAgents(target, credentials, config)))");
+    expect(wizard).toContain("请至少选择一个 Agent");
+    // deriveOnboardingAgents 只从真实接入事实（密钥适用 + Agent 绑定）推导；
+    // 模型适用范围（supportedModelScopes，预设建目标写入全部兼容 Agent）不再是勾选来源。
+    expect(wizard).not.toContain("Object.values(target.supportedModelScopes");
+    // 「本次关联模型」说明文案（2026-10-10 用户确认改版）。
+    expect(wizard).toContain("把所选 Agent 关联到本次默认勾选的模型，其余模型可稍后在「密钥与模型」页签进行添加使用");
+  });
+
+  test("官方直连观测文案（2026-10-10 用户确认）：向导一句话口径，「密钥与模型」页签移除，基础信息套餐用量常驻深绿详述", async () => {
+    const hint = await readFile(`${componentDir}/zcode-local-import-hint.tsx`, "utf8");
+    const resources = await readFile(`${componentDir}/proxy-resources-tab.tsx`, "utf8");
+    const overview = await readFile(`${componentDir}/proxy-overview-tab.tsx`, "utf8");
+    const css = await readFile(`${componentDir}/proxy-management.module.css`, "utf8");
+    // 向导：一句话口径，仅智谱 Coding Plan 预设 + 含 zcode 时渲染；variant prop 随页签用法一并移除。
+    expect(hint).toContain("为了享用智谱官方的套餐积分折扣，智谱官方限制只能在他们自己的 ZCode 客户端才能享用，请关注使用");
+    expect(hint).not.toContain("variant");
+    expect(resources).not.toContain("ZcodeLocalImportHint");
+    // 基础信息「套餐用量」标题正下方：智谱官方预设常驻深绿详述（不限是否已接入 ZCode）；
+    // 段落位于 header 左列（cardHeaderMain 占满剩余宽度），接近右侧「修改套餐」即自然换行。
+    expect(overview).toContain('target.presetId === "zhipu-coding-plan"');
+    expect(overview).toContain("planDirectObserveNote");
+    expect(overview).toContain("cardHeaderMain");
+    expect(overview).toContain("为了享用官方 ZCode 的专有积分折扣（打折67%）");
+    expect(overview).toContain("ZCode 客户端签名机制限制，经网关流量不享受ZCode专有折扣");
+    expect(css).toContain(".cardHeaderMain");
+    expect(css).toContain(".cardHeader .planDirectObserveNote");
+  });
+
+  test("套餐档位 + 付款周期下拉（2026-10-10 用户确认）：目录含周期价供应商单选必选默认不选，联动折算月价", async () => {
+    const overview = await readFile(`${componentDir}/proxy-overview-tab.tsx`, "utf8");
+    const page = await readFile("src/components/proxy-management-page.tsx", "utf8");
+    // 下拉只在「多档位且含付款周期折算价」供应商展示（OpenCode Go 维持原档位 radio）。
+    expect(overview).toContain("tierCycleSelectsEnabled");
+    expect(overview).toContain('planDraft.providerType !== "opencode-go"');
+    // 单选下拉、默认不选、保存时必选校验（用户显式确认，自动回填才精准）。
+    expect(overview).toContain('<option value="">请选择套餐档位</option>');
+    expect(overview).toContain('<option value="">请选择付款周期</option>');
+    // 档位选项只展示档位名：金额随付款周期变化，不随档位写死在选项里（2026-10-10 用户确认）。
+    expect(overview).not.toContain("{tier.monthlyFee}/月）</option>");
+    expect(overview).toContain('setPlanError("请选择套餐档位")');
+    expect(overview).toContain('setPlanError("请选择付款周期")');
+    // 档位 × 周期联动目录折算月价；手动改写月费后不再自动覆盖。
+    expect(overview).toContain("resolvePlanTierFee");
+    expect(overview).toContain("planFeeTouched");
+    // 周期标签值域与目录 billingCycles 键一致。
+    expect(overview).toContain('{value: "monthly", label: "按月"}');
+    expect(overview).toContain('{value: "quarterly", label: "按季"}');
+    expect(overview).toContain('{value: "yearly", label: "按年"}');
+    // 摘要区展示已保存档位与周期。
+    expect(overview).toContain("<dt>付款周期</dt>");
+    // 页面保存链：非 opencode-go 档位/周期走目标 pricing 补丁与月费同链落盘（plan-config
+    // API 对其它供应商档位 PLAN_TIER_UNSUPPORTED），opencode-go 档位仍由服务端校验落盘。
+    expect(page).toContain("planTier: input.providerType === \"opencode-go\" ? input.planTier : undefined");
+    expect(page).toContain("planBillingCycle: input.planBillingCycle");
+  });
+
   test("价格中心选择器默认按当前供应商过滤，可手动取消；服务端 vendor 查询 + 100/页分页（2026-10-07 修复）", async () => {
     const resources = await readFile(`${componentDir}/proxy-resources-tab.tsx`, "utf8");
     const wizard = await readFile(`${componentDir}/proxy-onboarding-wizard.tsx`, "utf8");

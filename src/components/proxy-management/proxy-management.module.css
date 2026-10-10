@@ -2978,6 +2978,24 @@ span.presetPickerTrigger.presetPickerLocked {
   font-weight: 750;
 }
 
+/* 卡片头左列（2026-10-10）：占满剩余宽度并允许文本换行收敛——长说明文案在接近
+   右侧操作区（如「修改套餐」）前自然换行，而不是把操作区挤到下一行。 */
+.cardHeaderMain {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 智谱官方预设套餐「官方直连观测」常驻说明（2026-10-10 用户确认）：深绿加粗，
+   紧随「套餐用量」标题正下方（header 左列内），不限是否已接入 ZCode；
+   选择器带 .cardHeader 前缀以覆盖 .cardHeader p 的灰色默认段落样式。 */
+.cardHeader .planDirectObserveNote {
+  margin: 6px 0 0;
+  font-weight: 600;
+  color: var(--pm-accent);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
 @keyframes pmCardHighlightPulse {
   0%, 100% { box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.16); }
   50% { box-shadow: 0 0 0 9px rgba(16, 185, 129, 0.05); }

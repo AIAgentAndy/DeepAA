@@ -31,8 +31,9 @@ export interface ProviderCatalogReview {
   warning?: string;
   /** 新建预设的可计价对话模型详情；前端仅据此展示和维护草稿选择。 */
   models: ProviderCatalogReviewModel[];
-  /** 套餐档位表（2026-09-30）：套餐同步配置的档位选择与月费联动数据源（如 OpenCode Go go/go-plus）。 */
-  planTiers?: Array<{id: string; name: string; monthlyFee: number}>;
+  /** 套餐档位表（2026-09-30）：套餐同步配置的档位选择与月费联动数据源（如 OpenCode Go go/go-plus）；
+   * billingCycles（2026-10-10）为各付款周期折算月价，供「档位 + 付款周期」联动取价。 */
+  planTiers?: Array<{id: string; name: string; monthlyFee: number; billingCycles?: {monthly: number; quarterly?: number; yearly?: number}}>;
 }
 
 export interface ProviderCatalogReviewModel {
@@ -156,7 +157,12 @@ export function createProviderCatalogReview(
     ...(provider.planTiers?.length
       ? {planTiers: provider.planTiers
         .filter(tier => tier.id && tier.id.trim())
-        .map(tier => ({id: tier.id!.trim(), name: tier.name, monthlyFee: tier.monthlyFee}))}
+        .map(tier => ({
+          id: tier.id!.trim(),
+          name: tier.name,
+          monthlyFee: tier.monthlyFee,
+          ...(tier.billingCycles ? {billingCycles: tier.billingCycles} : {}),
+        }))}
       : {}),
   };
 }

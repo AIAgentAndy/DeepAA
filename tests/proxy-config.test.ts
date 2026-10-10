@@ -617,6 +617,32 @@ test("套餐档位 planTier round-trip 保留，非法值剔除（2026-09-30 Ope
   expect(store.getConfig().targets[0]!.pricing?.planTier).toBeUndefined();
 });
 
+test("套餐付款周期 planBillingCycle round-trip 保留，非法值剔除（2026-10-10 档位×周期取价链路守护）", async () => {
+  const store = await emptyStore("proxy-config-plan-cycle-");
+  await store.updateConfig({targetPatch: {target: target({
+    id: "zhipu-test",
+    openaiUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+    pricing: {planTier: "pro", planBillingCycle: "quarterly", planMonthlyFee: 430.4},
+  })}});
+  const saved = store.getConfig().targets[0]!;
+  expect(saved.pricing?.planBillingCycle).toBe("quarterly");
+  expect(saved.pricing?.planTier).toBe("pro");
+
+  // 保存后再更新其它字段：周期不得被归一化剥除。
+  await store.updateConfig({targetPatch: {id: "zhipu-test", target: {id: "zhipu-test", name: "智谱套餐"}}});
+  expect(store.getConfig().targets[0]!.pricing?.planBillingCycle).toBe("quarterly");
+
+  // 非法值（weekly/数字/空串）剔除；undefined 显式移除。
+  await store.updateConfig({targetPatch: {target: target({
+    id: "cycle-bad",
+    openaiUrl: "https://cycle-bad.example/v1",
+    pricing: {planBillingCycle: "weekly" as unknown as "monthly"},
+  })}});
+  expect(store.getConfig().targets.find(item => item.id === "cycle-bad")!.pricing?.planBillingCycle).toBeUndefined();
+  await store.updateConfig({targetPatch: {id: "zhipu-test", target: {id: "zhipu-test", pricing: {planBillingCycle: undefined}}}});
+  expect(store.getConfig().targets[0]!.pricing?.planBillingCycle).toBeUndefined();
+});
+
 test("结算字段（settlementCurrency/settlementFx）round-trip 保留，非法值剔除（2026-09-15 断链修复回归）", async () => {
   const store = await emptyStore("proxy-config-settlement-");
   await store.updateConfig({targetPatch: {target: target({
