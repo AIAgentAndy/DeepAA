@@ -52,12 +52,19 @@ jobs:
             [ -f "$log" ] || return 0
             local clean="${log%.log}-clean.log"
             sed 's/\x1b\[[0-9;]*m//g' "$log" > "$clean" || cp "$log" "$clean"
+            local hits
+            hits=$(grep -A 6 -E "FAIL |not ok [1-9]|^# fail [1-9]|failing tests|Unhandled" "$clean" | grep -v "^--$" | grep -v "0 failed" | head -60)
+            if [ -z "$hits" ]; then
+              # 无用例级失败行：疑似进程崩溃，回退输出日志尾部。
+              hits=$(tail -n 24 "$clean")
+            fi
             local count=0
             while IFS= read -r line; do
+              [ -z "$line" ] && continue
               printf '::error title=%s::%s\n' "$log" "$(printf '%s' "$line" | cut -c1-220)"
               count=$((count+1))
               if [ "$count" -ge 10 ]; then break; fi
-            done < <(grep -A 6 -E "FAIL |not ok [1-9]" "$clean" | grep -v "^--$" | grep -v "0 failed" | head -60)
+            done <<< "$hits"
           }
           emit vitest-output.log
           emit sqlite-output.log
