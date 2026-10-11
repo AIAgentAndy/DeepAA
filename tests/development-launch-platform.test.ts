@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
@@ -14,6 +14,7 @@ import {
 } from "../src/lib/development-launch/platform-windows.js";
 import {
   createDevelopmentPlatformAdapter,
+  resolveWildcardExecutableCandidate,
   runDevelopmentCommand,
   type CommandSpec,
   terminalProcessOptions,
@@ -444,6 +445,73 @@ describe("development launch platform adapters", () => {
     });
     expect(await adapter.resolveExecutable("opencode")).toBe(candidate);
     expect(await adapter.resolveExecutable("dsh")).toBeNull();
+  });
+
+  test("Windows codex 桌面客户端捆绑 CLI 兜底：枚举哈希目录取 mtime 最新（2026-10-11 修复）", async () => {
+    const root = await mkdtemp(join(tmpdir(), "platform-codex-bundle-"));
+    tempRoots.push(root);
+    const homeDir = join(root, "home");
+    const bundleRoot = join(homeDir, "AppData", "Local", "OpenAI", "Codex", "bin");
+    // 哈希目录名与新旧无关（版本内容哈希），仅按目标文件 mtime 取最新；
+    // bin 下还混有非 codex.exe 的组件目录（如 rg），不得误命中。
+    const stale = join(bundleRoot, "ffff0000aaaa", "codex.exe");
+    const active = join(bundleRoot, "0123abcd5678", "codex.exe");
+    const rgComponent = join(bundleRoot, "9999rgdir8888", "rg.exe");
+    await Promise.all([stale, active, rgComponent].map(target =>
+      mkdir(dirname(target), {recursive: true}).then(() => writeFile(target, "x", "utf8")),
+    ));
+    const now = Date.now();
+    await utimes(stale, new Date(now - 86_400_000), new Date(now - 86_400_000));
+    await utimes(active, new Date(now), new Date(now));
+    const adapter = new WindowsDevelopmentPlatformAdapter({
+      homeDir,
+      env: {PATH: ""},
+    });
+    expect(await adapter.resolveExecutable("codex")).toBe(active);
+  });
+
+  test("Windows codex：PATH 上的 CLI 优先于桌面客户端捆绑 CLI", async () => {
+    const root = await mkdtemp(join(tmpdir(), "platform-codex-precedence-"));
+    tempRoots.push(root);
+    const homeDir = join(root, "home");
+    const npmBin = join(root, "npm");
+    const bundled = join(homeDir, "AppData", "Local", "OpenAI", "Codex", "bin", "hash1", "codex.exe");
+    await Promise.all([
+      mkdir(npmBin, {recursive: true}).then(() => writeFile(join(npmBin, "codex.cmd"), "@echo off\n", "utf8")),
+      mkdir(dirname(bundled), {recursive: true}).then(() => writeFile(bundled, "x", "utf8")),
+    ]);
+    const adapter = new WindowsDevelopmentPlatformAdapter({
+      homeDir,
+      env: {PATH: npmBin},
+    });
+    expect(await adapter.resolveExecutable("codex")).toBe(join(npmBin, "codex.cmd"));
+  });
+
+  test("Windows codex 捆绑目录缺失时返回 null，不影响其它候选探测", async () => {
+    const root = await mkdtemp(join(tmpdir(), "platform-codex-bundle-missing-"));
+    tempRoots.push(root);
+    const adapter = new WindowsDevelopmentPlatformAdapter({
+      homeDir: join(root, "home"),
+      env: {PATH: ""},
+    });
+    expect(await adapter.resolveExecutable("codex")).toBeNull();
+    expect(await adapter.resolveExecutable("dsh")).toBeNull();
+  });
+
+  test("通配候选仅支持单个 * 目录段，多通配或尾段通配返回 null", async () => {
+    const root = await mkdtemp(join(tmpdir(), "platform-codex-wildcard-invalid-"));
+    tempRoots.push(root);
+    const homeDir = join(root, "home");
+    await mkdir(join(homeDir, "AppData", "Local", "OpenAI", "Codex", "bin", "hash1"), {recursive: true});
+    await writeFile(join(homeDir, "AppData", "Local", "OpenAI", "Codex", "bin", "hash1", "codex.exe"), "x", "utf8");
+    const adapter = new WindowsDevelopmentPlatformAdapter({
+      homeDir,
+      env: {PATH: ""},
+    });
+    expect(await resolveWildcardExecutableCandidate(join(homeDir, "AppData", "Local", "OpenAI", "Codex", "bin", "*", "*", "codex.exe"))).toBeNull();
+    expect(await resolveWildcardExecutableCandidate(join(homeDir, "AppData", "Local", "OpenAI", "Codex", "bin", "*"))).toBeNull();
+    // 助手是仅通配契约：无 * 的字面路径不归它管（适配器侧 includes("*") 守卫后才调用）。
+    expect(await resolveWildcardExecutableCandidate(join(homeDir, "AppData", "Local", "OpenAI", "Codex", "bin", "hash1", "codex.exe"))).toBeNull();
   });
 
   test("macOS 能力探测只确认可执行文件存在，不启动 --version", async () => {

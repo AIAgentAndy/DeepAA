@@ -234,6 +234,19 @@ describe("development launch UI source", () => {
     expect(source).toContain('open={cli === "dsh" || cli === "zcode"}');
   });
 
+  test("Codex 客户端形态左下角常驻重启提示（2026-10-11 用户确认，方案 A）", async () => {
+    const source = await readFile(
+      new URL("../src/components/development-launch-dialog.tsx", import.meta.url),
+      "utf-8",
+    );
+    // 单实例客户端对形态切换/配置变化不热生效：常驻文案稳定出现在 footer 左下角
+    //（与阻断原因纵向堆叠），不依赖形态切换/运行态检测；终端形态不展示。
+    expect(source).toContain("development-launch-footer-notes");
+    expect(source).toContain("development-launch-client-restart-note");
+    expect(source).toContain("{isCodexClientMode ? (");
+    expect(source).toContain("切换网关直连及配置变化，运行中的 Codex 需完全退出后重开生效");
+  });
+
   test("选择项目目录不得重置默认供应商/模型/密钥/终端（2026-09-18 用户确认）", async () => {
     const source = await readFile("src/components/development-launch-dialog.tsx", "utf8");
     // 历史缺陷：chooseProjectDirectory 会清空这几个状态并以 resetModel=true 重跑预检，

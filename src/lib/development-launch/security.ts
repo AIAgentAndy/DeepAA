@@ -220,6 +220,7 @@ function userMessage(code: string, detail?: string): string {
     PROXY_CONFIG_NOT_APPLIED: "代理配置尚未生效，请稍后重试或重启本地服务",
     CLAUDE_SETTINGS_REQUIRED: "Claude 临时配置缺失，请重试启动",
     CODEX_CONFIG_TOO_LARGE: "Codex 配置文件超出可安全处理的大小，请检查 ~/.codex/config.toml",
+    CODEX_CONFIG_WRITE_INVALID: "Codex 配置写入自校验失败，已取消本次写入以防损坏配置，请检查 ~/.codex/config.toml",
     COMMAND_TIMEOUT: "系统命令执行超时，请重试",
     COMMAND_NOT_READY: "系统命令未能就绪，已自动取消，请重试",
     COMMAND_OUTPUT_TOO_LARGE: "系统命令输出超出限制，请重试",

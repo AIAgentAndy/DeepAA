@@ -12,6 +12,7 @@ import {
   type DirectorySelection,
   type PlatformAdapterOptions,
   type TerminalLaunchRequest,
+  resolveWildcardExecutableCandidate,
   runDevelopmentCommand,
   launchDevelopmentTerminal,
 } from "./platform";
@@ -329,7 +330,11 @@ export class WindowsDevelopmentPlatformAdapter implements DevelopmentPlatformAda
     if (direct) return direct;
     for (const candidate of agentLaunchStrategy(cli).executableCandidates) {
       const path = join(this.homeDir, candidate);
-      const found = await findWindowsExecutableWithExtensions(path, this.env);
+      // 通配候选（版本哈希目录，如 Codex 桌面客户端捆绑 CLI）：枚举取 mtime 最新；
+      // 候选已带显式 .exe，不走 PATHEXT 扩展名解析。
+      const found = candidate.includes("*")
+        ? await resolveWildcardExecutableCandidate(path)
+        : await findWindowsExecutableWithExtensions(path, this.env);
       if (found) return found;
     }
     return null;

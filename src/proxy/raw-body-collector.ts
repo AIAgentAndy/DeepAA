@@ -98,6 +98,8 @@ export class RawBodyCollector {
   private degraded = false;
   private finished = false;
   private finishPromise?: Promise<CollectedRawBody>;
+  /** finish 后到达被丢弃的尾块字节数（诊断/测试用）。 */
+  droppedAfterFinishBytes = 0;
 
   private constructor(options: RawBodyCollectorOptions) {
     this.dataDir = options.dataDir;
@@ -121,8 +123,18 @@ export class RawBodyCollector {
     return collector;
   }
 
+  /**
+   * finish 后到达的尾块只能丢弃：捕获结果已按 finish 前数据定稿（哈希已取），
+   * 事后追加无法改写已返回的定稿；且调用方处于流事件回调（reverse-proxy 的
+   * data 监听器），此处抛错会以未捕获异常杀死整个代理进程——2026-10-11
+   * Windows 实证：上游流被中途销毁（连接错误/空闲超时）后解码器/套接字缓冲
+   * 尾块在 finish() 之后到达，抛错导致 20 连败重试期间进程崩溃、3211 死亡。
+   */
   capture(chunk: Uint8Array): void {
-    if (this.finished) throw new Error("RawBodyCollector is already finished");
+    if (this.finished) {
+      this.droppedAfterFinishBytes += chunk.byteLength;
+      return;
+    }
     if (chunk.byteLength === 0) return;
     const decoded = this.decoder.decode(chunk, {stream: true});
     if (decoded) this.captureLogical(Buffer.from(decoded, "utf8"));

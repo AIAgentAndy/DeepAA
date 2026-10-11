@@ -1099,7 +1099,20 @@ export function DevelopmentLaunchDialog({
         </div>
 
         <footer className={`development-launch-actions agent-theme-${cli}`}>
-          {launchBlockReason ? <p className="development-launch-blocked-reason" role="status">{launchBlockReason}</p> : null}
+          {isCodexClientMode || launchBlockReason ? (
+            <div className="development-launch-footer-notes">
+              {/* Codex 客户端是单实例：`codex app` 只会激活旧实例，网关/官方形态
+                  切换（受管配置 + 占位 auth）与配置变化对运行中的客户端不生效，
+                  必须完全退出重开；终端形态每次启动都是新进程、天然读新配置，
+                  不在此列（2026-10-11 用户确认常驻文案，客户端形态左下角稳定展示）。 */}
+              {isCodexClientMode ? (
+                <p className="development-launch-client-restart-note" role="status">
+                  切换网关直连及配置变化，运行中的 Codex 需完全退出后重开生效
+                </p>
+              ) : null}
+              {launchBlockReason ? <p className="development-launch-blocked-reason" role="status">{launchBlockReason}</p> : null}
+            </div>
+          ) : null}
           <button type="button" className="secondary-button" onClick={onClose}>取消</button>
           <button type="button" className="primary-button" onClick={startDevelopment} disabled={launchDisabled} title={formMismatch ? "将先把 Codex 切换为目标形态（重写受管配置），再启动；已打开的 Codex 客户端需完全退出后重开生效。" : undefined}>
             {busyAction === "start" ? <LoaderCircle className="spin" size={16} /> : <SquareTerminal size={16} />}

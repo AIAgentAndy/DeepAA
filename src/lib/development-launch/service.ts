@@ -78,6 +78,17 @@ import {resolveAutoCompactTokenLimit} from "./model-capabilities";
 const MAX_SECRET_LENGTH = 16 * 1024;
 const MAX_CLEANUP_ENTRIES = 500;
 
+/**
+ * 弹窗透出的 codex 启动链路提示码（2026-10-11）：配置自愈（已恢复/不可恢复）
+ * 与占位登录（预填/清理）——均为用户需要知晓的启动期修复动作，随成功消息展示。
+ */
+const LAUNCH_NOTICE_WARNING_CODES = new Set([
+  "CODEX_CONFIG_RESTORED_FROM_BACKUP",
+  "CODEX_CONFIG_CORRUPT_UNRECOVERABLE",
+  "CODEX_PLACEHOLDER_AUTH_PREFILLED",
+  "CODEX_PLACEHOLDER_AUTH_REMOVED",
+]);
+
 interface ProxyConfigProvider {
   reload(): Promise<void>;
   getConfig(): ProxyConfig;
@@ -773,11 +784,13 @@ export class DevelopmentLaunchService {
           },
           platform: this.platform,
         });
-        // 警告白名单（2026-10-06 用户确认）：只透传「本次启动目标」的用户向回退提示；
+        // 警告白名单（2026-10-06 用户确认；2026-10-11 扩充）：只透传「本次启动
+        // 目标」的用户向回退提示与 codex 启动链路的配置自愈/占位登录提示；
         // 其余（preserve/凭据缺失等管理页语境）不上弹窗。
         const launchWarnings = (executeResult?.syncWarnings ?? [])
           .filter(warning => warning.code === "LAUNCH_PREFERENCE_EFFORT_UNSUPPORTED"
-            && (!warning.targetId || warning.targetId === target.id));
+            ? (!warning.targetId || warning.targetId === target.id)
+            : LAUNCH_NOTICE_WARNING_CODES.has(warning.code));
         // 终端偏好只在标准终端路径且非专用终端模式时持久化（codex-client/zcode-app 不落库）。
         const persistTerminal = strategy.terminalPolicy === "standard"
           && terminal !== strategy.clientTerminalId
