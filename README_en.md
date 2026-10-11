@@ -1,8 +1,8 @@
 # DeepAA
 
-**Understand AI costs. Trace every call.**
+**Connect thousands of models. Inspect every call. Understand every cost. No more black-box agents.**
 
-DeepAA (Deep Agent Analytics) is an open source, local **AI work cost transparency and observability workbench**. It connects official prices, plans, subscriptions, relay multipliers, and promotions to individual requests, so you can inspect usage, costs, and calculation details. Manage providers and agents, trace the call chains between agents and models, and configure model-level failover in the same workspace.
+DeepAA (Deep Agent Analytics) is an open source, local **AI Agent gateway and observability platform**. It connects official prices, plans, subscriptions, relay multipliers, and promotions to individual requests, so you can inspect usage, costs, and calculation details. Manage providers and agents, trace the call chains between agents and models, and configure model-level failover in the same workspace.
 
 [Website & product preview](https://deepaa.dev/en-US) · [Installation & setup](https://deepaa.dev/en-US/docs) · [中文文档](./README.md) · [MIT license](./LICENSE)
 
@@ -509,6 +509,13 @@ PORT=4000 PROXY_PORT=4001 pnpm start
 - Streaming events are persisted after the stream finishes, so a live stream may not appear in detail until completion.
 - The launcher does not supervise children by itself; crash recovery requires the opt-in user services (`deepaa service install`, restart-on-crash only).
 - Real Windows process-tree and rename behavior remains a release-gate item until it is validated on Windows hardware.
+
+## Community
+
+<p align="center">
+  <img src="docs/screenshots/qrcode-qq.png" width="200" alt="DeepAA QQ group QR code">
+</p>
+<p align="center"><sub>Scan to join the DeepAA QQ group</sub></p>
 
 ## Author
 

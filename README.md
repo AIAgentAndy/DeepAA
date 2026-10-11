@@ -1,8 +1,8 @@
 # DeepAA
 
-**算清 AI 成本，掌握每次调用。**
+**连接万千模型，洞察每次调用，算清所有成本，让 Agent 不再是黑盒。**
 
-DeepAA（Deep Agent Analytics）是开源、本地运行的 **AI 工作成本透明与可观测分析工作台**。它把官方定价、套餐订阅、中转倍率与优惠规则拆到具体请求，让你看到用量、费用和计算依据；同时统一管理供应商与 Agent，追踪 Agent 跟模型之间的链路调用，配置多模型故障转移。
+DeepAA（Deep Agent Analytics）是开源、本地运行的 **AI Agent 网关与可观测分析平台**。它把官方定价、套餐订阅、中转倍率与优惠规则拆到具体请求，让你看到用量、费用和计算依据；同时统一管理供应商与 Agent，追踪 Agent 跟模型之间的链路调用，配置多模型故障转移。
 
 [官网与产品预览](https://deepaa.dev/zh-CN) · [安装与接入指南](https://deepaa.dev/zh-CN/docs) · [English](./README_en.md) · [MIT 许可证](./LICENSE)
 
@@ -546,6 +546,13 @@ npm publish
 - **首发 1.0.0 必须走 latest 通道**（普通 `npm publish` 即是）：npm 上的 `latest` 目前指向历史占位包 `0.0.1`（无 bin），首发后自动被取代。不要只用 `--tag beta` 发预发布版，否则 `npm install -g deepaa` 装到的仍是占位包。
 - npmmirror 是 npmjs 的全量自动镜像，新版本发布后有**分钟级同步延迟**——发版后等几分钟再对外宣传。
 - 发布后可用 `npm dist-tag ls deepaa` 与 `npm view deepaa version` 复核。
+
+## 交流与反馈
+
+<p align="center">
+  <img src="docs/screenshots/qrcode-qq.png" width="200" alt="DeepAA QQ 交流群二维码">
+</p>
+<p align="center"><sub>扫码加入 DeepAA QQ 交流群</sub></p>
 
 ## 作者
 
