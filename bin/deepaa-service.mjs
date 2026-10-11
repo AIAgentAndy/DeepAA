@@ -379,6 +379,24 @@ async function launchctlBestEffort(exec, args) {
 }
 
 /**
+ * launchctl 尝试：成功返回 null；失败返回带原始 stderr/stdout 的诊断行。
+ * 2026-10-11 修复配套：旧包装只回布尔值，bootstrap 被拒的真实原因（如 BTM
+ * 登记态劣化）被完全吞掉，事故现场无任何诊断线索。
+ */
+async function launchctlAttempt(exec, args) {
+  const result = await exec("launchctl", args);
+  if (result.code === 0) return null;
+  const detail = String(result.stderr || result.stdout || "").trim();
+  return `launchctl ${args.join(" ")}（退出码 ${result.code}）${detail ? `：${detail}` : ""}`;
+}
+
+/** 服务标签是否真的进入 launchd 域（print 退出码 0 = 域内可见）。 */
+async function serviceInDomain(exec, serviceTarget) {
+  const result = await exec("launchctl", ["print", serviceTarget]);
+  return result.code === 0;
+}
+
+/**
  * 状态感知的服务启动（2026-10-06 事故修复，取代旧 bootstrapService）：
  * `launchctl bootstrap` 对「已在 launchd 域内的空闲标签」（进程已退出但标签仍在）
  * 直接报错，legacy `load -w` 则静默空成功——两者都不会唤醒进程，导致 install/
@@ -390,29 +408,40 @@ async function launchctlBestEffort(exec, args) {
  * 循环后 proxy 条目从登录项丢失，只剩 "1 个项目"）。因此 install 一律先 bootout
  * 清出、再全新 bootstrap：新配置生效 + BTM 确定性重登记。start/smartLaunch 不
  * 改写 plist，维持 kickstart 唤醒语义（绝不无谓重启运行中的进程）。
+ *
+ * 2026-10-11 事故修复：bootstrap/load 退出码 0 后必须 print 复核标签真的进域——
+ * 实测 proxy 的 bootstrap 被拒（退出码非 0）后，legacy `load -w` 静默空成功（退出码
+ * 0 但任务从未加载、进程从未运行），旧逻辑据此返回 "load" 使启动器谎报「已启动
+ * （系统服务）」而 3211 无监听。退出码不再单独作为成功信号；失败细节保留进抛错。
  */
 export async function ensureServiceRunning(exec, options) {
   const {role, plistPath, uid, reload = false} = options;
   const domainTarget = `gui/${uid}`;
   const serviceTarget = `${domainTarget}/${SERVICE_ID[role]}`;
+  const failures = [];
+  const attempt = async args => {
+    const failure = await launchctlAttempt(exec, args);
+    if (failure) failures.push(failure);
+    return failure === null;
+  };
   // 预愈合历史禁用覆写（旧 unload -w / launchctl disable 场景）：best-effort。
   await launchctlBestEffort(exec, ["enable", serviceTarget]);
   if (reload) {
     await launchctlBestEffort(exec, ["bootout", serviceTarget]);
-    if (await launchctlBestEffort(exec, ["bootstrap", domainTarget, plistPath])) return "bootstrap";
-    if (await launchctlBestEffort(exec, ["load", "-w", plistPath])) return "load";
-    if (await launchctlBestEffort(exec, ["kickstart", serviceTarget])) return "kickstart";
-    throw new Error(`无法启动服务 ${SERVICE_ID[role]}（enable/bootout/bootstrap 均未生效）`);
+    if (await attempt(["bootstrap", domainTarget, plistPath]) && await serviceInDomain(exec, serviceTarget)) return "bootstrap";
+    if (await attempt(["load", "-w", plistPath]) && await serviceInDomain(exec, serviceTarget)) return "load";
+    if (await attempt(["kickstart", serviceTarget])) return "kickstart";
+    throw new Error(`无法启动服务 ${SERVICE_ID[role]}（enable/bootout/bootstrap 均未生效）${failures.length ? `；最近失败：${failures.at(-1)}` : ""}`);
   }
   const inDomain = await launchctlBestEffort(exec, ["print", serviceTarget]);
   if (!inDomain) {
-    if (await launchctlBestEffort(exec, ["bootstrap", domainTarget, plistPath])) return "bootstrap";
-    if (await launchctlBestEffort(exec, ["load", "-w", plistPath])) return "load";
+    if (await attempt(["bootstrap", domainTarget, plistPath]) && await serviceInDomain(exec, serviceTarget)) return "bootstrap";
+    if (await attempt(["load", "-w", plistPath]) && await serviceInDomain(exec, serviceTarget)) return "load";
   }
   // 已在域内（含空闲标签）：kickstart 强制运行——RunAtLoad 只在加载瞬间生效，
   // 不会唤醒已退出的进程（2026-10-06 事故根因）。
-  if (await launchctlBestEffort(exec, ["kickstart", serviceTarget])) return "kickstart";
-  throw new Error(`无法启动服务 ${SERVICE_ID[role]}（enable/print/bootstrap/kickstart 均未生效）`);
+  if (await attempt(["kickstart", serviceTarget])) return "kickstart";
+  throw new Error(`无法启动服务 ${SERVICE_ID[role]}（enable/print/bootstrap/kickstart 均未生效）${failures.length ? `；最近失败：${failures.at(-1)}` : ""}`);
 }
 
 /**
@@ -649,6 +678,9 @@ export async function smartLaunch(options) {
   const uid = options.uid ?? process.getuid?.() ?? 501;
   const webPort = rolePort("web", options);
   const proxyPort = rolePort("proxy", options);
+  // 代理端口就绪验证上限（2026-10-11 修复）：正常代理 1~2s 内监听，15s 已是
+  // 10 倍余量；测试可注入小值加速故障路径。
+  const proxyReadyTimeoutMs = options.proxyReadyTimeoutMs ?? 15_000;
   const output = options.output ?? (text => process.stdout.write(`${text}\n`));
 
   const webRunning = await probes.probePort(webPort);
@@ -690,16 +722,39 @@ export async function smartLaunch(options) {
       await launchRole("web");
     }
   }
+  // 代理侧就绪验证（2026-10-11 事故修复，红线级）：「已启动 代理」只能以端口真实
+  // 监听为准——launchctl 退出码 0 不等于进程在跑（实测 bootstrap 被拒 + load -w
+  // 静默空成功后，启动器打印「已启动 代理（:3211)（系统服务）」而代理从未运行，
+  // 全站网关不可用）。服务路径未就绪时先 bootout 清出可能驻留/崩溃循环的标签
+  // （该进程从未监听端口、未服务过任何请求，不触碰「不重启在线代理」红线），
+  // 再按 2026-10-07 降级语义退回后台守护；守护化后仍不就绪则诚实报错并给出
+  // 日志路径，绝不打印「已启动」。Web 侧无需同构处理：waitForWebReady 已以
+  // 健康端点验证就绪、超时即抛错，本就诚实。
+  const launchProxyDaemon = async () => {
+    await launchRole("proxy");
+    if (!await waitForPortReady({port: proxyPort, probes, timeoutMs: proxyReadyTimeoutMs})) {
+      throw new Error(`代理服务启动未确认（端口 ${proxyPort} 未监听）——日志：${paths.errLog("proxy")}`);
+    }
+  };
   if (!proxyRunning) {
+    let proxyConfirmed = false;
     if (await isInstalled(platform, paths, "proxy", options)) {
       try {
         await ensureServiceRunning(exec, {role: "proxy", plistPath: paths.plist("proxy"), uid});
-        started.push({role: "proxy", mode: "service"});
+        proxyConfirmed = await waitForPortReady({port: proxyPort, probes, timeoutMs: proxyReadyTimeoutMs});
+        if (!proxyConfirmed) {
+          await bootoutService(exec, {role: "proxy", plistPath: paths.plist("proxy"), uid});
+        }
       } catch {
-        await launchRole("proxy");
+        proxyConfirmed = false;
+      }
+      if (proxyConfirmed) {
+        started.push({role: "proxy", mode: "service"});
+      } else {
+        await launchProxyDaemon();
       }
     } else {
-      await launchRole("proxy");
+      await launchProxyDaemon();
     }
   }
 

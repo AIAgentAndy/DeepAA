@@ -57,19 +57,28 @@ function recordingExec() {
 }
 
 /**
- * 拟真 launchctl 语义（2026-10-06 修复配套）：`print` 按 inDomain 返回退出码
- * （0=标签已在域内，非 0=不在），其余子命令默认成功、fail 列表内的失败。
+ * 拟真 launchctl 语义（2026-10-06 修复配套；2026-10-11 状态化）：`print` 按
+ * 「该标签当前是否在域内」返回退出码——初始由 inDomain 指定；bootstrap / load -w
+ * 成功后视为进域、bootout 成功后出域（模拟真实 launchd 生命周期，供 print
+ * 复核断言）。状态按标签（web/proxy）独立跟踪，与真实 launchd 一致。
+ * fail 列表内的子命令恒失败（stderr=stub failure）且不改变域内状态。
  */
 function launchctlExec(overrides: {inDomain?: boolean; fail?: string[]} = {}) {
   const calls: Array<{command: string; args: string[]}> = [];
+  const inDomainByLabel = new Map<string, boolean>();
+  const labelOfArgs = (args: string[]) =>
+    args.join(" ").includes("proxy") ? "dev.deepaa.proxy" : "dev.deepaa.web";
   const exec = (command: string, args: string[]) => {
     calls.push({command, args: [...args]});
-    if (command === "launchctl" && args[0] === "print") {
-      return Promise.resolve({code: overrides.inDomain ? 0 : 1, stdout: "", stderr: ""});
+    if (command !== "launchctl") return Promise.resolve({code: 0, stdout: "", stderr: ""});
+    if (overrides.fail?.includes(args[0])) return Promise.resolve({code: 1, stdout: "", stderr: "stub failure"});
+    const label = labelOfArgs(args);
+    if (args[0] === "print") {
+      const inDomain = inDomainByLabel.get(label) ?? overrides.inDomain ?? false;
+      return Promise.resolve({code: inDomain ? 0 : 1, stdout: "", stderr: ""});
     }
-    if (overrides.fail?.includes(args[0])) {
-      return Promise.resolve({code: 1, stdout: "", stderr: "stub failure"});
-    }
+    if (args[0] === "bootstrap" || args[0] === "load") inDomainByLabel.set(label, true);
+    if (args[0] === "bootout") inDomainByLabel.set(label, false);
     return Promise.resolve({code: 0, stdout: "", stderr: ""});
   };
   return {calls, exec};
@@ -96,6 +105,56 @@ function recordingSpawn() {
     return {unref: () => {}, pid: 424242};
   };
   return {calls, spawnProcess};
+}
+
+/**
+ * 动作驱动的就绪翻转（2026-10-11 修复配套）：smartLaunch 现在以端口真实监听
+ * 作为「已启动 代理」判据，测试需在对应动作成功后翻转端口就绪，模拟进程起监听：
+ * - launchctl bootstrap/kickstart 成功 → 该角色端口就绪（服务路径拉起）；
+ * - 守护化 spawn(角色) → 该角色端口就绪（daemon 拉起）。
+ */
+function readinessSimulation() {
+  const readyPorts = new Set<number>();
+  const markRoleReady = (role: string) => {
+    if (role === "web") readyPorts.add(DEFAULT_WEB_PORT);
+    if (role === "proxy") readyPorts.add(DEFAULT_PROXY_PORT);
+  };
+  const probes = {
+    probePort: async (port: number) => readyPorts.has(port),
+    fetchHealth: async (port: number) =>
+      ({state: port === DEFAULT_WEB_PORT && readyPorts.has(DEFAULT_WEB_PORT) ? "deepaa" : "down"}),
+  };
+  return {probes, markRoleReady};
+}
+
+/** 包装 launchctl exec：bootstrap/kickstart 成功后按目标角色翻转端口就绪。 */
+function serviceLaunchExec(
+  exec: (command: string, args: string[]) => Promise<{code: number; stdout: string; stderr: string}>,
+  markRoleReady: (role: string) => void,
+) {
+  const roleOfArgs = (args: string[]) => {
+    if (args[0] !== "bootstrap" && args[0] !== "kickstart") return undefined;
+    return args.join(" ").includes("proxy") ? "proxy" : "web";
+  };
+  return async (command: string, args: string[]) => {
+    const result = await exec(command, args);
+    if (result.code === 0) {
+      const role = roleOfArgs(args);
+      if (role) markRoleReady(role);
+    }
+    return result;
+  };
+}
+
+/** 包装守护化 spawn：按角色参数翻转端口就绪，同时保留调用记录。 */
+function readinessSpawn(markRoleReady: (role: string) => void) {
+  const recorder = recordingSpawn();
+  const spawnProcess = (command: string, args: string[], options: Record<string, unknown>) => {
+    const child = recorder.spawnProcess(command, args, options);
+    if (args[1] === "web" || args[1] === "proxy") markRoleReady(args[1]);
+    return child;
+  };
+  return {calls: recorder.calls, spawnProcess};
 }
 
 describe("C1 macOS LaunchAgent plist 生成", () => {
@@ -215,12 +274,12 @@ describe("C3/C6 探测与就绪等待", () => {
   });
 });
 
-describe("ensureServiceRunning 状态感知启动（2026-10-06 事故修复）", () => {
-  test("不在域内：enable → print（失败）→ bootstrap 加载并 RunAtLoad 拉起", async () => {
+describe("ensureServiceRunning 状态感知启动（2026-10-06 事故修复 + 2026-10-11 谎报拦截）", () => {
+  test("不在域内：enable → print（失败）→ bootstrap 加载 → print 复核进域", async () => {
     const {calls, exec} = launchctlExec({inDomain: false});
     const mode = await ensureServiceRunning(exec, {role: "web", plistPath: "/tmp/dev.deepaa.web.plist", uid: 501});
     expect(mode).toBe("bootstrap");
-    expect(calls.map(call => call.args[0])).toEqual(["enable", "print", "bootstrap"]);
+    expect(calls.map(call => call.args[0])).toEqual(["enable", "print", "bootstrap", "print"]);
   });
 
   test("已在域内（空闲标签）：kickstart 强制唤醒——RunAtLoad 不会唤醒已退出进程", async () => {
@@ -236,11 +295,27 @@ describe("ensureServiceRunning 状态感知启动（2026-10-06 事故修复）",
       .rejects.toThrow(SERVICE_ID.proxy);
   });
 
-  test("reload=true（install 路径）：先 bootout 清出再全新 bootstrap（新配置 + BTM 重登记）", async () => {
+  test("2026-10-11 事故形态：bootstrap/load 退出码 0 但任务从未进域（load -w 静默空成功）——print 复核拦截谎报，抛错保留 stderr 诊断", async () => {
+    const calls: Array<{command: string; args: string[]}> = [];
+    // print 恒失败 = 任务从未真正加载；enable/bootstrap/load 全部退出码 0（假成功）。
+    const exec = (command: string, args: string[]) => {
+      calls.push({command, args: [...args]});
+      if (command !== "launchctl") return Promise.resolve({code: 0, stdout: "", stderr: ""});
+      if (args[0] === "print" || args[0] === "kickstart") {
+        return Promise.resolve({code: 1, stdout: "", stderr: "stub failure"});
+      }
+      return Promise.resolve({code: 0, stdout: "", stderr: ""});
+    };
+    await expect(ensureServiceRunning(exec, {role: "proxy", plistPath: "/tmp/dev.deepaa.proxy.plist", uid: 501}))
+      .rejects.toThrow("stub failure");
+    expect(calls.map(call => call.args[0])).toEqual(["enable", "print", "bootstrap", "print", "load", "print", "kickstart"]);
+  });
+
+  test("reload=true（install 路径）：先 bootout 清出再全新 bootstrap（新配置 + BTM 重登记）→ print 复核", async () => {
     const {calls, exec} = launchctlExec({inDomain: true});
     const mode = await ensureServiceRunning(exec, {role: "web", plistPath: "/tmp/dev.deepaa.web.plist", uid: 501, reload: true});
     expect(mode).toBe("bootstrap");
-    expect(calls.map(call => call.args[0])).toEqual(["enable", "bootout", "bootstrap"]);
+    expect(calls.map(call => call.args[0])).toEqual(["enable", "bootout", "bootstrap", "print"]);
   });
 
   test("reload=true 全部失败：抛错并携带服务标签", async () => {
@@ -530,19 +605,15 @@ describe("C3/C4 智能启动器 smartLaunch", () => {
   });
 
   test("两服务都没跑：守护化补齐 → 就绪 → 开浏览器一次", async () => {
-    const recorder = recordingSpawn();
+    const sim = readinessSimulation();
+    const {calls: spawnCalls, spawnProcess} = readinessSpawn(sim.markRoleReady);
     const opened: string[] = [];
-    // fetchHealth 前两次 down（等待轮询中）、第三次起 deepaa（模拟 Web 完成启动）。
-    let healthPolls = 0;
     const result = await smartLaunch({
       homeDir,
       dataDir,
       platform: "darwin",
-      probes: {
-        probePort: async () => false,
-        fetchHealth: async () => ({state: healthPolls++ < 2 ? "down" : "deepaa"}),
-      },
-      spawnProcess: recorder.spawnProcess,
+      probes: sim.probes,
+      spawnProcess,
       exec: recordingExec().exec,
       openBrowser: async url => opened.push(url),
       openSync: () => 7,
@@ -550,7 +621,7 @@ describe("C3/C4 智能启动器 smartLaunch", () => {
       output: () => {},
     });
     expect(result.started.map(item => `${item.role}:${item.mode}`)).toEqual(["web:daemon", "proxy:daemon"]);
-    expect(recorder.calls.map(call => call.args[1])).toEqual(["web", "proxy"]);
+    expect(spawnCalls.map(call => call.args[1])).toEqual(["web", "proxy"]);
     expect(opened).toEqual([`http://127.0.0.1:${DEFAULT_WEB_PORT}`]);
   });
 
@@ -586,7 +657,8 @@ describe("C3/C4 智能启动器 smartLaunch", () => {
     expect(ensureIconCalls[0]).toEqual({platform: "darwin", homeDir});
   });
 
-  test("服务已注册且未运行：走 bootstrap 而非守护化", async () => {
+  test("服务已注册且未运行：走 bootstrap 而非守护化；「已启动 代理」以端口就绪为判据", async () => {
+    const sim = readinessSimulation();
     const recorder = recordingSpawn();
     const {calls: execCalls, exec} = launchctlExec({inDomain: false});
     // 预置 plist 文件 → isInstalled = true
@@ -599,9 +671,9 @@ describe("C3/C4 智能启动器 smartLaunch", () => {
       homeDir,
       dataDir,
       platform: "darwin",
-      probes: fixedProbes({web: false, proxy: false, health: "deepaa"}),
+      probes: sim.probes,
       spawnProcess: recorder.spawnProcess,
-      exec,
+      exec: serviceLaunchExec(exec, sim.markRoleReady),
       openBrowser: async () => {},
       ensureIcon: async () => {},
       output: () => {},
@@ -615,6 +687,7 @@ describe("C3/C4 智能启动器 smartLaunch", () => {
   });
 
   test("空闲标签场景（2026-10-06 修复）：smartLaunch 走 kickstart 唤醒，不再干等 45s 超时", async () => {
+    const sim = readinessSimulation();
     const recorder = recordingSpawn();
     const {calls: execCalls, exec} = launchctlExec({inDomain: true});
     const {mkdir: mk, writeFile: wf} = await import("node:fs/promises");
@@ -625,14 +698,15 @@ describe("C3/C4 智能启动器 smartLaunch", () => {
       homeDir,
       dataDir,
       platform: "darwin",
-      probes: fixedProbes({web: false, proxy: false, health: "deepaa"}),
+      probes: sim.probes,
       spawnProcess: recorder.spawnProcess,
-      exec,
+      exec: serviceLaunchExec(exec, sim.markRoleReady),
       openBrowser: async () => {},
       ensureIcon: async () => {},
       output: () => {},
     });
     expect(result.started.map(item => item.mode)).toEqual(["service", "service"]);
+    expect(recorder.calls).toHaveLength(0);
     expect(execCalls.filter(call => call.args[0] === "kickstart")).toHaveLength(2);
     await rm(join(homeDir, "Library", "LaunchAgents", `${SERVICE_ID.web}.plist`), {force: true});
     await rm(join(homeDir, "Library", "LaunchAgents", `${SERVICE_ID.proxy}.plist`), {force: true});
@@ -649,7 +723,8 @@ describe("浏览器打开命令", () => {
 
 describe("服务路径失败静默降级（2026-10-07 用户确认：零 sfltool、零提示，失败才降级守护化）", () => {
   test("已注册但服务路径全失败（如系统设置置灰导致 bootstrap 被拒）→ 静默后台守护拉起，无提示输出", async () => {
-    const recorder = recordingSpawn();
+    const sim = readinessSimulation();
+    const {calls: spawnCalls, spawnProcess} = readinessSpawn(sim.markRoleReady);
     // launchctl 全失败：enable 成功、print 失败（域外）、bootstrap/load/kickstart 全拒。
     const {calls: execCalls, exec} = launchctlExec({inDomain: false, fail: ["bootstrap", "load", "kickstart"]});
     const fallbackHome = join(sandbox, "home-fallback");
@@ -661,15 +736,15 @@ describe("服务路径失败静默降级（2026-10-07 用户确认：零 sfltool
       homeDir: fallbackHome,
       dataDir,
       platform: "darwin",
-      probes: fixedProbes({web: false, proxy: false, health: "deepaa"}),
-      spawnProcess: recorder.spawnProcess,
+      probes: sim.probes,
+      spawnProcess,
       exec,
       openBrowser: async () => {},
       ensureIcon: async () => {},
       output: text => lines.push(text),
     });
     expect(result.started.map(item => item.mode)).toEqual(["daemon", "daemon"]);
-    expect(recorder.calls.map(call => call.args[1])).toEqual(["web", "proxy"]);
+    expect(spawnCalls.map(call => call.args[1])).toEqual(["web", "proxy"]);
     // 全程零 sfltool（置灰检测的唯一信号是 root 调试工具，用户终端会弹授权框）。
     expect(execCalls.some(call => call.command === "sfltool")).toBe(false);
     const text = lines.join("\n");
@@ -678,5 +753,75 @@ describe("服务路径失败静默降级（2026-10-07 用户确认：零 sfltool
     expect(text).not.toContain("系统服务启动未成功");
     expect(text).not.toContain("置灰");
     expect(text).not.toContain("允许在后台");
+  });
+
+  test("2026-10-11 事故形态：bootstrap 被拒 + load -w 静默空成功（退出码 0）→ 不谎报「系统服务」，bootout 清出后降级守护且端口就绪", async () => {
+    // 复刻 10-11 实测现场：print 恒失败（任务从未进域）、bootstrap 被拒、kickstart
+    // 失败；enable / load -w 退出码 0（后者静默空成功——旧代码据此返回 "load"
+    // 并打印「已启动 代理（系统服务）」，而 launchd 域内无此服务、代理从未运行）。
+    const execCalls: Array<{command: string; args: string[]}> = [];
+    const exec = (command: string, args: string[]) => {
+      execCalls.push({command, args: [...args]});
+      if (command !== "launchctl") return Promise.resolve({code: 0, stdout: "", stderr: ""});
+      if (["print", "bootstrap", "kickstart"].includes(args[0])) {
+        return Promise.resolve({
+          code: 1,
+          stdout: "",
+          stderr: args[0] === "bootstrap" ? "Bootstrap failed: 125" : "Could not find service",
+        });
+      }
+      return Promise.resolve({code: 0, stdout: "", stderr: ""});
+    };
+    const sim = readinessSimulation();
+    const {calls: spawnCalls, spawnProcess} = readinessSpawn(sim.markRoleReady);
+    const lieHome = join(sandbox, "home-lie");
+    await mkdir(join(lieHome, "Library", "LaunchAgents"), {recursive: true});
+    await writeFile(join(lieHome, "Library", "LaunchAgents", `${SERVICE_ID.web}.plist`), "stub", "utf8");
+    await writeFile(join(lieHome, "Library", "LaunchAgents", `${SERVICE_ID.proxy}.plist`), "stub", "utf8");
+    const lines: string[] = [];
+    const result = await smartLaunch({
+      homeDir: lieHome,
+      dataDir,
+      platform: "darwin",
+      probes: sim.probes,
+      spawnProcess,
+      exec,
+      openBrowser: async () => {},
+      ensureIcon: async () => {},
+      output: text => lines.push(text),
+    });
+    expect(result.started.map(item => `${item.role}:${item.mode}`)).toEqual(["web:daemon", "proxy:daemon"]);
+    expect(spawnCalls.map(call => call.args[1])).toEqual(["web", "proxy"]);
+    // 绝不打印「系统服务」——端口未就绪的服务路径声明不得成为成功依据。
+    const text = lines.join("\n");
+    expect(text).toContain("已启动 代理");
+    expect(text).toContain("后台守护");
+    expect(text).not.toContain("系统服务");
+  });
+
+  test("服务路径与守护化全部未就绪：诚实抛错并给出日志路径，绝不打印「已启动」", async () => {
+    const recorder = recordingSpawn();
+    // 守护化 spawn 不翻转端口（守护也起不来）→ 最终校验超时（注入 30ms 加速）。
+    const {exec} = launchctlExec({inDomain: false, fail: ["bootstrap", "load", "kickstart"]});
+    const deadHome = join(sandbox, "home-dead");
+    await mkdir(join(deadHome, "Library", "LaunchAgents"), {recursive: true});
+    await writeFile(join(deadHome, "Library", "LaunchAgents", `${SERVICE_ID.web}.plist`), "stub", "utf8");
+    await writeFile(join(deadHome, "Library", "LaunchAgents", `${SERVICE_ID.proxy}.plist`), "stub", "utf8");
+    const lines: string[] = [];
+    await expect(smartLaunch({
+      homeDir: deadHome,
+      dataDir,
+      platform: "darwin",
+      probes: fixedProbes({web: false, proxy: false, health: "deepaa"}),
+      spawnProcess: recorder.spawnProcess,
+      exec,
+      openBrowser: async () => {},
+      ensureIcon: async () => {},
+      output: text => lines.push(text),
+      proxyReadyTimeoutMs: 30,
+    })).rejects.toThrow("代理服务启动未确认");
+    // 守护化兜底确实执行过，但未就绪 → 诚实失败（无任何「已启动」输出）。
+    expect(recorder.calls.map(call => call.args[1])).toContain("proxy");
+    expect(lines.join("\n")).not.toContain("已启动");
   });
 });
