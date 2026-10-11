@@ -66,7 +66,7 @@ describe("Node-only 工具链", () => {
   test("活跃文档只展示统一的生产和开发命令", async () => {
     const sources = await Promise.all([
       "README.md",
-      "README_cn.md",
+      "README_en.md",
     ].map(path => readFile(new URL(`../${path}`, import.meta.url), "utf8")));
 
     for (const source of sources) {

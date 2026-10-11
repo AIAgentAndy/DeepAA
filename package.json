@@ -33,7 +33,7 @@
     "data/defaults/litellm-model-prices.snapshot.json",
     "data/defaults/llm_catalog.jsonl",
     "README.md",
-    "README_cn.md",
+    "README_en.md",
     "LICENSE",
     "next.config.ts",
     "tsconfig.json"
