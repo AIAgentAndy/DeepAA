@@ -3361,6 +3361,22 @@ button.tree-row.tree-thread-search .tree-row-main { flex: 1; }
   font-size: 12px;
 }
 
+/* footer 左下角提示列（2026-10-11）：阻断原因 + Codex 客户端重启提示纵向堆叠。 */
+.development-launch-footer-notes {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* Codex 客户端形态常驻重启提示：单实例客户端对形态切换/配置变化不热生效。 */
+.development-launch-client-restart-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* 弹窗内新增密钥表单：名称 + 内容 + 保存按钮一行排列。 */
 .development-credential-form {
   display: grid;

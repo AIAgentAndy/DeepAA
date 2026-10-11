@@ -1,10 +1,13 @@
-import { readFile, writeFile, mkdir } from "fs/promises";
+import { mkdir, readFile, readdir, unlink, writeFile } from "fs/promises";
 import { join } from "path";
 import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
+import {parse as parseToml} from "smol-toml";
 import { buildGatewayModelId, parseGatewayModelId } from "@/proxy/gateway-prefix";
 import { backupFile } from "@/lib/config-sync/sync-manager";
 import type {ConfigSyncReport} from "@/lib/config-sync/sync-manager";
+import {readOptionalBounded} from "@/lib/config-sync/core/file-io";
+import {GATEWAY_PLACEHOLDER_TOKEN} from "@/lib/config-sync/core/placeholder-auth";
 import type {CliSyncWarning} from "@/lib/config-sync/core/types";
 import type { AgentId, AgentLaunchPreferences, ProxyConfig, ProxyTarget } from "@/types";
 import type { DevelopmentManualOverrides } from "../launch-plan";
@@ -227,23 +230,197 @@ export async function writeCodexDefaultModel(
   }
   // 无差异不写：默认模型未变时不刷新 mtime，也不产生备份噪音。
   if (next === (existing ?? "")) return;
+  // 写入前可加载性自校验（2026-10-11）：绝不落盘 codex 无法加载的配置——
+  // codex 对 config.toml 的加载是整体反序列化，任何非法键都会让客户端与 CLI
+  // 全量回退默认配置（网关 provider 等于没写），代价远高于放弃本次写入。
+  try {
+    parseCodexConfigLoadable(next);
+  } catch {
+    throw new Error("CODEX_CONFIG_WRITE_INVALID");
+  }
   await backupFile(configPath);
   await mkdir(join(configPath, ".."), {recursive: true});
   await writeFile(configPath, next, {encoding: "utf8", mode: 0o600});
 }
 
-/** 替换 TOML 顶层键值（保留注释与其它内容）；不存在时在文件末尾追加。 */
-function setTomlTopLevelValue(toml: string, key: string, value: string): string {
-  const pattern = new RegExp(`^${key}\\s*=\\s*[^\\n]*$`, "mu");
-  if (pattern.test(toml)) {
-    return toml.replace(pattern, `${key} = ${value}`);
+/**
+ * 替换 TOML 顶层键值（保留注释与其它内容）。顶层区 = 首个 [section] 头之前：
+ * section 内同名键（如 [profiles.work] 的 model）绝不匹配；键不存在时插入
+ * 顶层区末尾，绝不追加文件末尾——文件末尾处于最后一个 section 内，追加即
+ * 非法 TOML（2026-10-11 Windows 事故：sandbox_mode 落入 [profiles] 使 codex
+ * 整份配置反序列化失败、网关配置与用户设置全部失效）。
+ */
+export function setTomlTopLevelValue(toml: string, key: string, value: string): string {
+  const lines = toml.split("\n");
+  const existingKey = new RegExp(`^${key}\\s*=`);
+  let sectionHeaderIndex = lines.length;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (/^\s*\[/.test(line)) {
+      sectionHeaderIndex = index;
+      break;
+    }
+    if (existingKey.test(line)) {
+      lines[index] = `${key} = ${value}`;
+      return lines.join("\n");
+    }
   }
-  const trimmed = toml.trimEnd();
-  return `${trimmed}${trimmed ? "\n" : ""}${key} = ${value}\n`;
+  // 插入点：顶层区内最后一个非空行之后；全 section 文件（无顶层区）插到文件最前。
+  let insertion = sectionHeaderIndex;
+  while (insertion > 0 && lines[insertion - 1].trim() === "") insertion--;
+  lines.splice(insertion, 0, `${key} = ${value}`);
+  return lines.join("\n");
+}
+
+/**
+ * codex 侧配置可加载性校验：smol-toml 只保证通用 TOML 语法，codex 的 serde
+ * 反序列化还有结构约束——已知致命形态是 struct 段内出现标量键（2026-10-11
+ * 事故：[profiles] 下的 sandbox_mode 字符串让语法合法的文件整体加载失败、
+ * 全量回退默认配置）。按已知风险面校验（profiles / model_providers 必须是
+ * 表套表），不追求完整复刻 codex schema；抛错即视为不可加载。
+ */
+export function parseCodexConfigLoadable(raw: string): Record<string, unknown> {
+  const parsed = parseToml(raw) as Record<string, unknown>;
+  for (const sectionKey of ["profiles", "model_providers"]) {
+    const value = parsed[sectionKey];
+    if (value === undefined) continue;
+    assertTableOfTables(sectionKey, value);
+    for (const [childKey, child] of Object.entries(value as Record<string, unknown>)) {
+      assertTableOfTables(`${sectionKey}.${childKey}`, child);
+    }
+  }
+  return parsed;
+}
+
+function assertTableOfTables(label: string, value: unknown): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`CODEX_CONFIG_STRUCTURE_INVALID: ${label}`);
+  }
 }
 
 function tomlString(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+// ———————————————— Codex config.toml 健康自愈（2026-10-11） ————————————————
+
+/**
+ * 启动链路前的 Codex 配置健康检查：config.toml 解析失败时从 deepaa 滚动备份
+ * （config.toml_bk_*）恢复最近一份可解析版本，坏文件先另存 *_invalid_* 留证。
+ * 背景：codex 对 config.toml 是整体反序列化，任何非法键都让客户端与 CLI 全量
+ * 回退默认配置，且 config-sync 的结构化合并也依赖 parse——坏文件会让受管同步
+ * 持续抛错，DeepAA 自身无法修复，死锁在坏状态。返回恢复提示供弹窗透出；
+ * 无可解析备份时文件保持原样并返回不可恢复提示。
+ */
+export async function ensureCodexConfigParsable(homeDir: string): Promise<CliSyncWarning | undefined> {
+  const configPath = join(homeDir, ".codex", "config.toml");
+  const raw = await readOptionalBounded(configPath);
+  if (raw === undefined) return undefined;
+  try {
+    parseCodexConfigLoadable(raw);
+    return undefined;
+  } catch {
+    // 不可加载（语法或结构）→ 尝试从备份恢复。
+  }
+  const backupDir = join(homeDir, ".codex", "deepaa");
+  let candidates: string[] = [];
+  try {
+    candidates = (await readdir(backupDir))
+      .filter(name => /^config\.toml_bk_/.test(name))
+      .sort()
+      .reverse();
+  } catch {
+    // 备份目录不存在 → 无备份可恢复。
+  }
+  for (const name of candidates) {
+    const backupRaw = await readOptionalBounded(join(backupDir, name));
+    if (backupRaw === undefined) continue;
+    try {
+      parseCodexConfigLoadable(backupRaw);
+    } catch {
+      continue;
+    }
+    await writeFile(join(backupDir, `config.toml_invalid_${backupStamp()}`), raw, {mode: 0o600});
+    await writeFile(configPath, backupRaw, {encoding: "utf8", mode: 0o600});
+    return {
+      targetId: "",
+      code: "CODEX_CONFIG_RESTORED_FROM_BACKUP",
+      message: "检测到 ~/.codex/config.toml 已损坏，已自动恢复最近一次 DeepAA 备份（原文件另存于 ~/.codex/deepaa 留证）",
+    };
+  }
+  return {
+    targetId: "",
+    code: "CODEX_CONFIG_CORRUPT_UNRECOVERABLE",
+    message: "~/.codex/config.toml 已损坏且无可用备份，Codex 将回退默认配置，请手动修复后重试",
+  };
+}
+
+function backupStamp(): string {
+  const now = new Date();
+  return [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+    "_",
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+  ].join("");
+}
+
+// ———————————————— Codex 客户端占位登录（2026-10-11 用户确认） ————————————————
+
+/**
+ * Codex 桌面客户端的登录门只检查 ~/.codex/auth.json 是否存在、不校验内容
+ * （实测任意值即可进入）；网关模式下模型流量走 model_providers.deepaa_gateway
+ * 的占位 bearer token，auth.json 里的 key 永不被使用、不出本机。因此网关形态
+ * 客户端启动时预填占位登录，用户免 ChatGPT 登录直进。仅在文件缺失时写入
+ * （真实 ChatGPT 登录或用户自有 key 绝不覆盖）；config.toml 显式配置
+ * cli_auth_credentials_store = "keyring" 时凭据走系统钥匙串、占位文件不会被
+ * 读取，跳过写入。返回是否写入了占位。
+ */
+export async function ensureCodexGatewayPlaceholderAuth(homeDir: string): Promise<boolean> {
+  const authPath = join(homeDir, ".codex", "auth.json");
+  const existing = await readOptionalBounded(authPath);
+  if (existing !== undefined) return false;
+  const configRaw = await readOptionalBounded(join(homeDir, ".codex", "config.toml"));
+  if (configRaw !== undefined) {
+    try {
+      const config = parseToml(configRaw) as Record<string, unknown>;
+      if (config.cli_auth_credentials_store === "keyring") return false;
+    } catch {
+      // 配置解析失败不阻断：占位文件存在与否对该形态无影响。
+    }
+  }
+  const content = `${JSON.stringify({
+    auth_mode: "apikey",
+    OPENAI_API_KEY: GATEWAY_PLACEHOLDER_TOKEN,
+  }, null, 2)}\n`;
+  await mkdir(join(authPath, ".."), {recursive: true});
+  await writeFile(authPath, content, {encoding: "utf8", mode: 0o600});
+  return true;
+}
+
+/**
+ * 切回官方模式时清理自己的占位登录：仅当 auth.json 内容仍是本占位（apikey +
+ * 占位 key）时删除——官方模式需要真实 ChatGPT 登录，残留占位会让客户端误判
+ * 已登录、官方请求全部 401。用户已真实登录（tokens/自有 key）则绝不触碰。
+ * 返回是否执行了清理。
+ */
+export async function removeCodexPlaceholderAuth(homeDir: string): Promise<boolean> {
+  const authPath = join(homeDir, ".codex", "auth.json");
+  const existing = await readOptionalBounded(authPath);
+  if (existing === undefined) return false;
+  try {
+    const parsed = JSON.parse(existing) as {auth_mode?: unknown; OPENAI_API_KEY?: unknown};
+    if (parsed.auth_mode !== "apikey" || parsed.OPENAI_API_KEY !== GATEWAY_PLACEHOLDER_TOKEN) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+  await unlink(authPath).catch(() => undefined);
+  return true;
 }
 
 // ———————————————— 启动执行助手（三类标准路径） ————————————————

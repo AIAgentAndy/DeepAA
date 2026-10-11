@@ -14,6 +14,7 @@ import {
   type DirectorySelection,
   type PlatformAdapterOptions,
   type TerminalLaunchRequest,
+  resolveWildcardExecutableCandidate,
   runDevelopmentCommand,
 } from "./platform";
 
@@ -237,8 +238,14 @@ export class MacDevelopmentPlatformAdapter implements DevelopmentPlatformAdapter
     const direct = await findExecutableOnPath(executable, this.env.PATH || "");
     if (direct) return direct;
     // PATH 优先，随后是注册表声明的 home 白名单安装路径（禁止扫描 npx cache）。
+    // 通配候选（版本哈希目录）枚举取 mtime 最新，与 Windows 适配器共用同一实现。
     for (const candidate of agentLaunchStrategy(cli).executableCandidates) {
       const path = join(this.homeDir, candidate);
+      if (candidate.includes("*")) {
+        const found = await resolveWildcardExecutableCandidate(path);
+        if (found) return found;
+        continue;
+      }
       if (await pathExists(path)) return path;
     }
     // 登录壳兜底按代价升序：先非交互（-lc，实测 ~0.1s，登录层 PATH 已初始化），

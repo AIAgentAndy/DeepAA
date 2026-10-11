@@ -41,7 +41,8 @@ export interface AgentLaunchDeclarations {
   agent: AgentId;
   /** 会话恢复 ID 值域（UI 即时校验与服务端归一化共用同一实现）。 */
   resumeIdKind: ResumeIdKind;
-  /** CLI 可执行名与 PATH 外的候选安装路径（相对 home）。 */
+  /** CLI 可执行名与 PATH 外的候选安装路径（相对 home；支持单个 `*` 通配目录段 =
+   *  版本哈希目录，平台适配层枚举取 mtime 最新）。 */
   executable: string;
   executableCandidates: readonly string[];
   /** config-sync 适配器键名。 */
@@ -98,7 +99,13 @@ export const AGENT_LAUNCH_DECLARATIONS: Readonly<Record<AgentId, AgentLaunchDecl
     agent: "codex",
     resumeIdKind: "codex-name-or-uuid",
     executable: "codex",
-    executableCandidates: [],
+    // Windows 桌面客户端（MSIX）不注册 PATH codex 命令（应用别名仅
+    // codex-chrome-native-host / codex-core-command-runner），核心 CLI 捆绑于
+    // %LOCALAPPDATA%\OpenAI\Codex\bin\<版本哈希>\codex.exe（2026-10-11 实证
+    // 0.162.0：完整 CLI，`codex app [PATH]` 可拉起桌面客户端）。相对 home 即
+    // 下方通配候选，枚举哈希目录取 mtime 最新；macOS 无此路径自然跳过。
+    // 这是安装位置探测，不是 npx 缓存扫描（禁扫 npx cache 的既有决策不变）。
+    executableCandidates: ["AppData/Local/OpenAI/Codex/bin/*/codex.exe"],
     configAdapter: "codex",
     form: "terminal-cli",
     launchModes: ["tui"],

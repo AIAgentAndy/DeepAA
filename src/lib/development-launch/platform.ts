@@ -1,4 +1,7 @@
 import { spawn, type SpawnOptions } from "child_process";
+import type { Dirent } from "fs";
+import { readdir, stat } from "fs/promises";
+import { join, sep } from "path";
 import type { DevelopmentCli, DshLaunchChannel, PlatformCapabilities, TerminalCapability } from "./types";
 import {launchStrategyList} from "./strategies";
 import { MacDevelopmentPlatformAdapter } from "./platform-macos";
@@ -190,4 +193,48 @@ export async function launchDevelopmentTerminal(
       resolvePromise();
     });
   });
+}
+
+/**
+ * executableCandidates 通配候选解析（2026-10-11）：候选路径含单个 `*` 目录段
+ * （版本哈希目录，如 Windows Codex 桌面客户端捆绑 CLI 的
+ * `AppData/Local/OpenAI/Codex/bin/<hash>/codex.exe`）时枚举实际目录，按目标
+ * 文件 mtime 取最新——哈希目录随版本累积不清理，最新落盘即当前生效版本。
+ * 仅支持单个通配段；父目录缺失、无命中文件或多于一个通配段一律返回 null。
+ * 非 Windows 平台上该类候选路径不存在，自然跳过，不影响其它候选。
+ */
+export async function resolveWildcardExecutableCandidate(pattern: string): Promise<string | null> {
+  const segments = pattern.split(/[\\/]+/);
+  const wildcardIndex = segments.findIndex(segment => segment.includes("*"));
+  if (wildcardIndex < 0
+    || segments.slice(wildcardIndex + 1).some(segment => segment.includes("*"))
+    || wildcardIndex === segments.length - 1) {
+    return null;
+  }
+  const parent = segments.slice(0, wildcardIndex).join(sep);
+  const tail = segments.slice(wildcardIndex + 1);
+  const matcher = wildcardSegmentRegExp(segments[wildcardIndex]);
+  let entries: Dirent[];
+  try {
+    entries = await readdir(parent, {withFileTypes: true});
+  } catch {
+    return null;
+  }
+  let newest: {path: string; mtimeMs: number} | null = null;
+  for (const entry of entries) {
+    if (!matcher.test(entry.name)) continue;
+    const candidatePath = join(parent, entry.name, ...tail);
+    const info = await stat(candidatePath).catch(() => null);
+    if (!info?.isFile()) continue;
+    if (!newest || info.mtimeMs > newest.mtimeMs) newest = {path: candidatePath, mtimeMs: info.mtimeMs};
+  }
+  return newest?.path ?? null;
+}
+
+/** 单段通配（`*`）转整段正则：其余字符按字面量匹配。 */
+function wildcardSegmentRegExp(segment: string): RegExp {
+  const source = segment.split("*")
+    .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join(".*");
+  return new RegExp(`^${source}$`);
 }
