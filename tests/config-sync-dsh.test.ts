@@ -192,6 +192,45 @@ test("dsh 活跃链路同时写入凭据文件占位键（任意方式启动都�
   expect(migrated).toContain("DEEPAA_GATEWAY_TOKEN: deepaa-gateway");
 });
 
+test("dsh 凭据合并容忍 refs 缺失/空值（Windows 实测：refs: 空标量导致 setIn 抛 Expected YAML collection）", () => {
+  const ctx = context(config());
+  const plan = dshCliConfigAdapter.build(ctx, dshCliConfigAdapter.resolvePaths(ctx));
+  const credentials = plan.artifacts.find(artifact => artifact.specId === "dsh-credentials")!;
+  const spec = {id: "dsh-credentials", kind: "yaml" as const, managedNamespaces: ["refs"], description: "", sensitive: true};
+  // refs 空值（null 标量）：dsh 自身按空映射接受（asSection 语义），DeepAA 重建后写入占位键。
+  const nullMerged = dshCliConfigAdapter.mergeFile({
+    file: spec,
+    existingRaw: "version: 1\nrefs:\nrecords: {}\n",
+    artifact: credentials,
+  });
+  expect(nullMerged).toContain("DEEPAA_GATEWAY_TOKEN: deepaa-gateway");
+  expect(nullMerged).toContain("records: {}");
+  // refs 整键缺失：setIn 自动创建映射；inactive 清理时不抛错、原样保留。
+  const missingMerged = dshCliConfigAdapter.mergeFile({
+    file: spec,
+    existingRaw: "version: 1\nrecords: {}\n",
+    artifact: credentials,
+  });
+  expect(missingMerged).toContain("DEEPAA_GATEWAY_TOKEN: deepaa-gateway");
+  expect(missingMerged).toContain("records: {}");
+  const missingCleaned = dshCliConfigAdapter.mergeFile({
+    file: spec,
+    existingRaw: "version: 1\nrecords: {}\n",
+    artifact: {...credentials, active: false, content: ""},
+  });
+  expect(missingCleaned).toBe("version: 1\nrecords: {}\n");
+  const nullCleaned = dshCliConfigAdapter.mergeFile({
+    file: spec,
+    existingRaw: "version: 1\nrefs:\nrecords: {}\n",
+    artifact: {...credentials, active: false, content: ""},
+  });
+  expect(nullCleaned).toBe("version: 1\nrefs:\nrecords: {}\n");
+  // 标量 refs 对 dsh 也是非法文件，拒绝改写原样返回（不破坏用户凭据）。
+  const scalarRaw = "version: 1\nrefs: broken\n";
+  const scalarMerged = dshCliConfigAdapter.mergeFile({file: spec, existingRaw: scalarRaw, artifact: credentials});
+  expect(scalarMerged).toBe(scalarRaw);
+});
+
 test("三协议路由：chat/responses/messages 模型分流，默认模型落在其归一路由（2026-10-06 pi-ai 官方三协议支持）", () => {
   const mixed = target({
     id: "tri-relay",

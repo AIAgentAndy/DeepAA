@@ -406,8 +406,16 @@ function mergeCredentialsFile(existingRaw: string | undefined, active: boolean):
   if (version === 1) {
     const document = parseDocument(existingRaw);
     if (document.errors.length > 0 || !isMap(document.contents)) return existingRaw;
-    if (active) document.setIn(["refs", DSH_GATEWAY_CREDENTIAL_KEY], GATEWAY_PLACEHOLDER_TOKEN);
-    else document.deleteIn(["refs", DSH_GATEWAY_CREDENTIAL_KEY]);
+    const refsValue = existing["refs"];
+    // 标量/序列 refs 对 dsh 也是非法文件，拒绝改写；缺失/空值（null）dsh 按空映射
+    // 接受（asSection 语义），但 setIn/deleteIn 不接受，需先重建或跳过。
+    if (refsValue !== undefined && refsValue !== null && !isObject(refsValue)) return existingRaw;
+    if (active) {
+      if (refsValue === null) document.delete("refs");
+      document.setIn(["refs", DSH_GATEWAY_CREDENTIAL_KEY], GATEWAY_PLACEHOLDER_TOKEN);
+    } else if (isObject(refsValue)) {
+      document.deleteIn(["refs", DSH_GATEWAY_CREDENTIAL_KEY]);
+    }
     return document.toString();
   }
   const refsRaw = (version === 1 && isObject(existing["refs"])) ? existing["refs"] : existing;
