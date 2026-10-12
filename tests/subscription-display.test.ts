@@ -9,6 +9,7 @@ import {
   subscriptionNetworkNotice,
   subscriptionReloginNotice,
   subscriptionWizardNotice,
+  targetQualifiesOfficialCliForm,
 } from "../src/lib/subscription-display.js";
 
 /**
@@ -146,5 +147,37 @@ describe("isOpenAiSubscriptionTarget 判定", () => {
     expect(isOpenAiSubscriptionTarget(openaiSubscriptionTarget)).toBe(true);
     expect(isOpenAiSubscriptionTarget(anthropicSubscriptionTarget)).toBe(false);
     expect(isOpenAiSubscriptionTarget({openaiUrl: "https://api.openai.com/v1"})).toBe(false);
+  });
+});
+
+describe("targetQualifiesOfficialCliForm 官方形态资格（2026-10-12 用户确认：CLI 形态单向切换门控）", () => {
+  test("codex：仅 openai-subscription 预设命中；中转站 / 套餐预设 / Claude 订阅一律不命中", () => {
+    expect(targetQualifiesOfficialCliForm("codex", openaiSubscriptionTarget)).toBe(true);
+    // 仅 URL 命中订阅预设（手工编辑配置）同样命中——官方端点即官方预设身份。
+    expect(targetQualifiesOfficialCliForm("codex", {
+      billingChannel: "subscription",
+      openaiUrl: "https://chatgpt.com/backend-api/codex",
+    })).toBe(true);
+    expect(targetQualifiesOfficialCliForm("codex", {
+      openaiUrl: "https://relay.example/v1",
+      billingChannel: "pay_as_you_go",
+    })).toBe(false);
+    expect(targetQualifiesOfficialCliForm("codex", {
+      presetId: "zhipu-coding-plan",
+      billingChannel: "plan",
+      openaiUrl: "https://open.bigmodel.cn/api/paas/v4",
+    })).toBe(false);
+    expect(targetQualifiesOfficialCliForm("codex", anthropicSubscriptionTarget)).toBe(false);
+  });
+
+  test("claude 键位对应 anthropic-subscription（UI 本期 hidden，声明先行）", () => {
+    expect(targetQualifiesOfficialCliForm("claude", anthropicSubscriptionTarget)).toBe(true);
+    expect(targetQualifiesOfficialCliForm("claude", openaiSubscriptionTarget)).toBe(false);
+  });
+
+  test("未登记 Agent 恒不命中", () => {
+    expect(targetQualifiesOfficialCliForm("zcode", openaiSubscriptionTarget)).toBe(false);
+    expect(targetQualifiesOfficialCliForm("opencode", openaiSubscriptionTarget)).toBe(false);
+    expect(targetQualifiesOfficialCliForm("dsh", {presetId: "deepseek", openaiUrl: "https://api.deepseek.com/v1"})).toBe(false);
   });
 });

@@ -9,6 +9,7 @@
 
 import {agentLabel} from "@/lib/agent-registry";
 import {resolveOfficialPresetForTarget} from "@/lib/provider-preset-capabilities";
+import type {AgentId} from "@/types";
 
 export interface SubscriptionLoginHint {
   /** 官方 CLI 的用户可读名称，如 "Codex CLI"。 */
@@ -141,10 +142,31 @@ export function isOpenAiSubscriptionTarget(target: SubscriptionTargetRef): boole
 }
 
 /**
+ * Agent → 官方 CLI 形态资格预设声明表（2026-10-12 用户确认）：只有命中该预设的
+ * 供应商才有资格承载该 Agent 的「官方模式」，其 Agent 接入页签的「CLI 形态」区块
+ * 只允许切向官方方向；其余供应商一律网关单向（其它供应商使用 Codex 必然经网关，
+ * 仅 ChatGPT 官方预设凭登录使用官方模式）。claude 本期整体 hidden（恒网关），
+ * 声明先行供后续解除隐藏复用。
+ */
+const OFFICIAL_FORM_PRESETS: Readonly<Partial<Record<AgentId, string>>> = {
+  codex: "openai-subscription",
+  claude: "anthropic-subscription",
+};
+
+/**
+ * 当前供应商是否有资格承载该 Agent 的官方 CLI 形态。Agent 接入页签的切换方向与
+ * 启动弹窗的形态需求共用本判定（单一来源）；未登记 Agent 恒 false。
+ */
+export function targetQualifiesOfficialCliForm(agent: string, target: SubscriptionTargetRef): boolean {
+  const presetId = OFFICIAL_FORM_PRESETS[agent as AgentId];
+  return presetId !== undefined && resolveOfficialPresetForTarget(target)?.id === presetId;
+}
+
+/**
  * Codex 启动弹窗按所选供应商推导所需 CLI 形态：OpenAI 订阅预设因 ChatGPT 原生
  * wire（请求体无 model 字段）无法经网关路由，必须官方直连；其余供应商（中转站、
  * 按量等）走网关。启动弹窗据此展示当前形态并在形态不符时提供「确认切换并启动」。
  */
 export function codexCliFormForTarget(target: SubscriptionTargetRef): CodexCliForm {
-  return isOpenAiSubscriptionTarget(target) ? "official" : "gateway";
+  return targetQualifiesOfficialCliForm("codex", target) ? "official" : "gateway";
 }

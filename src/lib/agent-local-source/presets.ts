@@ -59,3 +59,20 @@ export function localImportStatusCopyForAgent(agentId: AgentId): LocalImportStat
 export function hasLocalImportAdapter(agentId: AgentId): boolean {
   return AGENT_OFFICIAL_PRESET[agentId] !== undefined;
 }
+
+/**
+ * 观测状态区展示预设（2026-10-12 用户确认，取代「只看适配存在性」的挂载条件）：
+ * 状态区归属官方预设供应商——只在「当前查看的供应商命中该 Agent 的展示预设」的
+ * Agent 接入页签渲染（codex → OpenAI 订阅、zcode → 智谱 Coding Plan）。dsh 不登记：
+ * dsh 依赖网关代理，直连仅身份标注、对用户无实际意义，任何供应商页签恒不展示。
+ * 归因绑定（binding.ts）与导入调度仍走 AGENT_OFFICIAL_PRESET，不受本表影响。
+ */
+const STATUS_DISPLAY_PRESETS: Readonly<Partial<Record<AgentId, string>>> = {
+  zcode: "zhipu-coding-plan",
+  codex: "openai-subscription",
+};
+
+/** 观测状态区在该 Agent 上的展示预设；未登记 = 恒不展示（dsh）。 */
+export function localImportStatusPresetForAgent(agentId: AgentId): string | undefined {
+  return STATUS_DISPLAY_PRESETS[agentId];
+}

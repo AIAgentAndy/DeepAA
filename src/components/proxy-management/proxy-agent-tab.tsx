@@ -1,9 +1,11 @@
 import {Cable, CheckCircle2, SquareTerminal} from "lucide-react";
 import {ConfigFilePreview} from "@/components/proxy-management/config-file-preview";
 import {AgentLocalSourceStatus} from "@/components/agent-local-source-status";
-import {hasLocalImportAdapter} from "@/lib/agent-local-source/presets";
+import {localImportStatusPresetForAgent} from "@/lib/agent-local-source/presets";
 import {AGENT_CATALOG, agentCompatibleModelsForTarget, claudeAliasModelOptions, targetHasProtocolForAgent, targetSupportsAgent, wireApiCompatibleModelsForTarget} from "@/components/proxy-management/agent-catalog";
 import {AGENT_LOGO_EXT} from "@/components/proxy-management/agent-entry-badges";
+import {resolveOfficialPresetForTarget} from "@/lib/provider-preset-capabilities";
+import {targetQualifiesOfficialCliForm} from "@/lib/subscription-display";
 import type {ConfigFileDisplayManifest} from "@/lib/config-sync/file-display";
 import type {CliSyncStatus, CredentialItem} from "./proxy-management-types";
 import {agentScopeIncludes, type AgentId, type ProxyConfig, type ProxyTarget} from "@/types";
@@ -29,7 +31,8 @@ interface ProxyAgentTabProps {
   /**
    * 切换「CLI 形态」（2026-10-09 用户确认）：网关模式（cliSyncEnabled=true，CLI 指向本地
    * 网关）/ 官方模式（cliSyncEnabled=false，清空受管层还原官方登录原生使用）。
-   * 仅 codex / claude 展示切换入口（官方登录型 CLI 的 provider 级 either/or）。
+   * 仅 codex / claude 展示切换入口（官方登录型 CLI 的 provider 级 either/or）；
+   * 2026-10-12 用户确认单向化：官方预设供应商只允许切向官方、其余供应商只允许切回网关。
    */
   onSetCliForm: (agent: AgentId, gatewayMode: boolean) => Promise<void>;
 }
@@ -88,7 +91,10 @@ function AgentCard({agent, config, target, credentials, cliStatus, onConnectAgen
   const defaultModel = target.development?.defaultModels?.[agent] || "";
   const defaultCredential = target.development?.defaultCredentials?.[agent] || "";
   // 配置数据同步状态：来自最近一次 CLI 同步（接入/修改配置时实时触发）。
-  const syncWarnings = (cliStatus?.warnings || []).filter(warning => warning.targetId === agent);
+  // 官方预设供应商页签上官方模式是预期形态：过滤 CLI_SYNC_DISABLED，避免正常状态
+  // 被渲染成红色「配置数据同步」告警（2026-10-12 用户确认）。
+  const syncWarnings = (cliStatus?.warnings || []).filter(warning => warning.targetId === agent
+    && !(warning.code === "CLI_SYNC_DISABLED" && targetQualifiesOfficialCliForm(agent, target)));
   const syncFailed = syncWarnings.length > 0 || Boolean(cliStatus?.errors?.length);
   const otherDefaultTarget = !isDefault && globallyConnected
     ? config.targets.find(item => item.id === connection?.defaultTargetId)
@@ -99,6 +105,9 @@ function AgentCard({agent, config, target, credentials, cliStatus, onConnectAgen
   const claudeAliasOptions = claudeAliasModelOptions(config);
   // 该 Agent 的受管文件（同步后完整内容 + 段级高亮）：接口返回宽松结构，此处收敛为展示类型。
   const cliFiles = (cliStatus?.fileDisplays?.[agent] || []) as unknown as ConfigFileDisplayManifest[];
+  // 观测状态区展示预设（2026-10-12）：未登记 Agent（dsh）恒不展示，登记 Agent 只在
+  // 命中预设的供应商页签展示。
+  const localImportStatusPreset = localImportStatusPresetForAgent(agent);
 
   return <section className={`${styles.card} ${styles.agentConnectionCard}`}>
     <header className={styles.agentCardHeaderV5}>
@@ -132,7 +141,7 @@ function AgentCard({agent, config, target, credentials, cliStatus, onConnectAgen
     </header>
 
     {!connected ? <p className={styles.emptyCompact}>尚未接入 {label}：点击「接入 {label}」完成绑定；是否把当前供应商设为默认供应商需在向导中显式选择。</p> : available ? <>
-      {agent in CLI_FORM_COPY && connection && !CLI_FORM_COPY[agent as keyof typeof CLI_FORM_COPY].hidden ? <CliFormSection agent={agent as keyof typeof CLI_FORM_COPY} cliSyncEnabled={connection.cliSyncEnabled !== false} onSetCliForm={onSetCliForm} /> : null}
+      {agent in CLI_FORM_COPY && connection && !CLI_FORM_COPY[agent as keyof typeof CLI_FORM_COPY].hidden ? <CliFormSection agent={agent as keyof typeof CLI_FORM_COPY} target={target} cliSyncEnabled={connection.cliSyncEnabled !== false} onSetCliForm={onSetCliForm} /> : null}
       <section className={styles.agentDefaultsPanelV5}>
         <header className={styles.agentSectionHeaderV5}><div><span className={styles.agentSectionEyebrowV5}>DEFAULT ACCESS CHAIN</span><h4>当前供应商的默认访问链</h4></div><span className={styles.agentSectionStateV5}><CheckCircle2 size={14} /> 修改后立即同步</span></header>
         <div className={styles.formGrid}>
@@ -140,7 +149,10 @@ function AgentCard({agent, config, target, credentials, cliStatus, onConnectAgen
           {target.billingChannel === "subscription" ? <div className={styles.field}><span>默认密钥</span><p className={styles.muted}>订阅通道无需系统密钥：推理凭据由本机 {label} CLI 登录透传。</p></div> : <label className={styles.field}><span>默认密钥</span><select value={defaultCredential} onChange={event => void onSetCredential(agent, event.currentTarget.value)}><option value="">选择密钥</option>{agentCredentials.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select><small>只展示属于当前供应商且适用于 {label} 的密钥。</small></label>}
         </div>
       </section>
-      {hasLocalImportAdapter(agent) ? <AgentLocalSourceStatus agentId={agent} /> : null}
+      {/* 观测状态区归属官方预设供应商（2026-10-12 用户确认）：命中该 Agent 的展示预设
+          才渲染——codex → OpenAI 订阅、zcode → 智谱 Coding Plan；dsh 未登记恒不展示
+          （依赖网关代理，直连仅身份标注）。 */}
+      {localImportStatusPreset !== undefined && resolveOfficialPresetForTarget(target)?.id === localImportStatusPreset ? <AgentLocalSourceStatus agentId={agent} /> : null}
       {agent === "claude" ? <div className={styles.aliasGrid}>
         <span className={styles.aliasGridTitle}>Opus / Sonnet / Haiku 全局别名（可选已接入 Claude Code 供应商中兼容的模型）</span>
         {(["opus", "sonnet", "haiku"] as const).map(key => <label key={key} className={styles.field}><span>{key[0]?.toUpperCase()}{key.slice(1)}</span><select value={aliases[key] || ""} onChange={event => void onUpdateAliases("claude", {...aliases, [key]: event.currentTarget.value || undefined})}><option value="">跟随默认模型</option>{claudeAliasOptions.map(model => <option key={model} value={model}>{model}</option>)}</select></label>)}
@@ -154,12 +166,15 @@ function AgentCard({agent, config, target, credentials, cliStatus, onConnectAgen
 /**
  * 「CLI 形态」能力声明表（2026-10-09 用户确认）：仅官方登录型 CLI（codex / claude）
  * 支持 网关 ↔ 官方 切换，文案按 Agent 注册表化（扩展面守卫：禁止 agent 名条件分派）。
+ * 2026-10-12 用户确认单向化：切换方向按供应商资格固定——官方预设供应商只允许
+ * 切向官方、其余供应商只允许切回网关；区块在所有接入该 Agent 的供应商页签展示，
+ * 已处于本供应商要求形态时按钮置灰。
  * hidden：2026-10-10 用户确认 claude 暂不支持直连形态，切换区块暂时隐藏（恒网关
- * 模式，文案保留）；后续支持后删除该标记即恢复展示。
+ * 模式，文案保留）；后续支持后删除该标记即恢复展示（自动获得同款单向语义）。
  */
 const CLI_FORM_COPY: Readonly<Record<"codex" | "claude", {gateway: string; official: string; hidden?: boolean}>> = {
   codex: {
-    gateway: "网关模式：CLI 指向本地网关，模型目录为网关模型（中转站 / 按量）；OpenAI 订阅预设模型不可经网关使用（ChatGPT 登录协议差异），需切换官方模式。",
+    gateway: "网关模式：CLI 指向本地网关，模型目录为网关模型（中转站 / 按量）。OpenAI 订阅预设模型不可经网关使用（ChatGPT 登录协议差异）。",
     official: "官方模式：CLI 使用 ChatGPT 登录与官方模型（桌面 App 同样可用），受管网关配置已清空；用量经本机数据直连导入自动捕获。",
   },
   claude: {
@@ -169,26 +184,43 @@ const CLI_FORM_COPY: Readonly<Record<"codex" | "claude", {gateway: string; offic
   },
 };
 
-/** 「CLI 形态」切换区块（2026-10-09 用户确认）：网关 ↔ 官方，仅声明表内的 Agent 展示。 */
-function CliFormSection({agent, cliSyncEnabled, onSetCliForm}: {
+/**
+ * 「CLI 形态」切换区块（2026-10-09 用户确认；2026-10-12 用户确认单向化）：所有接入
+ * 该 Agent 的供应商页签都展示；切换方向按供应商资格固定（官方预设 → 只能切官方，
+ * 其余 → 只能切网关）。CLI 形态对该 Agent 全局生效（同一份 CLI 配置），徽标如实
+ * 展示当前全局形态；已处于本供应商要求的形态时按钮置灰。
+ */
+function CliFormSection({agent, target, cliSyncEnabled, onSetCliForm}: {
   agent: "codex" | "claude";
+  target: ProxyTarget;
   cliSyncEnabled: boolean;
   onSetCliForm: (agent: AgentId, gatewayMode: boolean) => Promise<void>;
 }) {
   const officialMode = !cliSyncEnabled;
+  const allowsOfficial = targetQualifiesOfficialCliForm(agent, target);
+  const requiredGateway = !allowsOfficial;
+  const alreadyInRequiredForm = officialMode !== requiredGateway;
   const copy = officialMode ? CLI_FORM_COPY[agent].official : CLI_FORM_COPY[agent].gateway;
+  const directionNote = allowsOfficial
+    ? "该供应商为 ChatGPT 官方预设：Codex 在此只支持官方模式；当前为网关模式时可切换。"
+    : "该供应商的模型一律经本地网关使用 Codex；当前为官方模式时可在此切回网关。";
   return <section className={styles.agentDefaultsPanelV5}>
     <header className={styles.agentSectionHeaderV5}>
       <div><span className={styles.agentSectionEyebrowV5}>CLI FORM</span><h4>CLI 形态</h4></div>
       <span className={`${styles.badge} ${officialMode ? styles.badgePending : styles.badgeReady}`}>{officialMode ? "官方模式" : "网关模式"}</span>
     </header>
     <p className={styles.muted}>{copy}</p>
+    <p className={styles.muted}>{directionNote}</p>
     <div className={styles.inlineActions}>
-      {officialMode
-        ? <button type="button" className={styles.primaryButton} onClick={() => void onSetCliForm(agent, true)}>切换回网关模式</button>
-        : <button type="button" className={styles.secondaryButton} onClick={() => void onSetCliForm(agent, false)}>切换到官方模式</button>}
+      <button
+        type="button"
+        className={requiredGateway ? styles.primaryButton : styles.secondaryButton}
+        disabled={alreadyInRequiredForm}
+        title={alreadyInRequiredForm ? `当前已是${requiredGateway ? "网关" : "官方"}模式。` : undefined}
+        onClick={() => void onSetCliForm(agent, requiredGateway)}
+      >{requiredGateway ? "切换为网关模式" : "切换到官方模式"}</button>
     </div>
-    <small className={styles.muted}>切换会立即重写受管配置；已打开的 CLI 客户端重启后生效。</small>
+    <small className={styles.muted}>CLI 形态对该 Agent 全局生效（同一份 CLI 配置，切换会立即重写受管配置）；已打开的 CLI 客户端重启后生效。</small>
   </section>;
 }
 
@@ -196,7 +228,7 @@ function CliFormSection({agent, cliSyncEnabled, onSetCliForm}: {
 function syncFixHint(code: string): string {
   const hints: Record<string, string> = {
     AGENT_NOT_CONNECTED: "在弹窗中接入该 Agent 并把默认供应商选为当前供应商即可解决。",
-    CLI_SYNC_DISABLED: "该 Agent 处于「官方模式」（CLI 同步关闭）：如需恢复网关模式，请在 Agent 卡片的「CLI 形态」切换。",
+    CLI_SYNC_DISABLED: "该 Agent 处于「官方模式」（CLI 同步关闭）：如需经当前供应商使用，请在上方「CLI 形态」切回网关模式。",
     DEFAULT_TARGET_REQUIRED: "为该 Agent 选择默认供应商即可解决。",
     DEFAULT_TARGET_NOT_FOUND: "该 Agent 的默认供应商已被删除，请重新选择。",
     CREDENTIAL_MISSING: "在「密钥与模型」为该供应商新增系统密钥。",

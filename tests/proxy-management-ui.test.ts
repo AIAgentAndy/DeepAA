@@ -670,6 +670,32 @@ describe("代理管理 V3 页面结构", () => {
     expect(page).toContain("在当前配置中不存在，已切换到");
   });
 
+  test("CLI 形态按供应商资格单向切换；官方直连观测归属官方预设供应商（2026-10-12 用户确认）", async () => {
+    const agentTab = await readFile(`${componentDir}/proxy-agent-tab.tsx`, "utf8");
+    const display = await readFile("src/lib/subscription-display.ts", "utf8");
+    const presets = await readFile("src/lib/agent-local-source/presets.ts", "utf8");
+    const page = await readFile("src/components/proxy-management-page.tsx", "utf8");
+    // 方向门控与启动弹窗共用同一判定（subscription-display 声明表单一来源）：
+    // 官方预设供应商只允许切向官方，其余供应商只允许切回网关；区块在所有接入
+    // 该 Agent 的供应商页签展示，已处于本供应商要求形态时按钮置灰。
+    expect(display).toContain("OFFICIAL_FORM_PRESETS");
+    expect(display).toContain("export function targetQualifiesOfficialCliForm");
+    expect(agentTab).toContain("targetQualifiesOfficialCliForm");
+    expect(agentTab).toContain("const requiredGateway = !allowsOfficial");
+    expect(agentTab).toContain("disabled={alreadyInRequiredForm}");
+    expect(agentTab).toContain('{requiredGateway ? "切换为网关模式" : "切换到官方模式"}');
+    // 官方预设页签上官方模式是预期形态：CLI_SYNC_DISABLED 不再渲染成同步告警。
+    expect(agentTab).toContain('warning.code === "CLI_SYNC_DISABLED"');
+    // 观测状态区：命中展示预设的供应商页签才渲染；dsh 未登记恒不展示
+    //（依赖网关代理，直连仅身份标注，对用户无实际意义）。
+    expect(agentTab).toContain("localImportStatusPresetForAgent");
+    expect(agentTab).not.toContain("hasLocalImportAdapter");
+    expect(presets).toContain("STATUS_DISPLAY_PRESETS");
+    // 向导重放接入（已接入 Agent 默认勾选且锁定）保留既有 CLI 形态：
+    // 不得把官方模式静默翻回网关；首次接入仍落网关模式。
+    expect(page).toContain("cliSyncEnabled: config.agentConnections[agent]?.cliSyncEnabled ?? true");
+  });
+
   test("新建草稿路由 ID 为空，保存时按上游 URL 派生并直接进入分步引导", async () => {
     const page = await readFile("src/components/proxy-management-page.tsx", "utf8");
     // 新建草稿不再生成随机占位路由 ID。

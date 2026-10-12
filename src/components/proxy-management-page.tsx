@@ -1625,10 +1625,14 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
         onSaveTargetPatch={patchSelectedTarget}
         onCreateCredential={createCredential}
         // 向导只提交接入绑定；首次默认供应商由服务端统一补齐，已有默认供应商保持不变。
+        // cliSyncEnabled 保留既有 CLI 形态（2026-10-12 用户确认修复）：向导重放接入
+        // （已接入 Agent 默认勾选且锁定）不得把官方模式静默翻回网关——官方预设供应商
+        // 的「CLI 形态」区块只允许切向官方方向；首次接入（无既有连接）仍落网关模式，
+        // 与向导订阅提示「请在 Agent 接入页切换官方模式」衔接。
         onConnectAgent={agent => saveAgentConnection({
           agent,
           boundTargetIds: [selectedTarget.id],
-          cliSyncEnabled: true,
+          cliSyncEnabled: config.agentConnections[agent]?.cliSyncEnabled ?? true,
         }, {silent: true})}
         onSyncCli={() => syncCliConfiguration(false).then(() => undefined)}
         onUpdateCredentialScope={async (credentialId, agents) => {

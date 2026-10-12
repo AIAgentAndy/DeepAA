@@ -1,6 +1,7 @@
 import { mkdir, readFile, readdir, unlink, writeFile } from "fs/promises";
 import { join } from "path";
 import { spawn } from "node:child_process";
+import { homedir } from "node:os";
 import { createConnection } from "node:net";
 import {parse as parseToml} from "smol-toml";
 import { buildGatewayModelId, parseGatewayModelId } from "@/proxy/gateway-prefix";
@@ -450,11 +451,18 @@ export async function preSyncManagedConfig(
   }
 }
 
-/** 启动 Codex 桌面客户端（codex app [PATH]），携带选填工作区路径；不阻塞当前进程。 */
+/**
+ * 启动 Codex 桌面客户端（codex app [PATH]），携带选填工作区路径；不阻塞当前进程。
+ * 无路径参数时 Codex 客户端会把 spawn 继承的进程目录当工作区打开并弹「信任此
+ * 文件夹」——web 进程在安装模式下的 cwd 是 npm 包目录（deepaa.mjs 固定以包根
+ * 为子进程 cwd），因此未选目录时必须显式以用户主目录为 cwd，绝不继承；
+ * 选了目录则 cwd 与工作区参数一致，始终用用户所选目录。
+ */
 export function launchCodexClientApp(codexExecutable: string, workspacePath?: string): void {
   const child = spawn(codexExecutable, workspacePath ? ["app", workspacePath] : ["app"], {
     detached: true,
     stdio: "ignore",
+    cwd: workspacePath || homedir(),
   });
   child.on("error", error => {
     console.error("[deepaa] codex client launch failed", error);
@@ -465,6 +473,9 @@ export function launchCodexClientApp(codexExecutable: string, workspacePath?: st
 /**
  * 拉起 ZCode 桌面 App：macOS 走 `open -a`，Windows 直接 spawn 安装位置 exe。
  * 携带工作区目录时改走 `zcode://workspace/open` 深链（未运行先启动再打开）。
+ * 无工作区直接 spawn exe 的分支（Windows）显式以用户主目录为 cwd：spawn 缺省
+ * 继承 web 进程目录（安装模式 = npm 包目录），macOS `open -a` 由 LaunchServices
+ * 拉起、不传播 cwd，无此问题。
  */
 export function launchZcodeDesktopApp(appPath: string, workspacePath?: string): void {
   const darwin = process.platform === "darwin";
@@ -474,14 +485,14 @@ export function launchZcodeDesktopApp(appPath: string, workspacePath?: string): 
     child = darwin
       ? spawn("/usr/bin/open", [url], {detached: true, stdio: "ignore"})
       : spawn("cmd.exe", ["/d", "/c", "start", "", url], {
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-      });
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+        });
   } else {
     child = darwin
       ? spawn("/usr/bin/open", ["-a", appPath], {detached: true, stdio: "ignore"})
-      : spawn(appPath, [], {detached: true, stdio: "ignore"});
+      : spawn(appPath, [], {detached: true, stdio: "ignore", cwd: homedir()});
   }
   child.on("error", error => {
     console.error("[deepaa] zcode app launch failed", error);
@@ -493,11 +504,13 @@ export function launchZcodeDesktopApp(appPath: string, workspacePath?: string): 
  * 拉起 dsh 桌面客户端（DeepSeek Harness）：macOS `open -a` 对已运行 App 是
  * 激活而非重启；Windows 直接 spawn exe，Electron 单实例锁自带转发与聚焦。
  * 无深链概念（`dsh://open` 仅唤回窗口，等价激活），始终按 App 启动。
+ * Windows 直接 spawn 分支显式以用户主目录为 cwd，避免继承 web 进程目录
+ * （安装模式 = npm 包目录）；macOS `open -a` 由 LaunchServices 拉起、不传播 cwd。
  */
 export function launchDshDesktopApp(appPath: string): void {
   const child = process.platform === "darwin"
     ? spawn("/usr/bin/open", ["-a", appPath], {detached: true, stdio: "ignore"})
-    : spawn(appPath, [], {detached: true, stdio: "ignore"});
+    : spawn(appPath, [], {detached: true, stdio: "ignore", cwd: homedir()});
   child.on("error", error => {
     console.error("[deepaa] dsh desktop app launch failed", error);
   });
