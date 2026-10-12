@@ -139,17 +139,22 @@ function packListing(): string[] {
   if (cachedListing) return cachedListing;
   // --ignore-scripts：跳过生命周期钩子，纯列清单，防止测试触发真实构建/发布动作。
   // npm 把 notice 清单写到 stderr，必须同时捕获两路输出。
-  const result = spawnSync("npm", ["pack", "--dry-run", "--ignore-scripts"], {
+  // Windows 的 npm 只能经 npm.cmd 执行，而新版 Node 出于安全（CVE-2024-27980）
+  // 禁止无 shell 直接 spawn .cmd/.bat（返回 exit null，2026-10-13 CI Windows 全红根因）；
+  // args 为固定字面量，shell 注入无攻击面。与 tests/package-smoke.test.ts 同一模式。
+  const result = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["pack", "--dry-run", "--ignore-scripts"], {
     cwd: repoRoot,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
+    shell: process.platform === "win32",
   });
   if (result.status !== 0) {
     throw new Error(`npm pack --dry-run 失败（exit ${result.status}）：${(result.stderr || "").slice(0, 2000)}`);
   }
   // 输出行形如 `npm notice 12.3kB config/agents/catalog-template.json`；
-  // 过滤掉 tgz 名、大小汇总等非文件行。
+  // 过滤掉 tgz 名、大小汇总等非文件行。行尾 \r 防御 Windows CRLF 使 `(.+)$` 失配。
   cachedListing = `${result.stdout}\n${result.stderr}`
+    .replace(/\r/g, "")
     .split("\n")
     .map(line => line.match(/^npm notice\s+[\d.]+\s*[kKmMgG]?\s*[bB]?\s+(.+)$/)?.[1]?.trim() ?? "")
     .filter(entry => entry.length > 0 && !entry.endsWith(".tgz"));
