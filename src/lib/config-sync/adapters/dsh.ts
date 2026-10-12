@@ -144,10 +144,11 @@ const OFFICIAL_PERMISSION_PRESETS = {
 
 /**
  * dsh 适配器：受管分节按布局写入——dsh ≤0.1.6 持续写 $DSH_HOME/settings.yaml；
- * dsh ≥0.1.7（检测到 settings.yaml.imported 迁移痕迹）改写每个已初始化 profile 的
- * cordis.patch.yml（web/desktop），一份受管内容多 profile 生效。只消费
- * chat_completions binding。apiKeyEnv 固定为 DEEPAA_GATEWAY_TOKEN 本地占位环境
- * 变量名，绝不是供应商真实密钥。
+ * dsh ≥0.1.7（检测到 settings.yaml.imported 迁移痕迹，或 profiles/<name> 已初始化
+ * 目录——常驻 dsh web 不重启时 .imported 永不出现）改写每个已初始化 profile 的
+ * cordis.patch.yml（web/desktop），一份受管内容多 profile 生效，写入即被 dsh-hmr
+ * 文件监听热应用。只消费 chat_completions binding。apiKeyEnv 固定为
+ * DEEPAA_GATEWAY_TOKEN 本地占位环境变量名，绝不是供应商真实密钥。
  */
 export const dshCliConfigAdapter: AgentCliConfigAdapter = {
   agent: "dsh",

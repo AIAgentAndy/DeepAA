@@ -644,27 +644,30 @@ test("profile-patch 解析失败（非顶层数组）原样返回，绝不破坏
   })).toBe(broken);
 });
 
-test("布局探测：settings.yaml.imported 迁移痕迹切换 profile-patch，目录存在性限定写入目标", async () => {
+test("布局探测：imported 痕迹或已初始化 profile 目录切换 profile-patch，目录存在性限定写入目标", async () => {
   const {mkdtempSync, mkdirSync, writeFileSync, existsSync} = await import("node:fs");
   const {tmpdir} = await import("node:os");
   const {join, posix} = await import("node:path");
   const dshHome = mkdtempSync(join(tmpdir(), "dsh-layout-"));
-  // 无迁移痕迹：legacy 布局。
-  const legacyCtx = createCliSyncContext({
+  const build = () => createCliSyncContext({
     config: config(), paths, template, overrides: {},
     homeDir: "/Users/test", env: {DSH_HOME: dshHome}, platform: "darwin",
   });
+  // 全新环境：无 profile、无迁移痕迹 → legacy 布局（dsh 首次启动导入链路兜底）。
+  const legacyCtx = build();
   expect(legacyCtx.dshConfigLayout).toBe("legacy-settings");
   expect(legacyCtx.dshProfileNames).toEqual([]);
-  // dsh web 已初始化但未迁移：仍 legacy，且 profile 名单含 web。
+  // dsh web 已初始化（profiles/web 由 ≥0.1.7 的 dsh 自建）→ 直接 profile-patch：
+  // 常驻 dsh web 不重启时 .imported 永不出现（2026-10-13 Windows 实测卡死形态），
+  // patch 写入本身即被 dsh-hmr 热应用，不依赖进程重启或一次性导入。
   mkdirSync(join(dshHome, "profiles", "web"), {recursive: true});
-  expect(legacyCtx.dshConfigLayout).toBe("legacy-settings");
-  // 迁移痕迹出现（0.1.7+ 完成一次性导入改名）：切换 profile-patch。
+  const initializedCtx = build();
+  expect(initializedCtx.dshConfigLayout).toBe("profile-patch");
+  expect(initializedCtx.dshProfileNames).toEqual(["web"]);
+  expect(dshCliConfigAdapter.resolvePaths(initializedCtx).filePaths["dsh-settings"]).toBeUndefined();
+  // 迁移痕迹出现（0.1.7+ 完成一次性导入改名）：同样 profile-patch。
   writeFileSync(join(dshHome, "settings.yaml.imported"), "ui-theme:\n  preference: light\n");
-  const migratedCtx = createCliSyncContext({
-    config: config(), paths, template, overrides: {},
-    homeDir: "/Users/test", env: {DSH_HOME: dshHome}, platform: "darwin",
-  });
+  const migratedCtx = build();
   expect(migratedCtx.dshConfigLayout).toBe("profile-patch");
   expect(migratedCtx.dshProfileNames).toEqual(["web"]);
   // 只为已初始化 profile 生成受管 artifact（desktop 未创建不写）。
@@ -674,7 +677,8 @@ test("布局探测：settings.yaml.imported 迁移痕迹切换 profile-patch，�
   // ctx 钉在 platform:"darwin"（posix 路径规则），期望值必须同样按 posix 拼接，
   // 否则 Windows 宿主上宿主 join 会产出全反斜杠路径。
   expect(resolved.filePaths["dsh-profile-patch:web"]).toBe(posix.join(dshHome, "profiles", "web", "cordis.patch.yml"));
-  // legacy 布局的 settings.yaml 路径解析与 DSH_HOME 对齐（既有注入语义不变）。
+  // 布局在 context 创建时定格为快照：legacy ctx 不受后续目录变化影响，
+  // settings.yaml 路径解析与 DSH_HOME 对齐（既有注入语义不变）。
   const legacyResolved = dshCliConfigAdapter.resolvePaths(legacyCtx);
   expect(legacyResolved.filePaths["dsh-settings"]).toBe(posix.join(dshHome, "settings.yaml"));
   expect(existsSync(dshHome)).toBe(true);

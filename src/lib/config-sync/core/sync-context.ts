@@ -27,11 +27,18 @@ export function resolveDshHomeDir(input: {
 const DSH_KNOWN_PROFILES = ["web", "desktop"] as const;
 
 /**
- * dsh 配置布局判定：settings.yaml.imported 是 dsh 0.1.7-rc.1+ 完成一次性迁移的
- * 唯一可靠痕迹（导入把 settings.yaml 改名后不再有任何版本读取它）。显式注入
- * 优先（测试隔离）；探测失败/无痕迹一律保守回落 legacy-settings——全新 0.2.x
- * 环境首次写 settings.yaml 会被 dsh 启动导入进活跃 profile（受管分节随迁生效），
- * .imported 出现后下一次同步自动切换 profile patch，自愈闭环。
+ * dsh 配置布局判定（两级探测）：任一信号命中即 profile-patch。
+ * 1. settings.yaml.imported 迁移痕迹——dsh 0.1.7-rc.1+ 启动导入把 settings.yaml
+ *    改名而来（此后不再有任何版本读取 settings.yaml）；
+ * 2. $DSH_HOME/profiles/<name> 已初始化 profile 目录——只会由 ≥0.1.7 的 dsh 自身
+ *    创建，存在即证明本机 dsh 读 profile patch 布局，且 dsh-hmr 对 cordis.patch.yml
+ *    是文件监听 + 秒级热应用，写入立即生效、不依赖任何进程重启。
+ *    仅靠 .imported 判定在「dsh web 先于 DeepAA 首次同步启动并常驻」的主流程会
+ *    卡死：一次性导入只在进程启动时执行，常驻服务不重启就永远不产生 .imported，
+ *    同步会一直写没有任何版本读取的 settings.yaml 死文件（2026-10-13 Windows 实测）。
+ * 两者皆无 → legacy-settings（全新环境）：写 settings.yaml 由 dsh 首次启动导入进
+ * 活跃 profile，.imported 出现后下次同步收敛到 profile patch，自愈闭环保留。
+ * 显式注入优先（测试隔离）。
  */
 function resolveDshConfigLayout(input: {
   paths: CliSyncPaths;
@@ -50,7 +57,9 @@ function resolveDshConfigLayout(input: {
   const dshHome = injectedSettings
     ? pathModule.dirname(injectedSettings)
     : resolveDshHomeDir(input);
-  return existsSync(pathModule.join(dshHome, "settings.yaml.imported"))
+  if (existsSync(pathModule.join(dshHome, "settings.yaml.imported"))) return "profile-patch";
+  // 与 resolveDshProfileNames 同一信号（目录由 dsh 自建、含完整骨架）。
+  return DSH_KNOWN_PROFILES.some(name => existsSync(pathModule.join(dshHome, "profiles", name)))
     ? "profile-patch"
     : "legacy-settings";
 }

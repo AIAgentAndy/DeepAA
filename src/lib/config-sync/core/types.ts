@@ -16,7 +16,8 @@ export type CliFileKind = "toml" | "json" | "jsonc" | "yaml";
 /**
  * dsh 受管配置布局：dsh 0.1.7-rc.1 起移除 settings.yaml（启动时一次性导入
  * 活跃 profile 的 cordis.patch.yml 并改名 settings.yaml.imported），受管写入
- * 必须跟随迁移切换目标，否则写一个没有任何版本读取的死文件。
+ * 必须跟随迁移切换目标，否则写一个没有任何版本读取的死文件。布局由
+ * sync-context 两级探测：.imported 迁移痕迹或已初始化 profiles/<name> 目录。
  */
 export type DshConfigLayout = "legacy-settings" | "profile-patch";
 
@@ -76,7 +77,8 @@ export interface CliSyncPaths {
   /**
    * dsh 配置布局（测试注入位）：legacy-settings = 持续写 $DSH_HOME/settings.yaml；
    * profile-patch = 写 $DSH_HOME/profiles/<name>/cordis.patch.yml。生产缺省由
-   * sync-context 探测 settings.yaml.imported 迁移痕迹决定，显式注入优先。
+   * sync-context 两级探测（.imported 迁移痕迹或已初始化 profile 目录）决定，
+   * 显式注入优先。
    */
   dshConfigLayout?: DshConfigLayout;
   /**
