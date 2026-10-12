@@ -70,11 +70,11 @@ describe("Node-only 工具链", () => {
     ].map(path => readFile(new URL(`../${path}`, import.meta.url), "utf8")));
 
     for (const source of sources) {
-      // 脚本名与 deepaa 命令同名（2026-10-05 用户确认）
-      expect(source).toContain("pnpm dev");
-      expect(source).toContain("pnpm dev:proxy");
-      expect(source).toContain("pnpm dev:web");
-      expect(source).toContain("pnpm open");
+      // 源码安装只展示统一命令（2026-10-12 README 改版为产品定位文案，
+      // 开发类命令与内部细节移交官网文档，仓库 README 保留生产链路）
+      expect(source).toContain("pnpm install");
+      expect(source).toContain("pnpm build");
+      expect(source).toContain("pnpm start");
       // 旧脚本名不再出现
       expect(source).not.toContain("pnpm start:dev");
       expect(source).not.toContain("pnpm proxy:dev");

@@ -26,53 +26,36 @@ test("Claude Code history provider and raw types are removed", () => {
   expect(types).not.toContain("ProviderInfo");
 });
 
-test("English README documents the local proxy inspector with verified agents", () => {
+test("English README documents the local gateway product with verified agents", () => {
   expect(readmeEn).toContain("DeepAA");
-  expect(readmeEn).toContain(
-    "an OpenAI-compatible upstream URL, an Anthropic-compatible upstream URL, or both",
-  );
-  expect(readmeEn).toContain("Standalone Node proxy");
-  expect(readmeEn).toContain("parsed JSON");
-  expect(readmeEn).toContain("http://127.0.0.1:3211");
-  expect(readmeEn).toContain("Claude Code");
-  expect(readmeEn).toContain("Codex");
-  expect(readmeEn).toContain("Next.js 16");
-  expect(readmeEn).toContain("React 19");
-  expect(readmeEn).toContain("pnpm");
-  expect(readmeEn).toContain("Node.js 22");
-  expect(readmeEn).not.toContain("Bun");
-  expect(readmeEn).toContain("deepaa proxy");
+  expect(readmeEn).toContain("Codex, Claude Code, OpenCode, DeepSeek Harness, and ZCode");
+  expect(readmeEn).toContain("http://127.0.0.1:3210");
+  expect(readmeEn).toContain("https://deepaa.dev/install.sh");
+  expect(readmeEn).toContain("npm install -g deepaa");
+  expect(readmeEn).toContain("macOS and Windows");
+  expect(readmeEn).toContain("Node.js 22.13+");
+  expect(readmeEn).toContain("pnpm install");
   expect(readmeEn).toContain("pnpm build");
-  expect(readmeEn).toContain("data/captures/v2");
-  expect(readmeEn).toContain("deepaa.sqlite");
-  expect(readmeEn).toContain("WAL");
-  expect(readmeEn).toContain("paused_disk");
-  expect(readmeEn).toContain("DEEPAA_DATA_DIR");
-  expect(readmeEn).toContain("does not import legacy captures");
+  expect(readmeEn).toContain("pnpm start");
+  expect(readmeEn).toContain("deepaa status");
+  expect(readmeEn).toContain("Session → Thread → Turn → Step");
+  expect(readmeEn).not.toContain("Bun");
 });
 
-test("Default Chinese README documents the same local proxy workflow with verified agents", () => {
+test("Default Chinese README documents the same local gateway workflow with verified agents", () => {
   expect(readmeZh).toContain("DeepAA");
-  expect(readmeZh).toContain("OpenAI 兼容上游 URL、Anthropic 兼容上游 URL");
-  expect(readmeZh).toContain("Agent / SDK / CLI");
-  expect(readmeZh).toContain("查看调用链路");
-  expect(readmeZh).toContain("http://127.0.0.1:3211");
-  expect(readmeZh).toContain("Claude Code");
-  expect(readmeZh).toContain("Codex");
-  expect(readmeZh).toContain("Next.js 16");
-  expect(readmeZh).toContain("React 19");
-  expect(readmeZh).toContain("pnpm");
-  expect(readmeZh).toContain("Node.js 22");
-  expect(readmeZh).not.toContain("Bun");
-  expect(readmeZh).toContain("deepaa proxy");
+  expect(readmeZh).toContain("Codex、Claude Code、OpenCode、DeepSeek Harness、ZCode");
+  expect(readmeZh).toContain("http://127.0.0.1:3210");
+  expect(readmeZh).toContain("https://deepaa.dev/install.sh");
+  expect(readmeZh).toContain("npm install -g deepaa");
+  expect(readmeZh).toContain("macOS 和 Windows");
+  expect(readmeZh).toContain("Node.js 22.13+");
+  expect(readmeZh).toContain("pnpm install");
   expect(readmeZh).toContain("pnpm build");
-  expect(readmeZh).toContain("data/captures/v2");
-  expect(readmeZh).toContain("deepaa.sqlite");
-  expect(readmeZh).toContain("WAL");
-  expect(readmeZh).toContain("paused_disk");
-  expect(readmeZh).toContain("DEEPAA_DATA_DIR");
-  expect(readmeZh).toContain("不导入旧 capture");
-  expect(readmeZh).toContain("Thread");
+  expect(readmeZh).toContain("pnpm start");
+  expect(readmeZh).toContain("deepaa status");
+  expect(readmeZh).toContain("Session → Thread → Turn → Step");
+  expect(readmeZh).not.toContain("Bun");
 });
 
 test("package metadata is ready for permissive open source release", () => {
@@ -84,6 +67,7 @@ test("package metadata is ready for permissive open source release", () => {
   });
   expect(packageJson.files).toEqual([
     "bin",
+    "config/agents/catalog-template.json",
     "dist/proxy",
     ".next",
     "!.next/cache",
