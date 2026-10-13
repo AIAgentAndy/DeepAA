@@ -13,6 +13,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {afterAll, beforeAll, describe, expect, test} from "vitest";
 import {DeepaaDatabase} from "@/lib/db/sqlite-driver";
+import {LOCAL_IMPORT_LOOKBACK_DAYS_MS} from "../src/lib/agent-local-source/windows.js";
 import {createZcodeLocalSourceAdapter} from "../src/lib/agent-local-source/adapters/zcode";
 import {pruneAgentLocalImportSeen} from "../src/lib/agent-local-source/state-store";
 
@@ -113,7 +114,7 @@ describe("D2 候选下推：pushdown / chunked 与旧路径逐条等价", () => 
   for (const {mode, expectMode} of factoryOptions) {
     test(`${expectMode} 路径与旧路径（全量 + JS 过滤切片）完全等价`, () => {
       const adapter = createZcodeLocalSourceAdapter({cliDir: zcodeCliDir, candidateQueryMode: mode});
-      const floor = nowMs - 30 * 24 * 60 * 60 * 1000;
+      const floor = nowMs - LOCAL_IMPORT_LOOKBACK_DAYS_MS;
       const result = adapter.readPendingBatch!({
         dataDir,
         floorEpochMs: floor,
@@ -133,7 +134,7 @@ describe("D2 候选下推：pushdown / chunked 与旧路径逐条等价", () => 
   test("pushdown 与 chunked 两条路径互为等价（同一夹具独立对比）", () => {
     const auto = createZcodeLocalSourceAdapter({cliDir: zcodeCliDir});
     const chunked = createZcodeLocalSourceAdapter({cliDir: zcodeCliDir, candidateQueryMode: "chunked"});
-    const floor = nowMs - 30 * 24 * 60 * 60 * 1000;
+    const floor = nowMs - LOCAL_IMPORT_LOOKBACK_DAYS_MS;
     const query = {
       dataDir,
       floorEpochMs: floor,
@@ -164,7 +165,7 @@ describe("D2 候选下推：pushdown / chunked 与旧路径逐条等价", () => 
     insertUsage("bulk-h-1", "sess-bulk-h", nowMs + 80_000);
     insertUsage("bulk-h-2", "sess-bulk-h", nowMs + 81_000);
 
-    const floor = nowMs - 30 * 24 * 60 * 60 * 1000;
+    const floor = nowMs - LOCAL_IMPORT_LOOKBACK_DAYS_MS;
     const query = {
       dataDir,
       floorEpochMs: floor,
@@ -202,7 +203,7 @@ describe("D2 候选下推：pushdown / chunked 与旧路径逐条等价", () => 
     // 仅直连调用可见；语义上「seen 不可读」必须失败而不是当作无已导入记录。
     expect(() => adapter.readPendingBatch!({
       dataDir: emptyDir,
-      floorEpochMs: nowMs - 30 * 24 * 60 * 60 * 1000,
+      floorEpochMs: nowMs - LOCAL_IMPORT_LOOKBACK_DAYS_MS,
       allowedModels: new Set(["glm-5.3-flash"]),
       seenExchangeIdPrefix: "import-zcode-",
       limit: 15,
@@ -212,7 +213,7 @@ describe("D2 候选下推：pushdown / chunked 与旧路径逐条等价", () => 
 
 describe("D2 seen 表有界清理", () => {
   test("只删窗口+余量之外的行；单次删除有界", () => {
-    const cutoff = new Date(nowMs - 30 * 24 * 60 * 60 * 1000 - LOOKBACK_MARGIN).toISOString();
+    const cutoff = new Date(nowMs - LOCAL_IMPORT_LOOKBACK_DAYS_MS - LOOKBACK_MARGIN).toISOString();
     // 夹具已迁移 nowMs 时刻的行（保留）；补 3 行过期 + 2 行边界内。
     insertSeen("import-zcode-stale-1", new Date(Date.parse(cutoff) - 10_000).toISOString());
     insertSeen("import-zcode-stale-2", new Date(Date.parse(cutoff) - 5_000).toISOString());

@@ -30,15 +30,15 @@ const IDENTITY_ONLY_TAIL = "——本地日志仍按固定节奏扫描，只把�
 
 const LOCAL_IMPORT_STATUS_COPY: Partial<Record<AgentId, LocalImportStatusCopy>> = {
   zcode: {
-    direct: "ZCode 内使用官方自带模型直连时（享官方积分折扣，官方按客户端签名认定），该部分请求由本能力自动导入观测与账本（最多回看一个月），无需任何手动操作；经本网关的请求不受影响。",
+    direct: "ZCode 内使用官方自带模型直连时（享官方积分折扣，官方按客户端签名认定），该部分请求由本能力自动导入观测与账本（回看最近一周），无需任何手动操作；经本网关的请求不受影响。",
     identityOnly: `ZCode 当前为「仅身份标注」模式${IDENTITY_ONLY_TAIL}`,
   },
   codex: {
-    direct: "Codex 以 ChatGPT 登录原生使用官方模型时（因 OpenAI 登录协议限制，该部分请求无法经本网关路由），由本能力自动导入观测与账本（最多回看一个月），无需任何手动操作；经本网关的请求不受影响。",
+    direct: "Codex 以 ChatGPT 登录原生使用官方模型时（因 OpenAI 登录协议限制，该部分请求无法经本网关路由），由本能力自动导入观测与账本（回看最近一周），无需任何手动操作；经本网关的请求不受影响。",
     identityOnly: `Codex 当前为「仅身份标注」模式${IDENTITY_ONLY_TAIL}`,
   },
   dsh: {
-    direct: "dsh 直连官方的请求由本能力自动导入观测与账本（最多回看一个月），无需任何手动操作；经本网关的请求不受影响。",
+    direct: "dsh 直连官方的请求由本能力自动导入观测与账本（回看最近一周），无需任何手动操作；经本网关的请求不受影响。",
     identityOnly: `dsh 为「仅身份标注」模式${IDENTITY_ONLY_TAIL}`,
   },
 };
@@ -46,7 +46,7 @@ const LOCAL_IMPORT_STATUS_COPY: Partial<Record<AgentId, LocalImportStatusCopy>> 
 /** 状态区说明文案：按 Agent 查声明表；未登记 Agent 回退通用表述（防御，正常不触达）。 */
 export function localImportStatusCopyForAgent(agentId: AgentId): LocalImportStatusCopy {
   return LOCAL_IMPORT_STATUS_COPY[agentId] ?? {
-    direct: "该 Agent 使用官方自带模型直连时，该部分请求由本能力自动导入观测与账本（最多回看一个月）；经本网关的请求不受影响。",
+    direct: "该 Agent 使用官方自带模型直连时，该部分请求由本能力自动导入观测与账本（回看最近一周）；经本网关的请求不受影响。",
     identityOnly: `该 Agent 当前为「仅身份标注」模式${IDENTITY_ONLY_TAIL}`,
   };
 }

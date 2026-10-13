@@ -467,7 +467,7 @@ function listRolloutFiles(sessionsDir: string, floorEpochMs: number): Array<{pat
       const days = readdirSyncOrNull(join(sessionsDir, year, month));
       for (const day of days) {
         if (!/^\d{2}$/u.test(day)) continue;
-        // 日期目录粒度裁剪：早于窗口下界的整日跳过（readdir 有界，≤30 日目录）。
+        // 日期目录粒度裁剪：早于窗口下界的整日跳过（readdir 有界，目录数随回看窗口自动收紧，2026-10-13 起 7 日）。
         if (Number(year) < floorDate.getUTCFullYear()
           || (Number(year) === floorDate.getUTCFullYear() && Number(month) < floorDate.getUTCMonth() + 1)
           || (Number(year) === floorDate.getUTCFullYear() && Number(month) === floorDate.getUTCMonth() + 1 && Number(day) < floorDate.getUTCDate())) {
@@ -913,7 +913,7 @@ function numberOr(value: unknown): number {
 
 function readdirSyncOrNull(path: string): string[] {
   // 清单枚举用同步 readdir（调度器契约为同步 readPendingCandidates）；目录体量
-  // 受日期裁剪约束（≤30 日），失败按空处理（目录被清理等）。
+  // 受日期裁剪约束（随回看窗口，2026-10-13 起 7 日），失败按空处理（目录被清理等）。
   try {
     return readdirSync(path);
   } catch {

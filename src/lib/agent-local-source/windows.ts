@@ -1,5 +1,7 @@
-/** 回看窗口毫秒数（用户定案 D-4：最多回补最近 30 天）。30 天门禁不变。 */
-export const LOCAL_IMPORT_LOOKBACK_DAYS = 30;
+/** 回看窗口天数（2026-10-13 用户定案：30 天 → 7 天）。窗口只约束「绑定/启用前的
+ * 历史回补深度」，持续使用中的尾追导入（新行恒在窗口内）不受影响；seen 保留余量
+ * 与 codex 扫描日期裁剪均由本常量派生，自动跟随。 */
+export const LOCAL_IMPORT_LOOKBACK_DAYS = 7;
 export const LOCAL_IMPORT_LOOKBACK_DAYS_MS = LOCAL_IMPORT_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
 
 /**
