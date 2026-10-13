@@ -174,10 +174,10 @@ export function createUpstreamRequest(
   onResponse: (response: IncomingMessage) => void,
 ) {
   const headerTimeoutMs = options.headerTimeoutMs ?? DEFAULT_HEADER_TIMEOUT_MS;
-  const headerDeadline = setTimeout(() => {
-    request.destroy(new Error("UPSTREAM_RESPONSE_HEADER_TIMEOUT"));
-  }, headerTimeoutMs);
-  headerDeadline.unref();
+  // 必须先创建 request 再挂定时器（2026-10-13 事故）：非法 header 值会让
+  // http.request 同步抛出，定时器若已挂出且无人清理，headerTimeoutMs 后回调
+  // 访问未初始化的 request → TDZ ReferenceError → 未捕获异常杀死整个 proxy。
+  // response 回调只会异步触发，定时器在其后同步创建不存在反向竞态。
   const request = (url.protocol === "https:" ? https.request : http.request)(url, {
     method: options.method,
     headers: options.headers,
@@ -187,6 +187,10 @@ export function createUpstreamRequest(
     clearTimeout(headerDeadline);
     onResponse(response);
   });
+  const headerDeadline = setTimeout(() => {
+    request.destroy(new Error("UPSTREAM_RESPONSE_HEADER_TIMEOUT"));
+  }, headerTimeoutMs);
+  headerDeadline.unref();
   request.setTimeout(30_000, () => {
     request.destroy(new Error("UPSTREAM_RESPONSE_HEADER_TIMEOUT"));
   });

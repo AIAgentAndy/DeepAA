@@ -11,6 +11,14 @@ interface CachedToken {
 }
 
 /**
+ * Node http 的 header 合法字符集取反（[^\t\x20-\x7e\x80-\xff]）：token 原样拼进
+ * Authorization 头，含这些字符时 http.request 同步抛错（2026-10-13 事故）。
+ * 在解析层提前拒绝，错误信息可定位到密钥内容，而不是 Node 的笼统 header 报错；
+ * 也是存量脏密钥（保存校验上线前已入系统凭据库）的运行时兜底。
+ */
+const HEADER_INVALID_FOR_TOKEN = /[^\t\u0020-\u007e\u0080-\u00ff]/;
+
+/**
  * 按供应商凭据 ID 从系统凭据库解析真实 token。
  * 只 spawn 现有 credential-helper 子进程，不导入任何凭据库模块，
  * 结果只在内存缓存，绝不落盘。
@@ -30,6 +38,9 @@ export class GatewayTokenResolver {
     if (cached && cached.expiresAt > Date.now()) return cached.token;
     const token = await runHelper(this.helperPath, ["get", credentialId]);
     if (!token) throw new Error("CREDENTIAL_READ_FAILED");
+    if (HEADER_INVALID_FOR_TOKEN.test(token)) {
+      throw new Error("CREDENTIAL_TOKEN_INVALID_CHARS");
+    }
     this.cache.set(credentialId, {token, expiresAt: Date.now() + this.cacheTtlMs});
     return token;
   }

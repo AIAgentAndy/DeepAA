@@ -1,6 +1,8 @@
 import {afterEach, describe, expect, test} from "vitest";
+import http from "node:http";
 import {
   buildUpstreamUrl,
+  createUpstreamRequest,
   ensureOpenCodeGoSessionHeader,
   UpstreamAgentPool,
 } from "../src/proxy/upstream-transport.js";
@@ -187,5 +189,78 @@ describe("buildUpstreamUrl 上游 URL 拼接（OpenAI/Anthropic SDK 行业规范
       .toBe("https://ark.cn-beijing.volces.com/api/plan/v3/responses");
     expect(buildUpstreamUrl("https://api.anthropic.com/", "/v1/messages", "").toString())
       .toBe("https://api.anthropic.com/v1/messages");
+  });
+});
+
+describe("createUpstreamRequest 非法 header 不再泄漏定时器（2026-10-13 事故）", () => {
+  test("非法 authorization 同步抛错且不产生悬挂定时器", async () => {
+    let thrown: unknown;
+    try {
+      createUpstreamRequest(new URL("http://127.0.0.1:9/v1/x"), {
+        method: "POST",
+        headers: {authorization: "Bearer bad-\u706b\u5c71-token\n"},
+        agent: new http.Agent(),
+        headerTimeoutMs: 60,
+      }, () => {
+        throw new Error("非法 header 不应产生请求对象");
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    // Node 对 header 值同步抛 ERR_INVALID_CHAR——行为保持不变。
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toMatch(/Invalid character in header content/i);
+    // 事故形态：headerDeadline 先于 request 创建，同步抛错后无人清理，60ms 后
+    // 回调访问未初始化变量 → TDZ ReferenceError → 未捕获异常杀死整个 proxy。
+    // vitest 将未捕获异常判为失败；静置跨过定时器窗口即证明定时器未泄漏。
+    await new Promise(resolve => setTimeout(resolve, 150));
+  });
+
+  test("合法请求的响应头超时仍按期触发", async () => {
+    const server = http.createServer(() => {
+      // 接受请求但永不响应：触发 headerTimeout 路径。
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as import("node:net").AddressInfo).port;
+    try {
+      const failure = new Promise<Error>((resolve, reject) => {
+        const request = createUpstreamRequest(
+          new URL(`http://127.0.0.1:${port}/v1/x`),
+          {method: "GET", headers: {}, agent: new http.Agent(), headerTimeoutMs: 80},
+          () => reject(new Error("不应收到响应")),
+        );
+        request.once("error", resolve);
+        request.end();
+      });
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("headerTimeoutMs 到期未销毁请求")), 2_000));
+      const error = await Promise.race([failure, timeout]);
+      expect(error.message).toBe("UPSTREAM_RESPONSE_HEADER_TIMEOUT");
+    } finally {
+      server.close();
+    }
+  });
+
+  test("正常响应仍回调 onResponse 并清理定时器", async () => {
+    const server = http.createServer((_request, response) => {
+      response.writeHead(200, {"content-type": "application/json"});
+      response.end("{}");
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as import("node:net").AddressInfo).port;
+    try {
+      const status = await new Promise<number>((resolve, reject) => {
+        const request = createUpstreamRequest(
+          new URL(`http://127.0.0.1:${port}/v1/x`),
+          {method: "GET", headers: {}, agent: new http.Agent(), headerTimeoutMs: 2_000},
+          response => resolve(response.statusCode),
+        );
+        request.once("error", reject);
+        request.end();
+      });
+      expect(status).toBe(200);
+    } finally {
+      server.close();
+    }
   });
 });

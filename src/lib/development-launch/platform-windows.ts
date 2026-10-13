@@ -34,6 +34,14 @@ const DIRECTORY_PICKER_TOTAL_TIMEOUT_MS = 5 * 60_000;
  * 浏览器等窗口后且无任务栏入口，用户完全看不见）；对对话框本体施加置顶是
  * 上下文无关的确定性修复。新拉起的子进程有短暂前台权限，置顶后通常可一并
  * 拿到焦点；即使焦点被前台锁拒绝，置顶也保证可见可点。
+ *
+ * 回调形态（2026-10-13 事故复盘）：窗口枚举禁止用 PowerShell scriptblock 充当
+ * EnumWindows 回调——原生代码回调重入脚本引擎在发布包守护上下文不稳定，实测
+ * 出现过整进程卡死泄漏（本应 25s 退出，挂死数十分钟、CPU 停滞）与静默空跑两种
+ * 失效，用户侧表现为「点击选择目录无反应，再点提示选择器已打开」。枚举逻辑
+ * 全部下沉为 Add-Type 编译的 C# 静态回调（无引擎重入），PowerShell 层只读结果。
+ * 循环前检查主进程存活：picker 先死（总超时被杀/用户取消）时立即退出，杜绝
+ * 伴随进程按 25s 全额空转乃至泄漏。
  */
 const DIRECTORY_PICKER_FORCE_TOPMOST_HELPER = String.raw`
 Add-Type -TypeDefinition @"
@@ -48,28 +56,33 @@ public class DeepAAPickerTopmost {
   [DllImport("user32.dll")] public static extern int GetClassName(IntPtr hWnd, StringBuilder sb, int max);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  public static IntPtr Found = IntPtr.Zero;
+  static bool Cb(IntPtr hWnd, IntPtr lParam) {
+    uint pid;
+    GetWindowThreadProcessId(hWnd, out pid);
+    if ((long)pid == lParam.ToInt64() && IsWindowVisible(hWnd)) {
+      StringBuilder sb = new StringBuilder(256);
+      GetClassName(hWnd, sb, 256);
+      if (sb.ToString() == "#32770") { Found = hWnd; return false; }
+    }
+    return true;
+  }
+  public static IntPtr FindDialog(int pid) {
+    Found = IntPtr.Zero;
+    EnumWindows(Cb, new IntPtr(pid));
+    return Found;
+  }
 }
 "@
 $pickerPid = __PICKER_PID__
 $deadline = [DateTime]::UtcNow.AddSeconds(25)
 while ([DateTime]::UtcNow -lt $deadline) {
+  if (-not (Get-Process -Id $pickerPid -ErrorAction SilentlyContinue)) { break }
   Start-Sleep -Milliseconds 150
-  $script:found = [IntPtr]::Zero
-  $cb = {
-    param($hWnd, $lParam)
-    $wpid = 0
-    [Void][DeepAAPickerTopmost]::GetWindowThreadProcessId($hWnd, [Ref]$wpid)
-    if ($wpid -eq $pickerPid -and [DeepAAPickerTopmost]::IsWindowVisible($hWnd)) {
-      $cls = New-Object System.Text.StringBuilder 256
-      [Void][DeepAAPickerTopmost]::GetClassName($hWnd, $cls, 256)
-      if ($cls.ToString() -eq '#32770') { $script:found = $hWnd; return $false }
-    }
-    return $true
-  }
-  [Void][DeepAAPickerTopmost]::EnumWindows($cb, [IntPtr]::Zero)
-  if ($script:found -ne [IntPtr]::Zero) {
-    [Void][DeepAAPickerTopmost]::SetWindowPos($script:found, [IntPtr](-1), 0, 0, 0, 0, 0x3)
-    [Void][DeepAAPickerTopmost]::SetForegroundWindow($script:found)
+  $found = [DeepAAPickerTopmost]::FindDialog($pickerPid)
+  if ($found -ne [IntPtr]::Zero) {
+    [Void][DeepAAPickerTopmost]::SetWindowPos($found, [IntPtr](-1), 0, 0, 0, 0, 0x3)
+    [Void][DeepAAPickerTopmost]::SetForegroundWindow($found)
     break
   }
 }`;
@@ -87,7 +100,7 @@ ${DIRECTORY_PICKER_FORCE_TOPMOST_HELPER}
 '@
 $forcer = $forcer.Replace('__PICKER_PID__', [string]$PID)
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($forcer))
-Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand', $encoded)
+Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -WindowStyle Hidden -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand', $encoded)
 [Console]::Out.Write('${DIRECTORY_PICKER_READY_MARKER}')
 [Console]::Out.Flush()
 if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {

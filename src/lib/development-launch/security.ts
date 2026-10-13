@@ -242,6 +242,7 @@ function userMessage(code: string, detail?: string): string {
     CREDENTIAL_NOT_FOUND: "密钥不存在或不属于当前供应商",
     CREDENTIAL_LABEL_REQUIRED: "请输入 1 至 80 个字符的密钥名称",
     CREDENTIAL_SECRET_REQUIRED: "请输入有效密钥内容",
+    CREDENTIAL_SECRET_INVALID_CHARS: "密钥包含控制字符或非 Latin-1 字符（换行、回车、中文等），请检查是否误粘贴了其他内容后重试",
     CREDENTIAL_LIMIT_EXCEEDED: "保存的开发密钥数量已达上限",
     CLI_NOT_FOUND: "未检测到对应的命令行工具",
     TERMINAL_NOT_FOUND: "未检测到可用终端",

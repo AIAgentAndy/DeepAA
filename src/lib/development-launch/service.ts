@@ -1093,14 +1093,25 @@ function expectedCredentialStore(platform: "darwin" | "win32") {
   return platform === "darwin" ? "macos-keychain" : "windows-credential-manager";
 }
 
+/**
+ * Node http 的 header 合法字符集取反（[^\t\x20-\x7e\x80-\xff]，即 latin1 内
+ * 除控制字符外的可打印集）：密钥会原样拼进 Authorization 头，含这些字符的
+ * 密钥在运行时必然触发「Invalid character in header content」同步抛错
+ * （2026-10-13 事故：密钥混入中文名与换行后存库）。与 Node 完全对等保证
+ * 零误伤——能通过校验的密钥在 header 层永远合法。
+ */
+const HEADER_INVALID_FOR_SECRET = /[^\t\u0020-\u007e\u0080-\u00ff]/;
+
 function validateSecret(secret: string): void {
   if (
     typeof secret !== "string"
     || !secret
     || secret.length > MAX_SECRET_LENGTH
-    || /[\u0000\r\n]/.test(secret)
   ) {
     throw new Error("CREDENTIAL_SECRET_REQUIRED");
+  }
+  if (HEADER_INVALID_FOR_SECRET.test(secret)) {
+    throw new Error("CREDENTIAL_SECRET_INVALID_CHARS");
   }
 }
 

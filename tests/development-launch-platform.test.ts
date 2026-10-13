@@ -228,6 +228,22 @@ describe("development launch platform adapters", () => {
     expect(script).toContain("__PICKER_PID__");
   });
 
+  test("Windows 置顶伴随进程：C# 静态回调 + 主进程存活检查 + 绝对路径启动（2026-10-13 事故）", () => {
+    const script = buildWindowsDirectoryPickerCommand("C:\\Windows").args.join(" ");
+
+    // 枚举逻辑下沉为 Add-Type 编译的 C# 静态回调：scriptblock 充当 EnumWindows
+    // 回调会从原生代码重入 PowerShell 引擎，发布包守护上下文实测出现过整进程
+    // 卡死泄漏与静默空跑两种失效（对话框被压底不可见，用户侧表现为点击无反应）。
+    expect(script).toContain("static bool Cb(IntPtr hWnd, IntPtr lParam)");
+    expect(script).toContain("FindDialog(int pid)");
+    expect(script).not.toContain("$cb = {");
+    expect(script).not.toContain("EnumWindows($cb");
+    // picker 先死（总超时被杀/已取消）时伴随进程立即退出，不再按 25s 全额空转。
+    expect(script).toContain("Get-Process -Id $pickerPid -ErrorAction SilentlyContinue");
+    // 伴随进程按绝对路径启动，不依赖（可能被裁剪的）会话 PATH 解析 powershell.exe。
+    expect(script).toContain('"$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"');
+  });
+
   test("Windows 选择目录：就绪超时映射为 DIRECTORY_PICKER_NOT_SHOWN", async () => {
     const runOptions: unknown[] = [];
     const adapter = new WindowsDevelopmentPlatformAdapter({

@@ -522,6 +522,44 @@ describe("development launch service", () => {
     expect(await fixture.credentials.find("cred_purge_failed")).toBeDefined();
   });
 
+  test("密钥含 header 非法字符在保存时被拒绝（2026-10-13 事故：密钥粘入中文名+换行）", async () => {
+    const fixture = await serviceFixture();
+    // 事故实录形态：密钥里混入「火山方舟」中文名（非 Latin-1，Node http 拼
+    // Authorization 头时同步抛 Invalid character）与尾部换行。
+    await expect(fixture.service.createCredential({
+      targetId: "openai-target",
+      label: "脏密钥-中文",
+      secret: "sk-\u706b\u5c71\u65b9\u8230-key",
+    })).rejects.toThrow("CREDENTIAL_SECRET_INVALID_CHARS");
+    for (const [name, secret] of [
+      ["换行", "sk-good\nsk-bad"],
+      ["回车", "sk-good\rsk-bad"],
+      ["NUL", "sk-bad\u0000"],
+      ["其它控制字符", "sk-bad\u0007"],
+      ["DEL", "sk-bad\u007f"],
+    ] as const) {
+      await expect(fixture.service.createCredential({
+        targetId: "openai-target",
+        label: `脏密钥-${name}`,
+        secret,
+      })).rejects.toThrow("CREDENTIAL_SECRET_INVALID_CHARS");
+    }
+    // 与 Node header 字符集完全对等：空格/Tab 在 header 层合法，不得误伤。
+    const accepted = await fixture.service.createCredential({
+      targetId: "openai-target",
+      label: "合法密钥-含空格与Tab",
+      secret: "sk-with space\tand-symbols._~+/=",
+    });
+    expect(accepted.id).toMatch(/^cred_/);
+    // 更新路径同语义拒绝。
+    await expect(fixture.service.updateCredential({
+      targetId: "openai-target",
+      credentialId: accepted.id,
+      label: "更新为脏密钥",
+      secret: "sk-\u706b-key",
+    })).rejects.toThrow("CREDENTIAL_SECRET_INVALID_CHARS");
+  });
+
   test("未启用目标仍可配置密钥，不要求先启用；启动仍被拒绝", async () => {
     const fixture = await serviceFixture();
     // disabled-target 未启用，但凭据操作允许：先配密钥后启用。
