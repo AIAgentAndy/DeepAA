@@ -939,6 +939,9 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
     try {
       const body = await nonceMutation("/api/proxy-sync/console-account", "POST", {targetId: selectedTarget.id, ...input});
       await loadSyncStatus(selectedTarget.id);
+      // 服务端保存后立即同步并已失效概览缓存：同步重取侧栏的余额行/健康徽标，
+      // 否则左侧供应商列表保持旧态、只能靠刷新浏览器跟随（2026-10-13 用户反馈）。
+      await loadSyncOverview(config.targets.map(target => target.id));
       // 保存后服务端立即执行同步；失败立刻提醒（保存本身已生效，不回滚）。
       assertImmediateSyncOk(body.sync as SyncOutcomePayload | undefined, syncLabel, "账号信息");
       setNotice({kind: "success", message: `控制台账号已保存，${syncLabel}已完成；计费数据同步不会影响代理可用性。`});
@@ -999,31 +1002,35 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
         syncIntervalMinutes: input.syncIntervalMinutes,
         expectedRevision: persistedConfigRef.current.revision,
       });
+      /* 保存即首次同步此刻已结束，服务端可能已写目标 pricing 并 bump revision——不止
+         opencode-go 的档位落盘，月费自动回填（autofill，用户未手工录入月费时按目录
+         档位折算）对全部套餐供应商都会触发。pricing 补丁前一律重取最新配置：既拿对
+         expectedRevision（否则首次保存必撞 409——2026-10-13 智谱 coding plan 实录：
+         第一次提交报「配置已被其它页面更新」、第二次才成功），也用回填后的 pricing
+         作比较基线与合并基底，不把服务端刚写入的月费/币种/档位回退掉。 */
+      const latest = await reloadProxyConfig(true);
+      const latestPricing = latest.targets.find(item => item.id === selectedTarget.id)?.pricing;
       // 月费/档位/周期任一变化时随保存一并落盘（2026-10-10 档位+周期）：与月费同走
       // 目标 pricing 补丁通道；同步钩子自动回填按「档位 × 付款周期」取目录折算月价。
+      // 月费未填写（undefined）不视为变化：跟随自动回填（JSON 序列化会丢弃 undefined
+      // 键，清空月费在既有链路本就不落盘，语义保持不变，仅少一次同值冗余写）。
       const clientTierPatch = input.providerType !== "opencode-go";
-      const pricingMetaChanged = (clientTierPatch && input.planTier !== undefined && input.planTier !== selectedTarget.pricing?.planTier)
-        || (input.planBillingCycle !== undefined && input.planBillingCycle !== selectedTarget.pricing?.planBillingCycle);
-      if (input.planMonthlyFee !== selectedTarget.pricing?.planMonthlyFee || pricingMetaChanged) {
+      const feeChanged = input.planMonthlyFee !== undefined
+        && input.planMonthlyFee !== latestPricing?.planMonthlyFee;
+      const pricingMetaChanged = (clientTierPatch && input.planTier !== undefined && input.planTier !== latestPricing?.planTier)
+        || (input.planBillingCycle !== undefined && input.planBillingCycle !== latestPricing?.planBillingCycle);
+      if (feeChanged || pricingMetaChanged) {
         /* 月费币种随手工录入一并落盘（2026-09-28）：显式 settlementCurrency 优先，
            缺失时按预设目录币种补写（无 UI 选择器，币种始终跟随官方预设目录），
            消除「只写数字不写币种」导致派生端误按 CNY 处理美元月费的缺口。 */
-        // opencode-go 档位已由服务端随保存落盘（config revision 已 bump）：先刷新
-        // 最新配置再合并，避免本地缓存 revision 触发 409，或用旧 pricing 基底把
-        // 服务端刚写入的档位回退掉。
-        let pricingBase = selectedTarget.pricing;
-        if (input.providerType === "opencode-go") {
-          const latest = await reloadProxyConfig(true);
-          pricingBase = latest.targets.find(item => item.id === selectedTarget.id)?.pricing ?? pricingBase;
-        }
-        const feeCurrency = pricingBase?.settlementCurrency
+        const feeCurrency = latestPricing?.settlementCurrency
           ?? derivePresetCurrency(resolveOfficialPresetForTarget(selectedTarget));
         await mutateProxyConfig({
           targetPatch: {
             id: selectedTarget.id,
             target: {
               pricing: {
-                ...pricingBase,
+                ...latestPricing,
                 planMonthlyFee: input.planMonthlyFee,
                 ...(clientTierPatch && input.planTier !== undefined ? {planTier: input.planTier} : {}),
                 ...(input.planBillingCycle !== undefined ? {planBillingCycle: input.planBillingCycle} : {}),
@@ -1034,6 +1041,8 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
         }, {preserveDraft: true});
       }
       await loadSyncStatus(selectedTarget.id);
+      // 同 saveConsoleAccount：服务端保存即同步并失效概览缓存，重取侧栏徽标/用量行。
+      await loadSyncOverview(config.targets.map(target => target.id));
       // 保存后服务端立即执行首次同步；订阅适配器鉴权失败引导重新登录官方 CLI，
       // 其余鉴权失败提示检查填写的套餐信息（适配器与同步密钥）。
       const subscription = input.providerType === "openai-subscription" || input.providerType === "anthropic-subscription";
@@ -1076,6 +1085,8 @@ export function ProxyManagementPage({initialConfig}: ProxyManagementPageProps) {
     try {
       await nonceMutation("/api/proxy-sync/console-account", "DELETE", {targetId: selectedTarget.id});
       await loadSyncStatus(selectedTarget.id);
+      // 删除后侧栏徽标应回到「账号未设置」：同保存路径重取概览。
+      await loadSyncOverview(config.targets.map(target => target.id));
       setNotice({kind: "success", message: "控制台账号配置已删除。"});
     } catch (error) {
       setNotice({kind: "error", message: errorMessage(error, "删除控制台账号失败")});
