@@ -18,6 +18,7 @@
  * 触发下一次请求重探测（自愈语义见 upstream-transport）。
  */
 import {execFile} from "node:child_process";
+import {isMacRuntime} from "@/lib/runtime-platform";
 import {isVpnTunnelModel} from "./upstream-model-gate";
 
 /** 全程隧道域（host 级封锁，与模型无关；扩展时加一行）。 */
@@ -145,7 +146,9 @@ export function setOfficialUpstreamProxyForTests(endpoint: UpstreamProxyEndpoint
 }
 
 function detectMacSystemProxy(): Promise<UpstreamProxyEndpoint | undefined> {
-  if (process.platform !== "darwin") return Promise.resolve(undefined);
+  // runtime-platform 运行时判定（实测 os.platform() 比较同样会被构建期折叠）：
+  // scutil 仅 macOS 存在，其余平台直接短路。
+  if (!isMacRuntime()) return Promise.resolve(undefined);
   return new Promise(resolve => {
     execFile("/usr/sbin/scutil", ["--proxy"], {timeout: SCUTIL_TIMEOUT_MS}, (error, stdout) => {
       if (error) return resolve(undefined);

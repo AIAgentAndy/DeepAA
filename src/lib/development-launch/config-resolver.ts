@@ -1,5 +1,6 @@
 import { readFile, realpath, stat } from "fs/promises";
 import { join } from "path";
+import {isWindowsRuntime} from "@/lib/runtime-platform";
 import { parse as parseToml } from "smol-toml";
 import {parse as parseJsonc} from "jsonc-parser";
 import {parse as parseYaml} from "yaml";
@@ -308,8 +309,10 @@ async function readYamlLayer(
 async function openCodeGlobalConfigPath(homeDir: string): Promise<string> {
   const env = process.env;
   if (env.OPENCODE_CONFIG?.trim()) return env.OPENCODE_CONFIG;
+  // runtime-platform 运行时判定（new Function 不透明边界）：实测 process.platform
+  // 与 os.platform() 的比较都会被 Turbopack 按构建机平台折叠（2026-10-13 事故）。
   const directory = env.OPENCODE_CONFIG_DIR?.trim()
-    || (process.platform === "win32"
+    || (isWindowsRuntime()
       ? join(env.APPDATA || join(homeDir, "AppData", "Roaming"), "opencode")
       : join(env.XDG_CONFIG_HOME || join(homeDir, ".config"), "opencode"));
   for (const name of ["opencode.jsonc", "opencode.json", "config.json"] as const) {

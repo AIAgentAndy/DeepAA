@@ -272,3 +272,129 @@ async function directoryHasEntries(path: string): Promise<boolean> {
     return false;
   }
 }
+
+describe("跨平台构建守护（2026-10-13 事故：构建机平台常数折叠）", () => {
+  // Next Turbopack 生产构建会把 `process.platform`、甚至 `os.platform()` 的比较
+  // 按「构建机」平台做编译期常数折叠并消除另一平台分支，产物留下
+  // "TURBOPACK unreachable" 死分支标记（1.1.3 在 mac 构建：Windows 用户的
+  // spawnCredential execPath 兜底与 zcode/dsh 启动器的 cmd.exe 分支被整体删除）。
+  // 修复口径：平台判定只允许经 src/lib/runtime-platform.ts（new Function 不
+  // 透明边界，构建器无法静态求值）。本组测试源码与产物两端锁死；产物断言
+  // 采用「函数级窗口」+「TURBOPACK unreachable 金丝雀」——2026-10-13 复盘：
+  // 早期版本只查「同一 chunk 双字面量并存」，被同 chunk 内其它副本的字符串
+  // 假阳性骗过，路由实际使用的函数体已被折叠。
+
+  const stripComments = (source: string) => source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+
+  test("源码零平台常量直接比较（process.platform 与 platform() 一并封死）", async () => {
+    const offenders: string[] = [];
+    const walk = async (dir: string) => {
+      for (const entry of await readdir(dir, {withFileTypes: true})) {
+        const p = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(p);
+          continue;
+        }
+        if (!/\.(ts|tsx|mjs)$/.test(entry.name) || entry.name.endsWith(".d.ts")) continue;
+        const stripped = stripComments(await readFile(p, "utf8"));
+        const rel = p.replace(/\\/g, "/");
+        if (/process\.platform\s*(===|!==)|\bplatform\(\)\s*(===|!==)/.test(stripped)) {
+          offenders.push(`${rel}（平台常量比较）`);
+        }
+        if (rel.endsWith("runtime-platform.ts")) continue;
+        if (/import\s*\{[^}]*\bplatform\b[^}]*\}\s*from\s*["']node:os["']/.test(stripped)) {
+          offenders.push(`${rel}（绕过 runtime-platform 私引 node:os 的 platform）`);
+        }
+      }
+    };
+    await walk(join(rootDir, "src"));
+    expect(
+      offenders,
+      "平台判定一律走 @/lib/runtime-platform（isWindowsRuntime/isMacRuntime）",
+    ).toEqual([]);
+  });
+
+  test("runtime-platform 模块与 5 个消费点在位", async () => {
+    const core = await readFile(join(rootDir, "src/lib/runtime-platform.ts"), "utf8");
+    expect(core).toContain("new Function");
+    expect(core).toContain("return process.platform");
+    for (const [file, marker] of [
+      ["src/lib/development-launch/strategies/shared.ts", "isMacRuntime()"],
+      ["src/lib/development-launch/config-resolver.ts", "isWindowsRuntime()"],
+      ["src/lib/sync-engine/subscription-oauth.ts", "isMacRuntime()"],
+      ["src/proxy/official-upstream.ts", "isMacRuntime()"],
+      ["src/lib/sync-engine/service.ts", "process.execPath"],
+      ["src/proxy/token-resolver.ts", "process.execPath"],
+    ] as const) {
+      expect(await readFile(join(rootDir, file), "utf8"), file).toContain(marker);
+    }
+  });
+
+  packageSmoke("构建产物：零 Turbopack 折叠标记 + 关键函数窗口内双分支存活", async () => {
+    const chunksDir = join(rootDir, ".next", "server", "chunks");
+    if (!existsSync(chunksDir)) {
+      throw new Error("缺少 .next 构建产物：先执行 pnpm build 再跑 pnpm test:package");
+    }
+    const chunks: Array<[string, string]> = [];
+    for (const f of (await readdir(chunksDir)).filter(x => x.endsWith(".js"))) {
+      chunks.push([f, await readFile(join(chunksDir, f), "utf8")]);
+    }
+    expect(chunks.length).toBeGreaterThan(0);
+
+    // 金丝雀：Turbopack 折叠死分支时会在产物写入该标记。历史上正常产物为 0；
+    // 若未来出现合法的其它常数折叠，应显式评估后把本断言改为窗口级。
+    const unreachable = chunks.filter(([, s]) => s.includes("TURBOPACK unreachable"));
+    expect(
+      unreachable.map(([f]) => f),
+      "检测到 Turbopack 常数折叠死分支（平台分支被按构建机消除的高危信号）",
+    ).toEqual([]);
+
+    // 函数级窗口断言：锚点是各函数体内的日志/命令字面量（压缩不改变字符串），
+    // 窗口内必须同时出现双平台分支的字面量——同 chunk 其它副本不再能假阳性。
+    const windowHas = (source: string, anchor: string, span: number) => {
+      const results: string[] = [];
+      let i = source.indexOf(anchor);
+      while (i !== -1) {
+        results.push(source.slice(Math.max(0, i - span), i + anchor.length + span));
+        i = source.indexOf(anchor, i + 1);
+      }
+      return results;
+    };
+    const windowsWith = (anchor: string, span = 1400) => {
+      const all: string[] = [];
+      for (const [, s] of chunks) all.push(...windowHas(s, anchor, span));
+      return all;
+    };
+    const expectAllWindows = (anchor: string, required: readonly string[], label: string) => {
+      const windows = windowsWith(anchor);
+      expect(windows.length, `${label}：锚点字符串完全消失（整分支被折叠删除）`).toBeGreaterThan(0);
+      for (const w of windows) {
+        for (const needle of required) {
+          expect(w.includes(needle), `${label}：窗口内缺少分支字面量 ${needle}`).toBe(true);
+        }
+      }
+    };
+
+    expectAllWindows("zcode app launch failed", ["/usr/bin/open", "cmd.exe"], "zcode 桌面启动器");
+    expectAllWindows("dsh desktop app launch failed", ["/usr/bin/open", "homedir"], "dsh 桌面启动器");
+    expectAllWindows("find-generic-password", ["Claude Code-credentials"], "Claude Keychain 守卫");
+    expectAllWindows("--proxy", ["scutil"], "macOS 系统代理探测");
+    // 锚点用 Windows 分支独有的 “Roaming”（全产物唯一；config-sync 的 opencode
+    // 适配器另有一份 XDG-only 实现读同一 env 名，用 env 名做锚会串门）。
+    expectAllWindows("Roaming", ["APPDATA", ".config", "isWindowsRuntime"], "opencode 配置路径");
+    expectAllWindows(
+      "CREDENTIAL_HELPER_TIMEOUT",
+      ["execPath"],
+      "凭据 helper 启动（恒 execPath）",
+    );
+
+    const proxyBundle = join(rootDir, "dist", "proxy", "proxy-server.mjs");
+    if (existsSync(proxyBundle)) {
+      const proxySource = await readFile(proxyBundle, "utf8");
+      expect(proxySource, "proxy 侧 token-resolver 必须保留 execPath 兜底").toContain("execPath");
+      expect(proxySource, "proxy 侧平台判定必须走不透明读取").toContain("return process.platform");
+    }
+  });
+});

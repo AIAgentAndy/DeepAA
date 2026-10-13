@@ -10,6 +10,7 @@
 import {execFile} from "node:child_process";
 import {readFile} from "node:fs/promises";
 import {homedir} from "node:os";
+import {isMacRuntime} from "@/lib/runtime-platform";
 import {join} from "node:path";
 import https from "node:https";
 import {
@@ -169,7 +170,9 @@ export async function readClaudeOAuthCredentials(
   claudeHome = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"),
   options: {preferFile?: boolean} = {},
 ): Promise<string | undefined> {
-  if (!options.preferFile && process.platform === "darwin") {
+  // runtime-platform 运行时判定（实测 os.platform() 比较同样会被构建期折叠，
+  // 2026-10-13 事故口径）：Keychain 仅 macOS 真实可用，其余平台静默走文件路径。
+  if (!options.preferFile && isMacRuntime()) {
     const fromKeychain = await readClaudeKeychain();
     if (fromKeychain) return fromKeychain;
   }

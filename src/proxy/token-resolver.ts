@@ -49,11 +49,13 @@ function runHelper(
   options: {checkOnly?: boolean} = {},
 ): Promise<string> {
   return new Promise((resolvePromise, reject) => {
-    // Windows 无法直接执行带 shebang 的 .mjs 脚本（spawn EFTYPE），统一经 process.execPath 启动。
-    const win32 = process.platform === "win32";
+    // 恒经 process.execPath 启动 helper（Windows 无法直接执行带 shebang 的
+    // .mjs，spawn EFTYPE）。禁止 `process.platform === "win32"` 分支：Next
+    // Turbopack 生产构建按「构建机」平台常数折叠并消除死分支（2026-10-13
+    // 事故），本文件同时进入 web 与 proxy 两份构建产物，任何一侧折叠都致命。
     const child = spawn(
-      win32 ? process.execPath : helperPath,
-      win32 ? [helperPath, ...args] : args,
+      process.execPath,
+      [helperPath, ...args],
       {
         stdio: ["ignore", options.checkOnly ? "ignore" : "pipe", "ignore"],
       },

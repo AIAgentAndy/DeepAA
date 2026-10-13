@@ -1540,11 +1540,14 @@ export class SyncService {
 
   private spawnCredential(args: string[], secret?: string): Promise<string> {
     return new Promise((resolvePromise, reject) => {
-      // Windows 无法直接执行带 shebang 的 .mjs 脚本（spawn EFTYPE），统一经 process.execPath 启动。
-      const win32 = process.platform === "win32";
+      // 恒经 process.execPath 启动 helper（Windows 无法直接执行带 shebang 的
+      // .mjs，spawn EFTYPE）。禁止写 `process.platform === "win32"` 分支：
+      // Next Turbopack 生产构建会按「构建机」平台常数折叠该比较并消除死分支
+      //（2026-10-13 事故：mac 构建的 1.1.3 在 Windows 全量 EFTYPE）。node 自
+      // 引用在所有平台成立，统一走 execPath 无行为差异。
       const child = spawn(
-        win32 ? process.execPath : this.credentialHelperPath,
-        win32 ? [this.credentialHelperPath, ...args] : args,
+        process.execPath,
+        [this.credentialHelperPath, ...args],
         {
           stdio: [secret === undefined ? "ignore" : "pipe", "pipe", "ignore"],
         },

@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, unlink, writeFile } from "fs/promises";
 import { join } from "path";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
+import {isMacRuntime} from "@/lib/runtime-platform";
 import { createConnection } from "node:net";
 import {parse as parseToml} from "smol-toml";
 import { buildGatewayModelId, parseGatewayModelId } from "@/proxy/gateway-prefix";
@@ -478,7 +479,11 @@ export function launchCodexClientApp(codexExecutable: string, workspacePath?: st
  * 拉起、不传播 cwd，无此问题。
  */
 export function launchZcodeDesktopApp(appPath: string, workspacePath?: string): void {
-  const darwin = process.platform === "darwin";
+  // 平台判定必须经 runtime-platform 模块（new Function 不透明边界）：实测
+  // `process.platform` 与 `os.platform()` 的比较都会被 Next Turbopack 生产
+  // 构建按「构建机」平台常数折叠并消除另一平台分支（2026-10-13 事故：mac
+  // 构建的 1.1.3 里本函数恒走 /usr/bin/open，Windows 深链启动全部静默失败）。
+  const darwin = isMacRuntime();
   let child: ReturnType<typeof spawn>;
   if (workspacePath) {
     const url = `zcode://workspace/open?path=${encodeURIComponent(workspacePath)}`;
@@ -508,7 +513,8 @@ export function launchZcodeDesktopApp(appPath: string, workspacePath?: string): 
  * （安装模式 = npm 包目录）；macOS `open -a` 由 LaunchServices 拉起、不传播 cwd。
  */
 export function launchDshDesktopApp(appPath: string): void {
-  const child = process.platform === "darwin"
+  // 同 launchZcodeDesktopApp：runtime-platform 运行时判定，防构建期平台折叠。
+  const child = isMacRuntime()
     ? spawn("/usr/bin/open", ["-a", appPath], {detached: true, stdio: "ignore"})
     : spawn(appPath, [], {detached: true, stdio: "ignore", cwd: homedir()});
   child.on("error", error => {
