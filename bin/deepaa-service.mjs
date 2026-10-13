@@ -288,6 +288,8 @@ export function buildBrowserOpenCommand(url, platform = process.platform) {
 
 export function daemonizeRole(options) {
   const {role, nodeExecutable, launcherPath, dataDir, spawnProcess = spawn} = options;
+  const platform = options.platform ?? process.platform;
+  const baseEnv = options.env ?? process.env;
   const logPath = join(dataDir, "logs", `${role}.log`);
   const errLogPath = join(dataDir, "logs", `${role}.err.log`);
   const openAppend = options.openSync ?? ((path) => openSync(path, "a"));
@@ -296,7 +298,14 @@ export function daemonizeRole(options) {
   const child = spawnProcess(nodeExecutable, [launcherPath, role], {
     cwd: dirname(launcherPath),
     env: {
-      ...buildChildEnv(options.env ?? process.env),
+      ...buildChildEnv(baseEnv),
+      // Windows：launcher 可能从被裁剪的会话启动（一键安装的干净会话、异常终端），
+      // 直接继承会让 web/proxy 及其派生的快捷启动终端丢失 git/包管理器等 PATH
+      // 条目（2026-10-13 实证）。以注册表（机器+用户）为准合并，fail-safe：
+      // 读取失败一律原样继承会话 PATH。
+      ...(platform === "win32"
+        ? {PATH: (options.enrichPath ?? enrichWindowsChildPath)(baseEnv.PATH ?? "")}
+        : {}),
       DEEPAA_DATA_DIR: dataDir,
       DEEPAA_LAUNCH_REASON: "manual-daemon",
     },
@@ -313,6 +322,85 @@ function buildChildEnv(baseEnv) {
   // 守护化进程不继承 launcher 的标记，避免把「手动」误标为「服务」。
   delete env.DEEPAA_LAUNCH_REASON;
   return env;
+}
+
+// ---------------------------------------------------------------------------
+// Windows 子进程 PATH 保全（2026-10-13）：注册表（机器+用户）与会话 PATH 合并。
+// 读取经 PowerShell（UTF-8 输出，避免 reg.exe OEM 代码页把中文用户名路径读花）；
+// %VAR% 未展开记号（REG_EXPAND_SZ 原样返回）按 launcher 进程环境展开，未定义保留字面量。
+// ---------------------------------------------------------------------------
+
+const WINDOWS_PATH_REGISTRY_CACHE_TTL_MS = 60_000;
+let windowsPathRegistryCache = {at: 0, machine: "", user: ""};
+
+export function windowsPowerShellExePath(env = process.env) {
+  return join(env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
+export function expandPercentTokens(value, resolveVariable) {
+  return String(value).replace(/%([A-Za-z_][A-Za-z0-9_]*)%/g, (whole, name) => {
+    const resolved = resolveVariable(name);
+    return resolved === undefined || resolved === "" ? whole : resolved;
+  });
+}
+
+export function mergePathLists(lists) {
+  const seen = new Set();
+  const merged = [];
+  for (const list of lists) {
+    for (const entry of String(list ?? "").split(";")) {
+      const trimmed = entry.trim();
+      if (!trimmed) continue;
+      const key = trimmed.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(trimmed);
+    }
+  }
+  return merged.join(";");
+}
+
+export function readWindowsPathRegistryLists(runSync = spawnSync) {
+  const script = [
+    "$OutputEncoding=[Console]::OutputEncoding=[System.Text.Encoding]::UTF8",
+    "[Environment]::GetEnvironmentVariable('Path','Machine')",
+    "Write-Output '---DEEPAA-PATH-SPLIT---'",
+    "[Environment]::GetEnvironmentVariable('Path','User')",
+  ].join("; ");
+  const result = runSync(windowsPowerShellExePath(),
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+    {encoding: "utf8", windowsHide: true, timeout: 8000});
+  if (result.error || result.status !== 0 || typeof result.stdout !== "string") return null;
+  const parts = result.stdout.split("---DEEPAA-PATH-SPLIT---");
+  if (parts.length !== 2) return null;
+  return {machine: parts[0].trim(), user: parts[1].trim()};
+}
+
+/**
+ * 会话 PATH 保全合并：机器 → 用户 → 会话（去重保序，win32 大小写不敏感去重）。
+ * 任一环节失败（PowerShell 不可用 / 输出异常）返回原会话 PATH，绝不阻断启动。
+ * readLists/resolveVariable/now 仅供测试注入；默认读取带 60s 进程内缓存
+ *（web+proxy 两次 daemonize 只读一次注册表）。
+ */
+export function enrichWindowsChildPath(sessionPath, options = {}) {
+  let lists;
+  if (options.readLists) {
+    lists = options.readLists();
+  } else {
+    const now = options.now ?? Date.now;
+    if (now() - windowsPathRegistryCache.at >= WINDOWS_PATH_REGISTRY_CACHE_TTL_MS) {
+      const fresh = readWindowsPathRegistryLists();
+      if (fresh) windowsPathRegistryCache = {at: now(), machine: fresh.machine, user: fresh.user};
+    }
+    lists = windowsPathRegistryCache.at > 0 ? windowsPathRegistryCache : null;
+  }
+  if (!lists) return sessionPath;
+  const resolveVariable = options.resolveVariable ?? (name => process.env[name]);
+  return mergePathLists([
+    expandPercentTokens(lists.machine, resolveVariable),
+    expandPercentTokens(lists.user, resolveVariable),
+    sessionPath ?? "",
+  ]);
 }
 
 // ---------------------------------------------------------------------------

@@ -22,9 +22,12 @@ import {
   buildWindowsShortcutCommand,
   buildWindowsUnregisterCommand,
   daemonizeRole,
+  enrichWindowsChildPath,
   ensureServiceRunning,
+  expandPercentTokens,
   findPortListenerPid,
   installServices,
+  mergePathLists,
   readServiceStatus,
   smartLaunch,
   stopPortAndWait,
@@ -334,6 +337,7 @@ describe("C3 守护化 spawn", () => {
       nodeExecutable: "/usr/local/bin/node",
       launcherPath: "/opt/deepaa/bin/deepaa.mjs",
       dataDir,
+      platform: "darwin",
       spawnProcess: recorder.spawnProcess,
       env: {PATH: "/usr/bin", DEEPAA_LAUNCH_REASON: "service"},
       openSync: (path: string) => {
@@ -351,6 +355,54 @@ describe("C3 守护化 spawn", () => {
     expect(call.options.env.DEEPAA_DATA_DIR).toBe(dataDir);
     expect(call.options.env.DEEPAA_LAUNCH_REASON).toBe("manual-daemon");
     expect(openedLogs).toEqual([join(dataDir, "logs", "web.log"), join(dataDir, "logs", "web.err.log")]);
+  });
+
+  test("win32 守护化以 enrichPath 重建子进程 PATH（会话裁剪不外溢到快捷启动终端）", () => {
+    const recorder = recordingSpawn();
+    daemonizeRole({
+      role: "proxy",
+      nodeExecutable: "C:\\deepaa\\node.exe",
+      launcherPath: "C:\\deepaa\\bin\\deepaa.mjs",
+      dataDir,
+      platform: "win32",
+      spawnProcess: recorder.spawnProcess,
+      env: {PATH: "C:\\Windows\\System32;C:\\Windows", DEEPAA_LAUNCH_REASON: "service"},
+      enrichPath: sessionPath => `C:\\merged;${sessionPath}`,
+      openSync: () => 11,
+    });
+    expect(recorder.calls[0]!.options.env.PATH).toBe("C:\\merged;C:\\Windows\\System32;C:\\Windows");
+  });
+});
+
+describe("Windows 子进程 PATH 保全（2026-10-13：注册表机器+用户与会话合并）", () => {
+  test("expandPercentTokens：展开已知变量，未定义保留字面量", () => {
+    const resolveVariable = (name: string) => ({NVM_HOME: "C:\\nvm"} as Record<string, string>)[name];
+    expect(expandPercentTokens("C:\\x;%NVM_HOME%;%JAVA_HOME%", resolveVariable))
+      .toBe("C:\\x;C:\\nvm;%JAVA_HOME%");
+  });
+
+  test("mergePathLists：机器 → 用户 → 会话保序去重（大小写不敏感）", () => {
+    expect(mergePathLists(["C:\\A;C:\\B", "c:\\a;C:\\C", "C:\\B;C:\\D"])).toBe("C:\\A;C:\\B;C:\\C;C:\\D");
+  });
+
+  test("enrichWindowsChildPath：注入读取器时合并展开（含 REG_EXPAND_SZ 记号）", () => {
+    const merged = enrichWindowsChildPath("C:\\Windows\\System32;C:\\Windows", {
+      readLists: () => ({
+        machine: "C:\\Windows\\system32;C:\\Program Files\\nodejs;%NVM_SYMLINK%",
+        user: "C:\\Users\\u\\AppData\\Roaming\\npm",
+      }),
+      resolveVariable: name => (name === "NVM_SYMLINK" ? "C:\\Program Files\\nodejs" : undefined),
+    });
+    const entries = merged.split(";");
+    expect(entries[0]).toBe("C:\\Windows\\system32");
+    // %NVM_SYMLINK% 展开后与已有条目去重，不产生重复段。
+    expect(entries.filter(entry => entry.toLowerCase() === "c:\\program files\\nodejs")).toHaveLength(1);
+    expect(entries).toContain("C:\\Users\\u\\AppData\\Roaming\\npm");
+    expect(entries).toContain("C:\\Windows"); // 会话独有条目保底追加
+  });
+
+  test("enrichWindowsChildPath：读取失败返回原会话 PATH（fail-safe 不阻断启动）", () => {
+    expect(enrichWindowsChildPath("C:\\only", {readLists: () => null})).toBe("C:\\only");
   });
 });
 
