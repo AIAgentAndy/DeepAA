@@ -196,12 +196,15 @@ html[data-theme="dark"] {
   --brand-zhipu: #315fa8;
   --brand-kimi: #7c4fd1;
 
-  --syntax-bg: var(--pine-950);
-  --syntax-text: #d9e6dd;
-  --syntax-key: var(--gold-400);
-  --syntax-string: #9fd4bb;
-  --syntax-comment: #719086;
-  --syntax-punct: #7fb3d1;
+  /* 代码块语法：浅色主题使用浅绿底深字（2026-10-19 用户确认），复用既有
+     松绿浅色令牌；深色主题在 html[data-theme="dark"] 维持深底粉彩。
+     色相族跨主题一一对应（关键字金 / 字符串松绿 / 标点蓝 / 注释灰）。 */
+  --syntax-bg: var(--pine-50);
+  --syntax-text: var(--ink-900);
+  --syntax-key: #9a6700;
+  --syntax-string: #0b6055;
+  --syntax-comment: #6e7781;
+  --syntax-punct: var(--accent-2);
   --shadow-sm: 0 1px 2px var(--ink-a05), 0 4px 14px var(--ink-a08);
   --shadow-md: 0 2px 4px var(--ink-a08), 0 12px 28px var(--ink-a14);
 
@@ -295,6 +298,8 @@ html[data-theme="dark"] {
   --syntax-key: #e1cf9a;
   --syntax-string: #7fd8ae;
   --syntax-comment: #6d7681;
+  /* 浅色根值切到深字配色后显式钉住 punct 的原继承值，深色观感零变化 */
+  --syntax-punct: #7fb3d1;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.5), 0 14px 34px rgba(0, 0, 0, 0.42);
   --turn-a-bg: rgba(130, 180, 232, 0.10);
@@ -5392,18 +5397,20 @@ button.tree-row.tree-thread-search .tree-row-main { flex: 1; }
 
 /* ===== 对话详情 Markdown 渲染（assistant / reasoning 正文） =====
    版式参考公众号编辑器（mdnice / doocs-md）的阅读型排版：
-   充足段距与行高、装饰化标题层级、深底语法高亮代码块（--syntax-* 主题令牌）、
+   充足段距与行高、装饰化标题层级、按主题切换深浅底的语法高亮代码块
+   （--syntax-* 主题令牌，2026-10-16 方案 B：浅色浅底深字、深色维持深底）、
    引文卡与斑马纹表格。
    用色纪律（2026-09-22 用户反馈「绿油油」降调）：大面积底色
    （行内代码 / 表头 / 斑马纹 / 引文底）一律走中性灰（--md-neutral-*），
    松绿只保留在标题竖条、引用竖条、链接、列表符号等小面积结构元素上。
    颜色全部走设计令牌，深色主题经变量自动适配。 */
 .markdown-view {
-  /* 代码高亮扩展令牌（基础 --syntax-* 在主题根变量定义） */
-  --md-syn-func: #7fb3d1;
-  --md-syn-num: #d9a86a;
-  --md-syn-attr: #a8c8e8;
-  --md-syn-del: #d98a8a;
+  /* 代码高亮扩展令牌（基础 --syntax-* 在主题根变量定义）：浅色为深字
+     变体（2026-10-16 方案 B），深色块下方覆盖为粉彩深底变体 */
+  --md-syn-func: #0969da;
+  --md-syn-num: #b45309;
+  --md-syn-attr: #3d6b9e;
+  --md-syn-del: #cf222e;
   /* 中性辅色：亮色为石板灰系，深色用半透明白叠加，不随品牌色泛绿 */
   --md-neutral-soft: #f3f5f8;
   --md-neutral-softer: #f6f8fa;
@@ -5527,10 +5534,12 @@ html[data-theme="dark"] .markdown-view {
   font-size: 0.86em;
 }
 
-/* 代码块：亮暗主题统一深底（--syntax-bg），语法高亮色见下方 hljs 段 */
+/* 代码块（浅色底色于 2026-10-19 按用户要求调整为浅绿）：浅绿底 + 发丝边框 +
+   深字语法配色；深色主题经 --syntax-* 令牌维持深底粉彩。
+   语法高亮色见下方 hljs 段。 */
 .markdown-view pre {
   margin: 12px 0;
-  border: 0;
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 12px 14px;
   background: var(--syntax-bg);

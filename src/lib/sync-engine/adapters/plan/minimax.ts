@@ -1,8 +1,9 @@
-import type {
-  PlanQuotaSnapshotInput,
-  PlanSyncConnector,
-  PlanSyncInput,
-  SyncResult,
+import {
+  SyncUnsupportedError,
+  type PlanQuotaSnapshotInput,
+  type PlanSyncConnector,
+  type PlanSyncInput,
+  type SyncResult,
 } from "../../types";
 import {
   asRecord,
@@ -101,6 +102,12 @@ function miniMaxOffsetResetAt(value: unknown): string | undefined {
   return new Date(Date.now() + offset).toISOString();
 }
 
+/**
+ * 套餐聚合项识别。`minimax-m*` 通配与 `general` 在国内外区都会出现——2026-10-19
+ * 实测中国区 `www/api.minimax.cn` 的 token_plan/remains 返回 `model_name: "general"`
+ * 承载 5h + 周两个窗口；旧实现把 `general` 限定在国际区，导致中国区目标每次同步
+ * 都解析出零个窗口（进而不落任何快照）。`video` 仅国际区响应出现，不作为中国区候选。
+ */
 function isMiniMaxCodingModelName(
   modelName: unknown,
   endpoint: MiniMaxEndpoint,
@@ -109,7 +116,8 @@ function isMiniMaxCodingModelName(
   const normalized = modelName.trim().toLowerCase();
   return normalized === "minimax-m*"
     || normalized.startsWith("minimax-m")
-    || (endpoint === "international" && (normalized === "general" || normalized === "video"));
+    || normalized === "general"
+    || (endpoint === "international" && normalized === "video");
 }
 
 /** 优先官方通配模型 minimax-m*；否则取剩余百分比最差（最接近用尽）的模型。 */
@@ -126,7 +134,7 @@ function selectCanonicalMiniMaxModel(
   if (wildcard && miniMaxWorstRemainingPercent(wildcard, endpoint) !== undefined) {
     return wildcard;
   }
-  // 保持历史语义：国际区存在 general（编程套餐）时优先展示，避免 video 抢占。
+  // `general` 是套餐聚合项（国内外区通用），优先展示以免 video 等条目抢占。
   const general = candidates.find(model =>
     typeof model.model_name === "string"
     && model.model_name.trim().toLowerCase() === "general",
@@ -164,7 +172,11 @@ function miniMaxWorstRemainingPercent(
   return percents.length > 0 ? Math.min(...percents) : undefined;
 }
 
-/** 解析 MiniMax Coding Plan 用量；count 统一视为已用量，baseUrl 仅用于区域与模型名识别。 */
+/**
+ * 解析 MiniMax Coding Plan 用量；count 统一视为已用量，baseUrl 仅用于区域与模型名识别。
+ * 纯解析函数保持宽容（业务错误码与未知形状一律返回空数组），把业务错误显式抛给用户的
+ * 责任由 `sync` 的 `miniMaxBusinessError` 承担。
+ */
 export function parseMiniMaxPlanQuota(
   payload: unknown,
   options: {baseUrl?: string} = {},
@@ -185,6 +197,21 @@ export function parseMiniMaxPlanQuota(
     const snapshot = buildMiniMaxWindow(model, spec);
     return snapshot ? [snapshot] : [];
   });
+}
+
+/**
+ * MiniMax 用 HTTP 200 + `base_resp.status_code` 承载业务失败（鉴权、额度、限流等）。
+ * 必须显式抛出：静默返回空窗口会被同步服务记成「成功但零窗口」，页面只剩一句空态
+ * 文案，用户无从区分「套餐确实没有用量」与「接口读到了但拒绝了这次请求」。
+ */
+function miniMaxBusinessError(payload: unknown): Error | undefined {
+  const baseResponse = asRecord(asRecord(payload)?.base_resp);
+  const statusCode = finiteNumber(baseResponse?.status_code);
+  if (statusCode === undefined || statusCode === 0) return undefined;
+  const statusMessage = typeof baseResponse?.status_msg === "string"
+    ? baseResponse.status_msg.replace(/[\u0000-\u001f\u007f]+/gu, " ").trim().slice(0, 120)
+    : "";
+  return new Error(`MINIMAX_API_${statusCode}${statusMessage ? ` (${statusMessage})` : ""}`);
 }
 
 /**
@@ -223,28 +250,43 @@ export class MiniMaxPlanAdapter implements PlanSyncConnector {
       input.resolveCredential,
     );
     const urls = minimaxPlanUrls(input.baseUrl);
-    let lastError: unknown;
+    let lastTransportError: unknown;
+    let businessError: Error | undefined;
+    let answered = false;
     for (const url of urls) {
+      let payload: unknown;
       try {
-        const payload = await fetchPlanJson(
+        payload = await fetchPlanJson(
           url,
           `Bearer ${apiKey}`,
           this.fetchImpl,
         );
-        const planQuota = parseMiniMaxPlanQuota(payload, {baseUrl: url});
-        if (planQuota.length > 0) {
-          return {providerType: this.providerType, planQuota};
-        }
       } catch (error) {
-        lastError = error;
+        // 只有传输层失败才继续探测下一个端点。
+        lastTransportError = error;
+        continue;
+      }
+      // 有端点给出应答即说明链路是通的：此后其它端点的传输失败不得再被报成同步失败
+      // （旧实现把「首个端点成功但无窗口 + 兜底端点超时」整体误报为 fetch failed）。
+      answered = true;
+      const rejected = miniMaxBusinessError(payload);
+      if (rejected) {
+        businessError = rejected;
+        continue;
+      }
+      const planQuota = parseMiniMaxPlanQuota(payload, {baseUrl: url});
+      if (planQuota.length > 0) {
+        return {providerType: this.providerType, planQuota};
       }
     }
-    if (lastError !== undefined) {
-      throw lastError instanceof Error ? lastError : new Error(String(lastError));
+    if (businessError) throw businessError;
+    if (!answered && lastTransportError !== undefined) {
+      throw lastTransportError instanceof Error
+        ? lastTransportError
+        : new Error(String(lastTransportError));
     }
-    return {
-      providerType: this.providerType,
-      planQuota: [],
-    };
+    // 应答有效却解析不出任何窗口：与 opencode-go 同口径显式失败，禁止静默返回空数组
+    // 让同步状态显示「成功」（那正是本次「已同步但窗口不展示」的成因）。
+    throw new SyncUnsupportedError("MINIMAX_USAGE_INVALID");
   }
 }

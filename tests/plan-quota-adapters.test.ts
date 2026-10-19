@@ -233,6 +233,32 @@ describe("智谱套餐适配器", () => {
 });
 
 describe("MiniMax 套餐适配器", () => {
+  /**
+   * 2026-10-19 生产环境实测报文（中国区 token_plan/remains，Bearer 套餐密钥）：
+   * 中国区同样以 `model_name: "general"` 承载套餐聚合项，5h 与周两个窗口各 99% 剩余。
+   * 绝对重置时间来自 end_time / weekly_end_time，与 remains_time 相对偏移无关。
+   */
+  const MINIMAX_CN_TOKEN_PLAN_RESPONSE = {
+    model_remains: [{
+      start_time: 1_792_373_270_536,
+      end_time: 1_792_391_270_536,
+      remains_time: 6_639_791,
+      current_interval_total_count: 0,
+      current_interval_usage_count: 0,
+      model_name: "general",
+      current_weekly_total_count: 0,
+      current_weekly_usage_count: 0,
+      weekly_start_time: 1_792_373_270_536,
+      weekly_end_time: 1_792_978_070_536,
+      weekly_remains_time: 593_439_791,
+      current_interval_status: 1,
+      current_interval_remaining_percent: 99,
+      current_weekly_status: 1,
+      current_weekly_remaining_percent: 99,
+    }],
+    base_resp: {status_code: 0, status_msg: "success"},
+  };
+
   test("只解析 general，剩余百分比反转为已用百分比并跳过未启用周窗口", () => {
     expect(parseMiniMaxPlanQuota({
       model_remains: [
@@ -280,7 +306,7 @@ describe("MiniMax 套餐适配器", () => {
     ]);
   });
 
-  test("中国区 token_plan 官方现行接口优先、coding_plan 旧接口回退；国际区只走旧路径", async () => {
+  test("中国区依次探测 token_plan 两个域名、国际区只走旧路径；应答无窗口时显式失败", async () => {
     const calls: string[] = [];
     const fetchImpl = (async (input: RequestInfo | URL) => {
       calls.push(String(input));
@@ -290,8 +316,12 @@ describe("MiniMax 套餐适配器", () => {
       });
     }) as typeof fetch;
     const adapter = new MiniMaxPlanAdapter(fetchImpl);
-    await adapter.sync(makePlanInput({baseUrl: "https://api.minimax.cn/v1"}));
-    await adapter.sync(makePlanInput({baseUrl: "https://api.minimax.io/v1"}));
+    // 空窗口不再静默返回 {planQuota: []}：那会让同步状态记成「成功但零窗口」，
+    // 页面只剩空态文案（2026-10-19 事故口径，与 opencode-go 统一为显式失败）。
+    await expect(adapter.sync(makePlanInput({baseUrl: "https://api.minimax.cn/v1"})))
+      .rejects.toThrow("MINIMAX_USAGE_INVALID");
+    await expect(adapter.sync(makePlanInput({baseUrl: "https://api.minimax.io/v1"})))
+      .rejects.toThrow("MINIMAX_USAGE_INVALID");
     // 2026-09-30 域名主链：官方 FAQ 唯一文档化域 www.minimax.cn 为主、api.minimax.cn 实测兜底
     // （同日对调主次序）；项目未上线，不留 minimaxi.com 旧域兜底；国际区仍走旧路径。
     expect(calls).toEqual([
@@ -299,6 +329,91 @@ describe("MiniMax 套餐适配器", () => {
       "https://api.minimax.cn/v1/token_plan/remains",
       "https://api.minimax.io/v1/api/openplatform/coding_plan/remains",
     ]);
+  });
+
+  test("中国区 token_plan 的 general 聚合项解析出 5h 与周两个窗口（2026-10-19 实测报文）", async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify(MINIMAX_CN_TOKEN_PLAN_RESPONSE), {
+        status: 200,
+        headers: {"content-type": "application/json"},
+      });
+    }) as typeof fetch;
+    const adapter = new MiniMaxPlanAdapter(fetchImpl);
+    const result = await adapter.sync(makePlanInput({baseUrl: "https://api.minimax.cn/v1"}));
+    // 主端点即给出可用窗口，不再探测兜底域名。
+    expect(calls).toEqual(["https://www.minimax.cn/v1/token_plan/remains"]);
+    expect(result.planQuota).toEqual([
+      expect.objectContaining({
+        windowLabel: "5h",
+        used: 1,
+        total: 100,
+        unit: "percent",
+        resetAt: "2026-10-19T06:27:50.536Z",
+      }),
+      expect.objectContaining({
+        windowLabel: "weekly",
+        used: 1,
+        total: 100,
+        unit: "percent",
+        resetAt: "2026-10-26T01:27:50.536Z",
+      }),
+    ]);
+    // 纯解析函数同样按中国区 baseUrl 命中 general（回归点：旧实现只在国际区认 general）。
+    expect(parseMiniMaxPlanQuota(MINIMAX_CN_TOKEN_PLAN_RESPONSE, {
+      baseUrl: "https://www.minimax.cn/v1/token_plan/remains",
+    })).toHaveLength(2);
+  });
+
+  test("中国区不把 video 条目当作套餐候选，国际区保留 video 兜底", () => {
+    const videoOnly = {
+      model_remains: [{model_name: "video", current_interval_remaining_percent: 10}],
+      base_resp: {status_code: 0},
+    };
+    expect(parseMiniMaxPlanQuota(videoOnly, {baseUrl: "https://api.minimax.cn/v1"})).toEqual([]);
+    expect(parseMiniMaxPlanQuota(videoOnly, {baseUrl: "https://api.minimax.io/v1"}))
+      .toEqual([expect.objectContaining({windowLabel: "5h", used: 90, total: 100, unit: "percent"})]);
+  });
+
+  test("业务错误码（HTTP 200 + base_resp.status_code）显式抛出而非静默空窗口", async () => {
+    const fetchImpl = (async () => new Response(JSON.stringify({
+      base_resp: {status_code: 1004, status_msg: "invalid api key"},
+    }), {
+      status: 200,
+      headers: {"content-type": "application/json"},
+    })) as typeof fetch;
+    const adapter = new MiniMaxPlanAdapter(fetchImpl);
+    await expect(adapter.sync(makePlanInput({baseUrl: "https://api.minimax.cn/v1"})))
+      .rejects.toThrow("MINIMAX_API_1004 (invalid api key)");
+  });
+
+  test("端点已应答时空窗口不被兜底端点的传输失败覆盖成 fetch failed", async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      if (String(input).includes("api.minimax.cn")) throw new Error("fetch failed");
+      return new Response(JSON.stringify({base_resp: {status_code: 0}, model_remains: []}), {
+        status: 200,
+        headers: {"content-type": "application/json"},
+      });
+    }) as typeof fetch;
+    const adapter = new MiniMaxPlanAdapter(fetchImpl);
+    await expect(adapter.sync(makePlanInput({baseUrl: "https://api.minimax.cn/v1"})))
+      .rejects.toThrow("MINIMAX_USAGE_INVALID");
+    expect(calls).toEqual([
+      "https://www.minimax.cn/v1/token_plan/remains",
+      "https://api.minimax.cn/v1/token_plan/remains",
+    ]);
+  });
+
+  test("所有端点都传输失败时仍抛出真实传输错误", async () => {
+    const fetchImpl = (async () => {
+      throw new Error("fetch failed");
+    }) as typeof fetch;
+    const adapter = new MiniMaxPlanAdapter(fetchImpl);
+    await expect(adapter.sync(makePlanInput({baseUrl: "https://api.minimax.cn/v1"})))
+      .rejects.toThrow("fetch failed");
   });
 
   test("优先选择 minimax-m* 通配模型，count 统一表示已用量", () => {
