@@ -832,10 +832,12 @@ export class SyncService {
    * （同步链路自动回填后配置即持有），不做档位表回填；单目标失败不阻断其它目标。
    */
   async runPlanEstimateBackfillSweep(): Promise<void> {
+    /* 目标枚举与 backfill 门禁同一账本事实口径（status=unavailable）：2026-10-20
+       MiniMax 量纲事故后不再按积分 unit 排除——积分分子 + percent 快照的行同样
+       需要差分接管；A1 的积分排除只在候选层（backfill.ts），不影响目标枚举。 */
     const targetRows = this.db.prepare(`
       SELECT DISTINCT target_id FROM usage_ledger
       WHERE billing_channel IN ('plan', 'subscription')
-        AND (plan_credit_unit IS NULL OR plan_credit_unit = '')
         AND plan_estimated_status = 'unavailable'
       LIMIT 50`).all() as Array<{target_id: string}>;
     if (targetRows.length === 0) return;

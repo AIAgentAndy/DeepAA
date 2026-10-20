@@ -217,6 +217,43 @@ describe("长上下文档位展示（2026-09-22 修复：公式浮窗此前漏�
     expect(planEstimateConversionNote({monthlyFee: 430.4}, 0.069, "CNY")).toBeUndefined();
   });
 
+  test("量纲守卫二分支（2026-10-20，MiniMax 事故）：credits_percent_blocked 只给不可折算原因，绝不渲染 ÷100 伪公式", () => {
+    const note = planEstimateConversionNote(
+      {
+        monthlyFee: 24.5,
+        consumed: 5.54952,
+        consumedBasis: "credits_percent_blocked",
+        quotaTotal: 100,
+        windowDays: 7,
+        windowLabel: "weekly",
+      },
+      0,
+      "CNY",
+    );
+    expect(note).toBeDefined();
+    expect(note).toContain("积分消耗可得");
+    expect(note).toContain("百分比刻度");
+    expect(note).toContain("按额度差分自动估算");
+    // 绝不冒充公式：不得出现「÷ 窗口总额度 100」的量纲错配换算链。
+    expect(note).not.toContain("÷ 窗口总额度");
+    expect(note).not.toContain("× 套餐月费");
+    // 守卫在月费未知时也拦截：拦截行仍能给出解释（分支位于通用字段门之前）。
+    const noFee = planEstimateConversionNote(
+      {consumed: 5.5, consumedBasis: "credits_percent_blocked", quotaTotal: 100},
+      0,
+      "CNY",
+    );
+    expect(noFee).toContain("百分比刻度");
+    expect(noFee).not.toContain("÷ 窗口总额度");
+    // 存量虚高行（consumedBasis=credits + quotaTotal=100）维持旧渲染路径，不受本分支影响。
+    const legacy = planEstimateConversionNote(
+      {monthlyFee: 24.5, consumed: 5.54952, consumedBasis: "credits", quotaTotal: 100, windowDays: 7, windowLabel: "weekly"},
+      0.317248,
+      "CNY",
+    );
+    expect(legacy).toContain("÷ 窗口总额度 100（weekly）");
+  });
+
   test("额度差分换算链（2026-10-09 解锁）：quota_delta detail 不带 consumed/quotaTotal 也能渲染完整公式", () => {
     /* 真实事故样本（chatgpt.com 2026-10-09）：$18.41 月费、周窗 1%→2%、
        7 请求按市价份额分摊、本行份额 11.21%。此前两处解析器剥掉差分字段 +

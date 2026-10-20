@@ -607,6 +607,15 @@ export function planEstimateConversionNote(
     lines.push(`≈ 估算真实成本（额度差分估算） ￥${formatNoteMoney(estimatedCost)}（人民币，入账时冻结）`);
     return lines.join("\n");
   }
+  /* 量纲守卫（2026-10-20 二期）：积分分子 + 百分比额度刻度（credits_percent_blocked）
+     没有合法折算链——只提示不可折算原因与差分回填入口，不冒充公式。置于通用字段
+     门之前：月费/额度缺失的拦截行同样能给出解释。 */
+  if (detail.consumedBasis === "credits_percent_blocked") {
+    return [
+      "本请求积分消耗可得，但站点额度接口只返回百分比刻度，与积分量纲不一致，不折算估算。",
+      "开启套餐用量自动同步并积累额度消耗后，将按额度差分自动估算。",
+    ].join("\n");
+  }
   if (
     detail.consumed === undefined
     || detail.quotaTotal === undefined

@@ -17,10 +17,13 @@
  * 的快照批。派生完成钩子与低频定时会复跑本函数，同一差分段绝不重复分摊；行数预算
  * 截断时不推进游标，下轮对剩余 pending 行继续分摊同一段周期价值（总额守恒）。
  *
- * 门禁由账本事实驱动：存在 plan/subscription 通道、无积分 unit、状态
- * unavailable（market_blocked，有市价但额度刻度不可除）的行才继续——积分公式
- * 供应商（派生期已精确估算）自动短路零开销。none 行（连市价都没有，如
- * model=unknown）不参与：分摊按市价份额，none 行结构上不可能被补写。
+ * 门禁由账本事实驱动：存在 plan/subscription 通道、状态 unavailable（量纲守卫
+ * 拦截的 market_blocked / credits_percent_blocked 行，有市价或积分但额度刻度
+ * 不可除）才继续。积分 unit 不再整体短路（2026-10-20 MiniMax 量纲事故：积分
+ * 分子 + percent 快照的行同样需要差分接管）；积分 + 真实积分数快照（如智谱）
+ * 派生期已精确估算、常态无 pending 自然零开销。A1 比率兜底仍排除积分行（见
+ * collectRatioFallbackCandidates）。none 行（连市价都没有，如 model=unknown）
+ * 不参与：分摊按市价份额，none 行结构上不可能被补写。
  */
 import type {DeepaaDatabase} from "@/lib/db/sqlite-driver";
 import {readLatestUsdCnyRate} from "@/lib/db/plan-real-cost";
@@ -82,7 +85,6 @@ function pendingRowsExist(db: DeepaaDatabase, targetId: string): boolean {
     SELECT 1 FROM usage_ledger
     WHERE target_id = ?
       AND billing_channel IN ('plan', 'subscription')
-      AND (plan_credit_unit IS NULL OR plan_credit_unit = '')
       AND plan_estimated_status = 'unavailable'
     LIMIT 1`).get(targetId) !== undefined;
 }
@@ -175,7 +177,6 @@ function collectCandidates(
     FROM usage_ledger
     WHERE target_id = ?
       AND billing_channel IN ('plan', 'subscription')
-    AND (plan_credit_unit IS NULL OR plan_credit_unit = '')
     AND plan_estimated_status = 'unavailable'
     AND created_at >= ? AND created_at < ?
     ORDER BY created_at ASC, exchange_id ASC
@@ -202,8 +203,7 @@ function periodMarketAggregate(
     FROM usage_ledger
     WHERE target_id = ?
       AND billing_channel IN ('plan', 'subscription')
-      AND (plan_credit_unit IS NULL OR plan_credit_unit = '')
-      AND created_at >= ? AND created_at < ?
+    AND created_at >= ? AND created_at < ?
       AND reference_cost_nano > 0
       AND (plan_estimated_status = 'unavailable'
         OR (plan_estimated_method = 'quota_delta'
@@ -213,7 +213,11 @@ function periodMarketAggregate(
   return row.marketNano;
 }
 
-/** 比率兜底候选（A1）：早于最老快照批的 pending 行（回看下界有界）。 */
+/** 比率兜底候选（A1）：早于最老快照批的 pending 行（回看下界有界）。
+ *  积分行刻意保留排除（2026-10-20 MiniMax 量纲事故的配套约束）：A1 证据池统计
+ *  该目标全部 estimated 行，若积分供应商存在未修复的公式期虚高存量（credits ÷
+ *  percent 量纲错配），积分行进入 A1 会把毒化比率固化到更早的历史行——积分行
+ *  不进比率兜底，宁可保持待补（诚实降级）。 */
 function collectRatioFallbackCandidates(
   db: DeepaaDatabase,
   targetId: string,

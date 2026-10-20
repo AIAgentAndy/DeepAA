@@ -173,6 +173,93 @@ describe("套餐成本估算入账冻结（2026-09-15）", () => {
     expect(legacyNoUnit.status).toBe("unavailable");
   });
 
+  test("量纲守卫（2026-10-20 二期，MiniMax 事故）：积分分子 + percent 额度 → unavailable 交差分回填；credits/count 刻度不受影响", () => {
+    /* 事故样本（minimax.cn 2026-10-19）：money_to_credits 官方换算 5.54952 积分 ÷
+       percent 快照 total=100 → ¥0.317 虚高估算（真实周额度量级 1.3万~3.8万积分）。
+       二期守卫把拦截范围扩展到积分路径。 */
+    const blocked = computePlanEstimateForLedger({
+      billingChannel: "plan",
+      planCreditCost: 5.54952,
+      planCreditUnit: "积分",
+      monthlyFee: 24.5,
+      feeCurrency: "CNY",
+      quotaTotal: 100,
+      quotaUnit: "percent",
+      windowDays: 7,
+      windowLabel: "weekly",
+      fxUsdCny: 7.085,
+    });
+    expect(blocked.status).toBe("unavailable");
+    expect(blocked.nano).toBeUndefined();
+    expect(JSON.parse(blocked.detailJson!)).toMatchObject({
+      monthlyFee: 24.5,
+      consumed: 5.54952,
+      consumedBasis: "credits_percent_blocked",
+      quotaTotal: 100,
+      quotaUnit: "percent",
+      windowDays: 7,
+      windowLabel: "weekly",
+    });
+
+    /* 智谱形态（unit=credits 真实积分数快照）：不拦截，公式路径精确。 */
+    const creditsScale = computePlanEstimateForLedger({
+      billingChannel: "plan",
+      planCreditCost: 500,
+      planCreditUnit: "积分",
+      monthlyFee: 200,
+      feeCurrency: "CNY",
+      quotaTotal: 5000,
+      quotaUnit: "credits",
+      windowDays: 7,
+      fxUsdCny: 7.085,
+    });
+    expect(creditsScale.status).toBe("estimated");
+    expect(creditsScale.nano).toBe(Math.round(200e9 * 0.1 * (7 / 30)));
+
+    /* MiniMax 接口将来恢复 count 刻度（真实额度数）：公式路径自动恢复精确。 */
+    const countScale = computePlanEstimateForLedger({
+      billingChannel: "plan",
+      planCreditCost: 5.54952,
+      planCreditUnit: "积分",
+      monthlyFee: 24.5,
+      feeCurrency: "CNY",
+      quotaTotal: 20000,
+      quotaUnit: "count",
+      windowDays: 7,
+      fxUsdCny: 7.085,
+    });
+    expect(countScale.status).toBe("estimated");
+    expect(countScale.nano).toBe(Math.round(24.5e9 * (5.54952 / 20000) * (7 / 30)));
+
+    /* unit 缺省（快照无 unit 的积分行）：维持既有行为不拦截，不误伤旧数据。 */
+    const noUnit = computePlanEstimateForLedger({
+      billingChannel: "plan",
+      planCreditCost: 500,
+      planCreditUnit: "积分",
+      monthlyFee: 200,
+      feeCurrency: "CNY",
+      quotaTotal: 5000,
+      windowDays: 7,
+      fxUsdCny: 7.085,
+    });
+    expect(noUnit.status).toBe("estimated");
+
+    /* 积分零消耗 + percent 额度：真实零估算语义不变（creditsConsumed=0 → nano=0）。 */
+    const zeroCredit = computePlanEstimateForLedger({
+      billingChannel: "plan",
+      planCreditCost: 0,
+      planCreditUnit: "积分",
+      monthlyFee: 24.5,
+      feeCurrency: "CNY",
+      quotaTotal: 100,
+      quotaUnit: "percent",
+      windowDays: 7,
+      fxUsdCny: 7.085,
+    });
+    expect(zeroCredit.status).toBe("estimated");
+    expect(zeroCredit.nano).toBe(0);
+  });
+
   test("非套餐通道返回 none", () => {
     expect(computePlanEstimateForLedger({billingChannel: "pay_as_you_go", planCreditCost: 10, fxUsdCny: 7}).status).toBe("none");
     expect(computePlanEstimateForLedger({fxUsdCny: 7}).status).toBe("none");

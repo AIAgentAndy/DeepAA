@@ -34,7 +34,8 @@ export interface PlanQuotaTotal {
   /**
    * 额度单位（快照 unit 透传；market_share 条目解析后为金额口径 "CNY"）。
    * 市价回退估算（无积分公式时）只允许与消耗同量纲的金额口径（CNY/USD）；
-   * percent/积分/AFP 等刻度与市价金额不同量纲，禁止相除折算。
+   * percent 刻度无论对市价还是积分消耗都不可相除（2026-10-20 二期守卫扩展到
+   * 积分路径），一律 unavailable 交额度差分回填补写。
    */
   unit?: string;
   /**
@@ -128,6 +129,25 @@ export function computePlanEstimateForLedger(input: {
       monthlyFee: input.monthlyFee,
       consumed,
       consumedBasis: "market_blocked",
+      quotaTotal: input.quotaTotal,
+      quotaUnit: input.quotaUnit,
+      windowDays: input.windowDays,
+      windowLabel: input.windowLabel,
+    };
+    return {status: "unavailable", currency, fx, detailJson: JSON.stringify(detail)};
+  }
+  /* 量纲守卫（2026-10-20 二期，MiniMax 事故）：积分分子 + 百分比刻度分母同样不可
+     相除——站点额度接口只回 remaining_percent（count 字段全 0）时，真实积分 ÷ 100
+     会把估算虚高「真实额度/100」倍（本地实证 MiniMax 周额度量级 1.3万~3.8万积分，
+     即 130~380 倍）。积分行诚实降级 unavailable，交给额度差分回填（Δused/total
+     双方同为百分比，量纲自洽）接管。零消耗（免费活动 0 积分）是真实零估算、与
+     分母刻度无关，不拦截；条件精确匹配 'percent'——快照恢复 count/credits 刻度
+     时公式路径自动恢复精确。 */
+  if (integral && consumed > 0 && input.quotaUnit === "percent") {
+    const detail = {
+      monthlyFee: input.monthlyFee,
+      consumed,
+      consumedBasis: "credits_percent_blocked",
       quotaTotal: input.quotaTotal,
       quotaUnit: input.quotaUnit,
       windowDays: input.windowDays,

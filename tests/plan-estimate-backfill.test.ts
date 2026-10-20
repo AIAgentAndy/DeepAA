@@ -28,6 +28,10 @@ interface LedgerRowSeed {
   planEstimatedStatus?: string;
   planEstimatedMethod?: string;
   referenceCostNano?: number | null;
+  /** 显式估算金额（毒化证据等场景）；缺省 estimated 行为 1 CNY。 */
+  planEstimatedCostNano?: number;
+  /** 显式 detail JSON（credits_percent_blocked 等）；缺省 unavailable 行为 market_blocked 形状。 */
+  planEstimateDetailJson?: string | null;
 }
 
 function seedLedgerRow(db: DeepaaDatabase, seed: LedgerRowSeed) {
@@ -49,13 +53,17 @@ function seedLedgerRow(db: DeepaaDatabase, seed: LedgerRowSeed) {
     )`).run(
     seed.exchangeId, "target-sub", seed.capturedAt,
     seed.billingChannel, seed.planCreditUnit ?? "",
-    seed.referenceCostNano ?? null,
-    seed.planEstimatedStatus ?? null,
-    seed.planEstimatedMethod ?? null,
-    seed.planEstimatedStatus === "estimated" ? 1_000_000_000 : null,
-    seed.planEstimatedStatus === "unavailable"
-      ? JSON.stringify({consumedBasis: "market_blocked", quotaUnit: "percent"})
-      : null,
+      seed.referenceCostNano ?? null,
+      seed.planEstimatedStatus ?? null,
+      seed.planEstimatedMethod ?? null,
+      seed.planEstimatedCostNano !== undefined
+        ? seed.planEstimatedCostNano
+        : seed.planEstimatedStatus === "estimated" ? 1_000_000_000 : null,
+      seed.planEstimateDetailJson !== undefined
+        ? seed.planEstimateDetailJson
+        : seed.planEstimatedStatus === "unavailable"
+          ? JSON.stringify({consumedBasis: "market_blocked", quotaUnit: "percent"})
+          : null,
   );
 }
 
@@ -353,6 +361,79 @@ describe("额度差分估算回填（编排层集成）", () => {
     expect(runPlanEstimateBackfill(db, {
       targetId: "target-sub", providerType: "zhipu", monthlyFee: 200, feeCurrency: "CNY",
     })).toEqual({status: "short_circuit"});
+    db.close();
+  });
+
+  test("MiniMax 量纲事故回归（2026-10-20 二期守卫配套）：积分 pending 行由差分接管；A1 不认领积分行防毒化；虚高 formula 行不被触碰", () => {
+    const db = makeDb();
+    const resetAt = "2026-10-05T00:00:00.000Z";
+    /* percent 周窗快照（MiniMax 中国区形态：count 字段全 0，只有 remaining_percent）。 */
+    seedSnapshot(db, "2026-09-28T08:00:00.000Z", 10, resetAt);
+    seedSnapshot(db, "2026-09-28T20:00:00.000Z", 30, resetAt);
+    /* 未修复存量：公式期虚高行（credits ÷ percent 量纲错配；est/market=10 的毒化比率）。 */
+    for (let index = 0; index < 3; index += 1) {
+      seedLedgerRow(db, {
+        exchangeId: `ex-bogus-${index}`, capturedAt: `2026-09-28T09:${index}0:00.000Z`,
+        billingChannel: "plan", planCreditUnit: "积分",
+        planEstimatedStatus: "estimated", planEstimatedMethod: "formula",
+        referenceCostNano: 2_000_000_000, planEstimatedCostNano: 20_000_000_000,
+      });
+    }
+    /* 二期守卫拦截后的积分 pending 行（credits_percent_blocked）：差分必须认领。 */
+    seedLedgerRow(db, {
+      exchangeId: "ex-blocked-a", capturedAt: "2026-09-28T09:30:00.000Z",
+      billingChannel: "plan", planCreditUnit: "积分",
+      planEstimatedStatus: "unavailable", referenceCostNano: 1_000_000_000,
+      planEstimateDetailJson: JSON.stringify({consumedBasis: "credits_percent_blocked", quotaUnit: "percent"}),
+    });
+    seedLedgerRow(db, {
+      exchangeId: "ex-blocked-b", capturedAt: "2026-09-28T10:30:00.000Z",
+      billingChannel: "plan", planCreditUnit: "积分",
+      planEstimatedStatus: "unavailable", referenceCostNano: 3_000_000_000,
+      planEstimateDetailJson: JSON.stringify({consumedBasis: "credits_percent_blocked", quotaUnit: "percent"}),
+    });
+    /* pre-sync 积分历史行：早于最老快照，A1 刻意不认领（防毒化），保持待补。 */
+    seedLedgerRow(db, {
+      exchangeId: "ex-presync-int", capturedAt: "2026-09-27T10:00:00.000Z",
+      billingChannel: "plan", planCreditUnit: "积分",
+      planEstimatedStatus: "unavailable", referenceCostNano: 1_000_000_000,
+    });
+    const outcome = runPlanEstimateBackfill(db, {
+      targetId: "target-sub", providerType: "minimax",
+      monthlyFee: 1400, feeCurrency: "CNY",
+    });
+    expect(outcome).toMatchObject({status: "estimated", windowLabel: "weekly", updatedRows: 2, deferredRows: 0});
+    /* 差分段 10→30：周期价值 1400×7/30×0.2，份额 1:3 分给两行积分 pending 行
+       （分母只含 pending 行——虚高 estimated 行按设计不进守恒聚合）。 */
+    const rowA = readLedger(db, "ex-blocked-a");
+    const rowB = readLedger(db, "ex-blocked-b");
+    expect(rowA.plan_estimated_method).toBe("quota_delta");
+    expect(rowA.plan_estimated_currency).toBe("CNY");
+    expect(rowA.plan_estimated_cost_nano).toBe(Math.round(Math.round(1400 * 1e9 * (7 / 30) * 0.2) * 0.25));
+    expect(rowB.plan_estimated_cost_nano).toBe(Math.round(Math.round(1400 * 1e9 * (7 / 30) * 0.2) * 0.75));
+    /* 虚高 formula 行原样保留（存量不修复决策）。 */
+    for (let index = 0; index < 3; index += 1) {
+      const bogus = readLedger(db, `ex-bogus-${index}`);
+      expect(bogus.plan_estimated_status).toBe("estimated");
+      expect(bogus.plan_estimated_method).toBe("formula");
+      expect(bogus.plan_estimated_cost_nano).toBe(20_000_000_000);
+    }
+    /* A1 防毒化：证据池（3 行 formula × est/market=10）本已越过门槛，但积分行被
+       候选谓词排除——pre-sync 行绝不按毒化比率补算，保持待补。 */
+    expect(outcome.ratioFallbackRows).toBeUndefined();
+    const presync = readLedger(db, "ex-presync-int");
+    expect(presync.plan_estimated_status).toBe("unavailable");
+    expect(presync.plan_estimated_method).toBeNull();
+    /* 复跑：pre-sync 行仍 pending（门禁不再被积分 unit 短路），但游标已消费全部
+       快照批、A1 仍排除积分行 → 账本零变化、幂等。 */
+    const second = runPlanEstimateBackfill(db, {
+      targetId: "target-sub", providerType: "minimax",
+      monthlyFee: 1400, feeCurrency: "CNY",
+    });
+    expect(second).toMatchObject({status: "skip", reason: "no_pairable_window"});
+    expect(readLedger(db, "ex-presync-int").plan_estimated_status).toBe("unavailable");
+    expect(readLedger(db, "ex-blocked-a").plan_estimated_cost_nano)
+      .toBe(Math.round(Math.round(1400 * 1e9 * (7 / 30) * 0.2) * 0.25));
     db.close();
   });
 
