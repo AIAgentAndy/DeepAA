@@ -5400,9 +5400,21 @@ button.tree-row.tree-thread-search .tree-row-main { flex: 1; }
    充足段距与行高、装饰化标题层级、按主题切换深浅底的语法高亮代码块
    （--syntax-* 主题令牌，2026-10-16 方案 B：浅色浅底深字、深色维持深底）、
    引文卡与斑马纹表格。
+   2026-10-20 全量排版升级（用户确认，依据 GitHub/VitePress/Notion/doocs/
+   cherry-markdown/掘金/Typora 生态调研共识）：
+   ① 正文 13.5px → 14.5px（中文阅读 14px 底线 + 详情栏密度折中），标题阶梯
+     拉开到 21/17.5/15.5/14px 并改单装饰（去主题色竖条、留底部发丝线，
+     h1/h2 双装饰叠加是「不够高级」主因之一，共识为单一装饰）；
+   ② 引用竖条由品牌松绿改中性灰（GitHub/VitePress/GitLab 一致用中性降级，
+     品牌色只留给链接与列表符号）；
+   ③ 代码块加外壳：语言标签 + hover 复制按钮（VitePress 互斥淡出配方）；
+   ④ 表格去内部竖线（外框 + 表头下边线 + 行发丝线 + 斑马纹，去「Excel 感」）；
+   ⑤ 中文质感三件套：text-autospace（中西文 1/4em 间隙，仅显示层、不改动
+     复制文本，支持的浏览器生效否则静默降级）、正文两端对齐（中文方块字
+     justify 为净收益）、段落微字距 0.02em。
    用色纪律（2026-09-22 用户反馈「绿油油」降调）：大面积底色
    （行内代码 / 表头 / 斑马纹 / 引文底）一律走中性灰（--md-neutral-*），
-   松绿只保留在标题竖条、引用竖条、链接、列表符号等小面积结构元素上。
+   松绿只保留在链接、列表符号等小面积结构元素上。
    颜色全部走设计令牌，深色主题经变量自动适配。 */
 .markdown-view {
   /* 代码高亮扩展令牌（基础 --syntax-* 在主题根变量定义）：浅色为深字
@@ -5414,6 +5426,9 @@ button.tree-row.tree-thread-search .tree-row-main { flex: 1; }
   /* 中性辅色：亮色为石板灰系，深色用半透明白叠加，不随品牌色泛绿 */
   --md-neutral-soft: #f3f5f8;
   --md-neutral-softer: #f6f8fa;
+  /* 表格行发丝线与引用竖条（2026-10-20 中性降级共用令牌） */
+  --md-hairline: #edf0f4;
+  --md-quote-bar: #c3ccd9;
 
   min-width: 0;
   color: var(--text);
@@ -5422,9 +5437,12 @@ button.tree-row.tree-thread-search .tree-row-main { flex: 1; }
   font-family: Manrope, "Noto Sans SC", "Microsoft YaHei",
     -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", sans-serif;
-  font-size: 13.5px;
+  font-size: 14.5px;
   line-height: 1.78;
   overflow-wrap: anywhere;
+  /* 中西文自动加 1/4em 间隙（clreq）：纯显示层排版，不改动复制文本；
+     不支持的浏览器整条忽略、零回退成本。 */
+  text-autospace: ideograph-alpha ideograph-numeric;
 }
 
 html[data-theme="dark"] .markdown-view {
@@ -5434,13 +5452,18 @@ html[data-theme="dark"] .markdown-view {
   --md-syn-del: #ef9a8e;
   --md-neutral-soft: rgba(148, 163, 184, 0.12);
   --md-neutral-softer: rgba(148, 163, 184, 0.08);
+  --md-hairline: rgba(148, 163, 184, 0.12);
+  --md-quote-bar: rgba(148, 163, 184, 0.35);
 }
 
 .markdown-view > :first-child { margin-top: 0; }
 .markdown-view > :last-child { margin-bottom: 0; }
 
-/* 标题：上方大留白分组；h1/h2 主题色竖条 + 底部发丝线（github-markdown-css 同款
-   结构感），h3+ 靠字号与墨色区分。字重 600：中文 700 全加粗笔画发闷，600 更优雅
+/* 标题（2026-10-20 阶梯重排）：h1-h3 按约 1.2 倍率拉开层级（21/17.5/15.5px，
+   对照 GitHub/Notion 的 2/1.5/1.25em 阶梯按详情栏密度折中），h1/h2 改单装饰
+   ——去主题色竖条、只留底部发丝线（h1 用 --line-strong 略强一档）；h3+ 靠
+   字号与墨色区分。大标题负字距收紧（VitePress/Nextra 同款）。
+   字重 600：中文 700 全加粗笔画发闷，600 更优雅
    （github-markdown-css / doocs-md 等高 star 中文排版主题的共识）。 */
 .markdown-view h1,
 .markdown-view h2,
@@ -5452,25 +5475,35 @@ html[data-theme="dark"] .markdown-view {
   line-height: 1.4;
   font-weight: 600;
   color: var(--ink-900);
+  text-wrap: balance;
 }
 
-.markdown-view h1 { font-size: 18px; }
-.markdown-view h2 { font-size: 16px; }
-.markdown-view h3 { font-size: 14.5px; }
-.markdown-view h4,
-.markdown-view h5,
-.markdown-view h6 { font-size: 13.5px; }
+.markdown-view h1 {
+  margin-top: 26px;
+  font-size: 21px;
+  letter-spacing: -0.01em;
+  border-bottom: 1px solid var(--line-strong);
+  padding-bottom: 7px;
+}
 
-.markdown-view h1,
 .markdown-view h2 {
-  border-inline-start: 3px solid var(--accent);
+  margin-top: 24px;
+  font-size: 17.5px;
   border-bottom: 1px solid var(--line);
-  padding-inline-start: 10px;
   padding-bottom: 6px;
 }
 
+.markdown-view h3 { font-size: 15.5px; }
+.markdown-view h4 { font-size: 14px; }
+.markdown-view h5 { font-size: 13.75px; }
+.markdown-view h6 { font-size: 13.5px; color: var(--ink-600); }
+
 .markdown-view p {
   margin: 12px 0;
+  /* 中文两端对齐（公众号/Pie 主题共识：方块字 justify 不产生西文词洞，
+     长标识符由 overflow-wrap: anywhere 兜底断行）+ 微字距呼吸感 */
+  text-align: justify;
+  letter-spacing: 0.02em;
 }
 
 /* 中文正文强调用 semibold：模型输出高频使用 **加粗**，700 会让整段发闷
@@ -5489,6 +5522,8 @@ html[data-theme="dark"] .markdown-view {
 
 .markdown-view li {
   margin: 5px 0;
+  text-align: justify;
+  letter-spacing: 0.02em;
 }
 
 .markdown-view li::marker {
@@ -5511,10 +5546,11 @@ html[data-theme="dark"] .markdown-view {
   accent-color: var(--accent);
 }
 
-/* 引用：中性浅底 + 主题色竖条的引文卡（底色降绿，只留竖条点缀） */
+/* 引用（2026-10-20 中性降级）：竖条由品牌松绿改中性灰（GitHub/VitePress/
+   GitLab 共识——blockquote 表达「次级内容」，品牌色只留给链接与列表符号） */
 .markdown-view blockquote {
   margin: 12px 0;
-  border-inline-start: 3px solid var(--accent);
+  border-inline-start: 3px solid var(--md-quote-bar);
   border-radius: 6px;
   padding: 8px 14px;
   background: var(--md-neutral-softer);
@@ -5534,14 +5570,77 @@ html[data-theme="dark"] .markdown-view {
   font-size: 0.86em;
 }
 
+/* 代码块外壳（2026-10-20 P1，VitePress 配方）：.md-code-block 为定位容器，
+   pre 保持既有卡片底与语法配色；语言标签常驻右上角，复制按钮 hover/
+   focus 时浮现并互斥淡出语言标签。 */
+.md-code-block {
+  position: relative;
+  margin: 12px 0;
+}
+
+.md-code-block pre {
+  margin: 0;
+}
+
+.md-code-lang {
+  position: absolute;
+  top: 9px;
+  right: 12px;
+  z-index: 1;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  user-select: none;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.md-code-copy {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  z-index: 2;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 2px 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.md-code-block:hover .md-code-copy,
+.md-code-copy:focus-visible,
+.md-code-copy.copied {
+  opacity: 1;
+}
+
+.md-code-block:hover .md-code-lang,
+.md-code-block:has(.md-code-copy.copied) .md-code-lang {
+  opacity: 0;
+}
+
+.md-code-copy:hover {
+  background: var(--md-neutral-soft);
+  color: var(--ink-700);
+}
+
+.md-code-copy.copied {
+  color: var(--ok);
+  cursor: default;
+}
+
 /* 代码块（浅色底色于 2026-10-19 按用户要求调整为浅绿）：浅绿底 + 发丝边框 +
    深字语法配色；深色主题经 --syntax-* 令牌维持深底粉彩。
    语法高亮色见下方 hljs 段。 */
 .markdown-view pre {
-  margin: 12px 0;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 12px 14px;
+  padding: 13px 14px;
   background: var(--syntax-bg);
   overflow-x: auto;
 }
@@ -5551,7 +5650,7 @@ html[data-theme="dark"] .markdown-view {
   background: transparent;
   padding: 0;
   color: var(--syntax-text);
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1.65;
   white-space: pre;
 }
@@ -5614,20 +5713,26 @@ html[data-theme="dark"] .markdown-view {
 .markdown-view .hljs-emphasis { font-style: italic; }
 .markdown-view .hljs-strong { font-weight: 700; }
 
-/* 表格：中性表头 + 斑马纹行（表头不再用松绿底） */
+/* 表格（2026-10-20 去内竖线重设计）：外框 + 表头下边线 + 行间发丝线 + 斑马纹，
+   去掉全网格「Excel 感」；border-separate 才能配合外框圆角裁切。 */
 .markdown-view table {
-  margin: 12px 0;
-  border-collapse: collapse;
+  margin: 14px 0;
+  border-collapse: separate;
+  border-spacing: 0;
   width: 100%;
   display: block;
   overflow-x: auto;
-  font-size: 12.5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .markdown-view th,
 .markdown-view td {
-  border: 1px solid var(--line);
-  padding: 6px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--md-hairline);
+  padding: 7px 12px;
   text-align: left;
   vertical-align: top;
 }
@@ -5636,10 +5741,16 @@ html[data-theme="dark"] .markdown-view {
   background: var(--md-neutral-soft);
   color: var(--ink-900);
   font-weight: 600;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
 }
 
 .markdown-view tbody tr:nth-child(even) {
   background: var(--md-neutral-softer);
+}
+
+.markdown-view tbody tr:last-child td {
+  border-bottom: 0;
 }
 
 .markdown-view a {
@@ -5663,6 +5774,68 @@ html[data-theme="dark"] .markdown-view {
 .markdown-view img {
   max-width: 100%;
   border-radius: 6px;
+}
+
+/* Mermaid 图表：与代码块同族的卡片容器，居中展示、超宽横向滚动；
+   mermaid 渲染 SVG 时已注入内联尺寸（useMaxWidth 默认 100%），
+   这里再兜底 max-width 防止超宽图撑破详情栏。 */
+.md-mermaid {
+  margin: 12px 0;
+  display: flex;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--md-neutral-softer);
+  padding: 14px 16px;
+  overflow-x: auto;
+}
+
+.md-mermaid svg {
+  max-width: 100%;
+  height: auto;
+  background: transparent;
+}
+
+/* 加载占位：与最终容器同构的骨架块，高度取常见小图的近似值 */
+.md-mermaid-loading {
+  min-height: 96px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.md-mermaid-loading::after {
+  content: "Mermaid 图表渲染中…";
+}
+
+/* 解析失败回退：错误说明 + 源码块（复用 pre/code 既有样式） */
+.md-mermaid-error {
+  margin: 12px 0;
+  border: 1px dashed var(--warning);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--md-neutral-softer);
+}
+
+.md-mermaid-error figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--warning);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.md-mermaid-error .md-mermaid-error-detail {
+  color: var(--muted);
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+.md-mermaid-error pre {
+  margin: 0;
 }
 
 .derived-status-banner {
