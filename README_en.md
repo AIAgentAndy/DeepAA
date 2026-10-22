@@ -6,6 +6,11 @@ DeepAA (Deep Agent Analytics) is a free, open source **AI agent gateway and obse
 
 [Website & product preview](https://deepaa.dev/en-US) · [Installation & setup](https://deepaa.dev/en-US/docs) · [中文文档](./README.md) · [MIT license](./LICENSE)
 
+<p align="center">
+  <img src="docs/screenshots/flow.gif" alt="DeepAA console walkthrough: unified providers → session tracing → peak/off-peak billing with formula → dashboard overview">
+</p>
+<p align="center"><sub>Console walkthrough: unified providers → session tracing → peak/off-peak billing with formula → dashboard overview</sub></p>
+
 ## Core Value
 
 When you use multiple agents, models, and providers, you need to know how to manage access, what each task called, how much it consumed, and how its cost was calculated. DeepAA brings access configuration, call records, and cost analysis into one local workspace.

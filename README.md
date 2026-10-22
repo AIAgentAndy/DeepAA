@@ -6,6 +6,11 @@ DeepAA（Deep Agent Analytics）是开源免费、本地运行的 **AI Agent 网
 
 [官网与产品预览](https://deepaa.dev/zh-CN) · [安装与接入指南](https://deepaa.dev/zh-CN/docs) · [English](./README_en.md) · [MIT 许可证](./LICENSE)
 
+<p align="center">
+  <img src="docs/screenshots/flow.gif" alt="DeepAA 真实控制台演示：供应商统一管理 → 会话链路追踪 → 高峰/闲时账单与公式 → 仪表盘总览">
+</p>
+<p align="center"><sub>真实控制台操作：供应商统一管理 → 会话链路追踪 → 高峰/闲时账单与公式 → 仪表盘总览</sub></p>
+
 ## 核心价值
 
 使用多个 Agent、模型和供应商时，你需要知道：如何统一接入，一次任务调用了什么，以及消耗了多少、费用如何得出。DeepAA 把接入配置、调用记录与成本分析放到同一个本地工作台。
