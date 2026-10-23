@@ -37,7 +37,7 @@ DeepAA（Deep Agent Analytics）是开源免费、本地运行的 **AI Agent 网
 **仪表盘** —— Agent 一键启动、供应商余额与套餐余量聚合统一查看、多维用量与成本及时准确分析。
 
 <p align="center">
-  <a href="docs/screenshots/dashboard.png"><img src="docs/screenshots/dashboard.png" alt="DeepAA 仪表盘" height="500"></a>
+  <a href="docs/screenshots/dashboard.png"><img src="docs/screenshots/dashboard-preview.png" alt="DeepAA 仪表盘" width="960"></a>
 </p>
 <p align="center"><sub>点击可查看完整大图</sub></p>
 

@@ -37,7 +37,7 @@ Observability and analytics data is kept strictly on your machine and never uplo
 **Dashboard** — one-click agent launch, a unified view of provider balances and remaining plan quotas, and timely, accurate usage and cost analytics across multiple dimensions.
 
 <p align="center">
-  <a href="docs/screenshots/dashboard.png"><img src="docs/screenshots/dashboard.png" alt="DeepAA dashboard" height="500"></a>
+  <a href="docs/screenshots/dashboard.png"><img src="docs/screenshots/dashboard-preview.png" alt="DeepAA dashboard" width="960"></a>
 </p>
 <p align="center"><sub>Click to view the full-size image</sub></p>
 
