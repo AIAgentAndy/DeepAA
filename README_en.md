@@ -6,6 +6,8 @@ DeepAA (Deep Agent Analytics) is a free, open source **AI agent gateway and obse
 
 [Website & product preview](https://deepaa.dev/en-US) · [Installation & setup](https://deepaa.dev/en-US/docs) · [中文文档](./README.md) · [MIT license](./LICENSE)
 
+> 🔒 **This tool runs entirely on your machine and never uploads anything to the cloud — your data is known only to you. Install and use it with confidence!**
+
 <p align="center">
   <img src="docs/screenshots/flow.gif" alt="DeepAA console walkthrough: unified providers → session tracing → peak/off-peak billing with formula → dashboard overview">
 </p>
@@ -35,8 +37,9 @@ Observability and analytics data is kept strictly on your machine and never uplo
 **Dashboard** — one-click agent launch, a unified view of provider balances and remaining plan quotas, and timely, accurate usage and cost analytics across multiple dimensions.
 
 <p align="center">
-  <img src="docs/screenshots/dashboard.png" alt="DeepAA dashboard" width="960">
+  <a href="docs/screenshots/dashboard.png"><img src="docs/screenshots/dashboard.png" alt="DeepAA dashboard" height="500"></a>
 </p>
+<p align="center"><sub>Click to view the full-size image</sub></p>
 
 <table align="center">
   <tr>
@@ -153,6 +156,16 @@ For detailed agent setup, billing rules, failover, data management, runtime conf
   <img src="docs/screenshots/qrcode-qq.png" width="200" alt="DeepAA QQ group QR code">
 </p>
 <p align="center"><sub>Scan to join the DeepAA QQ group</sub></p>
+
+## ⭐ Star This Project
+
+If DeepAA helps you, please consider giving it a free Star — **your Stars are what keep me motivated to maintain and update this project 🙏**
+
+<p align="center">
+  <a href="https://github.com/AIAgentAndy/DeepAA" title="Star this project">
+    <img src="https://img.shields.io/github/stars/AIAgentAndy/DeepAA?style=for-the-badge&logo=github" alt="GitHub Stars">
+  </a>
+</p>
 
 ## Author
 

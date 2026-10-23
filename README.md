@@ -6,6 +6,8 @@ DeepAA（Deep Agent Analytics）是开源免费、本地运行的 **AI Agent 网
 
 [官网与产品预览](https://deepaa.dev/zh-CN) · [安装与接入指南](https://deepaa.dev/zh-CN/docs) · [English](./README_en.md) · [MIT 许可证](./LICENSE)
 
+> 🔒 **咱们这个工具纯本地运行，绝不上传云端，你的数据只有你自己知道，可放心安装使用！**
+
 <p align="center">
   <img src="docs/screenshots/flow.gif" alt="DeepAA 真实控制台演示：供应商统一管理 → 会话链路追踪 → 高峰/闲时账单与公式 → 仪表盘总览">
 </p>
@@ -35,8 +37,9 @@ DeepAA（Deep Agent Analytics）是开源免费、本地运行的 **AI Agent 网
 **仪表盘** —— Agent 一键启动、供应商余额与套餐余量聚合统一查看、多维用量与成本及时准确分析。
 
 <p align="center">
-  <img src="docs/screenshots/dashboard.png" alt="DeepAA 仪表盘" width="960">
+  <a href="docs/screenshots/dashboard.png"><img src="docs/screenshots/dashboard.png" alt="DeepAA 仪表盘" height="500"></a>
 </p>
+<p align="center"><sub>点击可查看完整大图</sub></p>
 
 <table align="center">
   <tr>
@@ -118,7 +121,7 @@ deepaa service install # 注册系统服务——开机自启 + 崩溃自动恢�
 
 源码安装的使用 `pnpm start` 启动。登录自启等更多运行方式见[官网文档](https://deepaa.dev/zh-CN/docs)。
 
-## 启动后2步完成配置开始观测
+## 启动后两步完成配置开始观测
 
 请先准备好你要使用的 Agent 客户端，以及供应商 API 密钥或相应的订阅登录态。
 
@@ -153,6 +156,16 @@ deepaa service install # 注册系统服务——开机自启 + 崩溃自动恢�
   <img src="docs/screenshots/qrcode-qq.png" width="200" alt="DeepAA QQ 交流群二维码">
 </p>
 <p align="center"><sub>扫码加入 DeepAA QQ 交流群</sub></p>
+
+## ⭐ 点个 Star 支持一下
+
+欢迎大家点个免费的 Star —— **你的 Star，是我持续维护更新的动力来源 🙏**
+
+<p align="center">
+  <a href="https://github.com/AIAgentAndy/DeepAA" title="点个 Star 支持一下">
+    <img src="https://img.shields.io/github/stars/AIAgentAndy/DeepAA?style=for-the-badge&logo=github" alt="GitHub Stars">
+  </a>
+</p>
 
 ## 作者
 

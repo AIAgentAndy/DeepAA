@@ -2,7 +2,7 @@ import {spawn} from "node:child_process";
 import {once} from "node:events";
 import {createServer} from "node:http";
 import {existsSync} from "node:fs";
-import {chmod, mkdtemp, readFile, readdir, rename, rm, writeFile} from "node:fs/promises";
+import {chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {dirname, join, resolve} from "node:path";
 import {fileURLToPath} from "node:url";
@@ -91,6 +91,15 @@ describe("npm 发布包", () => {
     const tarball = join(packDir, packResult[0]!.filename);
 
     await writeFile(join(installDir, "package.json"), JSON.stringify({private: true}), "utf8");
+    // vitest 全局 HOME 沙箱（tests/helpers/home-sandbox.ts）使 npm 的 cacache
+    // 每次运行都落在全新临时目录，--prefer-offline 永远落空：每次都要从
+    // registry.npmjs.org 全量下载整棵生产依赖树（~600 包），国内网络经代理
+    // 单包可达数十~上百秒（实测 next.tgz 146s），420s 超时不够（2026-10-22
+    // 发布 1.1.6 两次超时事故）。--cache 指向跨运行持久的共享目录：安装语义
+    // 不变（仍完整解析+落盘依赖树），HOME 沙箱对 CLI 配置/凭据的防护不变，
+    // 仅 tarball 缓存可复用；CI 冷缓存首跑行为与旧版一致。
+    const npmCacheDir = join(tmpdir(), "deepaa-smoke-npm-cache");
+    await mkdir(npmCacheDir, {recursive: true});
     const installed = await run(npm, [
       "install",
       "--omit=dev",
@@ -98,10 +107,9 @@ describe("npm 发布包", () => {
       "--no-audit",
       "--no-fund",
       "--prefer-offline",
+      "--cache",
+      npmCacheDir,
       tarball,
-      // 从本地 tarball 安装需解析整棵生产依赖树；本项目日常用 pnpm（npm 自身
-      // cacache 常为冷缓存），在国内网络对 registry.npmjs.org 的解析可超 120s
-      // （实测零输出挂满旧超时被杀）。这里只放宽等待，不改变安装语义。
     ], {cwd: installDir, env: process.env}, 420_000);
     expect(installed.code, installed.stderr).toBe(0);
 
