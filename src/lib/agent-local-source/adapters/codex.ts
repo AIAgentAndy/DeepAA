@@ -66,6 +66,16 @@ const COLD_PARSE_FILES_PER_ROUND = 4;
 const COLD_PARSE_BYTES_PER_ROUND = 8 * 1024 * 1024;
 
 /**
+ * 活跃注册表重扫间隔（2026-11-03 事故修复）：Codex 长会话持续 resume 会把新行
+ * append 到任意老的日期目录（sessions/YYYY/MM/DD 按会话创建日归档），目录名日期
+ * 裁剪曾把这类 mtime 活跃的文件永久排除（官方直连导入静默断流）。注册表以低频
+ * 全量重扫发现「进程运行期间恢复活跃的老目录文件」——秒级发现只能上 fs.watch
+ * （跨平台语义不稳，不做），间隔档位 10 分钟为「发现延迟 vs 扫描成本」的折中
+ * （全扫 = 全部日目录 readdir + rollout 文件 stat，纯文件名级元数据、不读正文）。
+ */
+const REGISTRY_RESCAN_INTERVAL_MS = 10 * 60 * 1000;
+
+/**
  * 正文缓存字节上限（2026-10-10 A 修复）：扫描态只保留元数据（records /
  * recordDetails / 计数索引），items 正文进入进程级 LRU、按需在 readExchangeDetail
  * 从磁盘重析——常驻内存与 30 天语料规模由此解耦。对齐 dsh 正文缓存 96MiB 的设计，
@@ -150,7 +160,7 @@ interface RolloutFileCache {
   lastActivityMs: number;
 }
 
-export function createCodexLocalSourceAdapter(options: {cliDir?: string; contentCacheMaxBytes?: number} = {}): AgentLocalSourceAdapter {
+export function createCodexLocalSourceAdapter(options: {cliDir?: string; contentCacheMaxBytes?: number; registryRescanIntervalMs?: number; readChunkMaxBytes?: number} = {}): AgentLocalSourceAdapter {
   const cliDir = options.cliDir ?? process.env.CODEX_CLI_DIR ?? join(homedir(), ".codex");
   const sessionsDir = join(cliDir, "sessions");
   const caches = new Map<string, RolloutFileCache>();
@@ -163,16 +173,78 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
   let cachesVersion = 0;
   let orderedCache: {version: number; list: PendingImportCandidate[]} | undefined;
 
+  /**
+   * 活跃注册表（2026-11-03 事故修复）：mtime ≥ floor 出现过的文件集合（进程级，
+   * 零持久化——重启后冷启动全扫重建，幂等由 seen 反联保证）。发现层 =
+   * 「窗口内目录枚举（新会话即时，2s 节拍）∪ 注册表跟踪集（老目录活跃文件）」；
+   * 注册表来源 = 冷启动全扫 + 低频重扫，每 tick 增量 stat 维护（mtime 滑出
+   * floor 即移出——缓存条目随之逐出，内存严格有界于活跃文件集合）。
+   */
+  const trackedFiles = new Map<string, RolloutFileListing>();
+  let registryLastFullScanMs = 0;
+  const registryRescanIntervalMs = options.registryRescanIntervalMs ?? REGISTRY_RESCAN_INTERVAL_MS;
+  /**
+   * 扫描态单块读取上限（缺省 32 MiB）：构造「解析前沿中部中断」的唯一参数——
+   * 测试注入小值即可在 KB 级文件上复现 96MB 生产文件的多轮追赶语义；正文路径
+   * （rebuild/advanceSessionItems）不受注入影响，恒用 32 MiB 缺省。
+   */
+  const readChunkMaxBytes = options.readChunkMaxBytes;
+
+  const refreshTrackedFiles = (nowMs: number, floorEpochMs: number): Map<string, RolloutFileListing> => {
+    if (registryLastFullScanMs === 0 || nowMs - registryLastFullScanMs >= registryRescanIntervalMs) {
+      registryLastFullScanMs = nowMs;
+      trackedFiles.clear();
+      for (const file of listRolloutFiles(sessionsDir, floorEpochMs, 0)) {
+        trackedFiles.set(file.fileKey, file);
+      }
+      return trackedFiles;
+    }
+    for (const [key, entry] of trackedFiles) {
+      const info = statSyncOrNull(entry.path);
+      if (info === undefined || info.mtimeMs < floorEpochMs) {
+        trackedFiles.delete(key);
+        continue;
+      }
+      entry.mtimeMs = info.mtimeMs;
+      entry.size = info.size;
+    }
+    return trackedFiles;
+  };
+
+  /** 合并窗口枚举与注册表跟踪集（fileKey 去重，mtime 倒序——活跃会话优先获得解析预算）。 */
+  const mergeRolloutFileLists = (
+    windowed: readonly RolloutFileListing[],
+    tracked: ReadonlyMap<string, RolloutFileListing>,
+  ): RolloutFileListing[] => {
+    if (tracked.size === 0) return windowed.slice();
+    const merged = windowed.slice();
+    const seen = new Set(windowed.map(file => file.fileKey));
+    for (const [key, entry] of tracked) {
+      if (!seen.has(key)) {
+        merged.push(entry);
+        seen.add(key);
+      }
+    }
+    merged.sort((left, right) => right.mtimeMs - left.mtimeMs);
+    return merged;
+  };
+
   /** 扫描 + 增量续析（readPendingCandidates / readPendingBatch 共用入口）。 */
   const scanAndIndex = (floorEpochMs: number): void => {
-    const files = listRolloutFiles(sessionsDir, floorEpochMs);
+    const windowed = listRolloutFiles(sessionsDir, floorEpochMs);
+    const tracked = refreshTrackedFiles(Date.now(), floorEpochMs);
+    const files = mergeRolloutFileLists(windowed, tracked);
     let coldFiles = 0;
     let coldBytes = 0;
     let parsedAnyBytes = false;
     // 文件按 mtime 倒序刷新：活跃会话（用户最关心）先获得解析预算。
     for (const file of files) {
       let cache = caches.get(file.fileKey);
-      if (cache && cache.mtimeMs === file.mtimeMs && cache.size === file.size && !cache.coldPending) {
+      // 跳过守卫（2026-11-03 二修）：签名未变 **且解析前沿已追到文件尾** 才可跳过。
+      // 旧条件缺 offset 守卫——冷启动预算中断（8MiB/轮）后若文件静默，签名不再
+      // 变化，被中断的解析（offset < size）无限期搁置，积压增量永远等不到续析。
+      if (cache && cache.mtimeMs === file.mtimeMs && cache.size === file.size
+        && !cache.coldPending && cache.offset >= file.size) {
         continue;
       }
       if (!cache) {
@@ -194,7 +266,7 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
         cache.coldPending = true;
         continue;
       }
-      const parsedBytes = refreshRolloutCache(cache);
+      const parsedBytes = refreshRolloutCache(cache, readChunkMaxBytes);
       cache.coldPending = false;
       // 签名必须随解析回写：cache 的 mtime/size 停留在建缓存时刻，会让任何被
       // 追加过的文件永远命中不了「未变化跳过」，此后每轮都重走读取路径——即使
@@ -208,6 +280,27 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
       }
     }
     if (parsedAnyBytes) cachesVersion += 1;
+    // 活跃清单之外的缓存条目必须逐出（2026-11-03 修复配套红线）：文件滑出活跃窗
+    // （7 天无写入）或被清理后，其解析元数据（caches）与正文条目（contentLru）
+    // 不得继续驻留内存——内存严格有界于活跃文件集合，与历史目录长度彻底解耦。
+    // 逐出会使有序候选缓存（orderedCache）一并失效，杜绝悬挂候选。
+    if (caches.size > 0) {
+      const liveKeys = new Set(files.map(file => file.fileKey));
+      let evicted = false;
+      for (const [key, cache] of caches) {
+        if (liveKeys.has(key)) continue;
+        // 逐出前二次确认：发现层本轮未见可能源于 readdir/stat 瞬时失败（EMFILE 等，
+        // 窗口枚举与注册表增量维护同轮双双失明）——真消失（stat 失败）或真不活跃
+        // （mtime < floor）才逐出，避免瞬时错误清空全量缓存（重析浪费；幂等无虞）。
+        // 保留的条目下轮若恢复可见照常续析；注册表丢失由低频全扫自愈。
+        const confirm = statSyncOrNull(cache.path);
+        if (confirm !== undefined && confirm.mtimeMs >= floorEpochMs) continue;
+        caches.delete(key);
+        contentLru.delete(key);
+        evicted = true;
+      }
+      if (evicted) cachesVersion += 1;
+    }
   };
 
   /**
@@ -454,10 +547,18 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
   };
 }
 
-/** rollout 文件清单（窗口内按 mtime 倒序）：sessions/YYYY/MM/DD 目录按日期裁剪。 */
-function listRolloutFiles(sessionsDir: string, floorEpochMs: number): Array<{path: string; fileKey: string; mtimeMs: number; size: number}> {
-  const floorDate = new Date(floorEpochMs);
-  const results: Array<{path: string; fileKey: string; mtimeMs: number; size: number}> = [];
+/** rollout 文件清单条目（窗口枚举与活跃注册表共用形状）。 */
+type RolloutFileListing = {path: string; fileKey: string; mtimeMs: number; size: number};
+
+/**
+ * rollout 文件清单（按 mtime 倒序）：sessions/YYYY/MM/DD 目录按日期裁剪。
+ * 目录裁剪下界独立于文件活跃下界（dirFloorEpochMs，缺省同 floorEpochMs）：
+ * 活跃注册表全扫传 0 枚举全部历史目录（只 readdir + stat 文件名级元数据，
+ * 不读任何正文字节）；文件级 mtime ≥ floorEpochMs 判据是唯一的活跃语义。
+ */
+function listRolloutFiles(sessionsDir: string, floorEpochMs: number, dirFloorEpochMs?: number): RolloutFileListing[] {
+  const floorDate = new Date(dirFloorEpochMs ?? floorEpochMs);
+  const results: RolloutFileListing[] = [];
   const years = readdirSyncOrNull(sessionsDir);
   for (const year of years) {
     if (!/^\d{4}$/u.test(year) || Number(year) < floorDate.getUTCFullYear()) continue;
@@ -467,7 +568,8 @@ function listRolloutFiles(sessionsDir: string, floorEpochMs: number): Array<{pat
       const days = readdirSyncOrNull(join(sessionsDir, year, month));
       for (const day of days) {
         if (!/^\d{2}$/u.test(day)) continue;
-        // 日期目录粒度裁剪：早于窗口下界的整日跳过（readdir 有界，目录数随回看窗口自动收紧，2026-10-13 起 7 日）。
+        // 日期目录粒度裁剪：早于目录下界的整日跳过（readdir 有界；目录下界在活跃
+        // 注册表全扫时为 0——老目录里 mtime 活跃的文件靠下方文件级判据保留）。
         if (Number(year) < floorDate.getUTCFullYear()
           || (Number(year) === floorDate.getUTCFullYear() && Number(month) < floorDate.getUTCMonth() + 1)
           || (Number(year) === floorDate.getUTCFullYear() && Number(month) === floorDate.getUTCMonth() + 1 && Number(day) < floorDate.getUTCDate())) {
@@ -489,13 +591,15 @@ function listRolloutFiles(sessionsDir: string, floorEpochMs: number): Array<{pat
 }
 
 /**
- * 增量续析一个 rollout 文件（同步、有界）：从 cache.offset 读到文件尾，按 \n 切行，
- * 无换行的尾字节留在缓冲区跨轮拼接；逐行 JSON.parse 容错（坏行跳过）。返回本轮读取字节数。
+ * 增量续析一个 rollout 文件（同步、有界）：从 cache.offset 读一个块（maxBytes，
+ * 缺省 32 MiB——大文件需跨轮推进，scanAndIndex 的 offset 守卫保证静默期继续），
+ * 按 \n 切行，无换行的尾字节留在缓冲区跨轮拼接；逐行 JSON.parse 容错（坏行跳过）。
+ * 返回本轮读取字节数。
  */
-function refreshRolloutCache(cache: RolloutFileCache): number {
+function refreshRolloutCache(cache: RolloutFileCache, maxBytes?: number): number {
   let raw: Buffer;
   try {
-    raw = readFileSyncBounded(cache.path, cache.offset);
+    raw = readFileSyncBounded(cache.path, cache.offset, maxBytes);
   } catch {
     return 0;
   }
@@ -912,8 +1016,9 @@ function numberOr(value: unknown): number {
 }
 
 function readdirSyncOrNull(path: string): string[] {
-  // 清单枚举用同步 readdir（调度器契约为同步 readPendingCandidates）；目录体量
-  // 受日期裁剪约束（随回看窗口，2026-10-13 起 7 日），失败按空处理（目录被清理等）。
+  // 清单枚举用同步 readdir（调度器契约为同步 readPendingCandidates）；窗口内枚举
+  // 受日期裁剪约束（随回看窗口），活跃注册表全扫路径枚举全部历史目录（文件名级
+  // 元数据、实测 ~百目录/几十 ms，每 10 分钟一次）。失败按空处理（目录被清理等）。
   try {
     return readdirSync(path);
   } catch {
@@ -930,15 +1035,20 @@ function statSyncOrNull(path: string): {mtimeMs: number; size: number} | undefin
   }
 }
 
-function readFileSyncBounded(path: string, offset: number): Buffer {
+/**
+ * 单轮单文件读取（有界）：从 offset 读到 min(offset+maxBytes, EOF)。
+ * maxBytes 缺省 32 MiB——这是「解析前沿中部中断」的唯一来源（冷预算只 gate 新
+ * 文件启动，不会中断文件中部），扫描态续析依赖 offset 守卫（scanAndIndex 跳过
+ * 条件）跨轮推进；测试经 adapter options 注入小值构造真实中断。缓冲按实际剩余
+ * 字节分配（fstat 与读取同一 fd，无 TOCTOU）：固定 32 MiB 分配会让「无新数据的
+ * 轮次」也付出整段分配 + 清零成本（2026-10-10 修复）。无剩余字节时零分配直接返回。
+ */
+function readFileSyncBounded(path: string, offset: number, maxBytes = 32 * 1024 * 1024): Buffer {
   const handle = openSync(path, "r");
   try {
-    // 单轮单文件读取上限 32 MiB，但缓冲按实际剩余字节分配（fstat 与读取同一
-    // fd，无 TOCTOU）：固定 32 MiB 分配会让「无新数据的轮次」也付出整段分配 +
-    // 清零成本（2026-10-10 修复）。无剩余字节时零分配直接返回。
     const remaining = fstatSync(handle).size - offset;
     if (remaining <= 0) return Buffer.alloc(0);
-    const buffer = Buffer.alloc(Math.min(32 * 1024 * 1024, remaining));
+    const buffer = Buffer.alloc(Math.min(maxBytes, remaining));
     // readSync 返回字节数（number）——按对象解构会得到 undefined 并放大成整个缓冲区，
     // 实测导致 offset 一轮跳 32MiB、冷启动预算立即耗尽（2026-10-09 首轮零导入根因）。
     const bytesRead = readSync(handle, buffer, 0, buffer.length, offset);
