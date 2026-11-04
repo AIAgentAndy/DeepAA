@@ -281,5 +281,48 @@ describe("SQLite Harness 清单可信（F1/F11/F12）", () => {
     assert.ok(harness);
     assert.equal(harness.snapshot?.agentVersion, "0.165.0");
   });
+  test("P2/F6（2026-11-04）：A→A→B→A 连续片段——序号稳定、包络不跨 B、回切展示变化", async () => {
+    const fixture = await createSqliteFixture();
+    fixtures.push(fixture);
+    const source = seedIngestionSource(fixture, "captures/v2/trust.jsonl");
+    const toolsA = [{type: "function", name: "alpha", parameters: {type: "object"}}];
+    const toolsB = [{type: "function", name: "beta", parameters: {type: "object"}}];
+    const steps: string[] = [];
+    let offset = 0;
+    for (const [seq, tools] of [[1, toolsA], [2, toolsA], [3, toolsB], [4, toolsA]] as Array<[number, unknown[]]>) {
+      const {stepId} = await processExchange(fixture, source, makeExchange({
+        sequence: seq,
+        threadId: "thread-f6",
+        declaredTools: tools as Array<{type: string; name: string; parameters: unknown}>,
+      }), offset);
+      steps.push(stepId);
+      offset += 100;
+    }
 
+    const [s1, s2, s3, s4] = steps.map(id => {
+      const harness = loadAgentStepHarness(fixture.db, id);
+      assert.ok(harness);
+      return harness;
+    });
+
+    // ① 序号稳定:清单未变的第二步 A 仍是「第 1 个」快照(旧实现显示 2)。
+    assert.equal(s2.snapshot?.seqInThread, 1, `s2 seq=${s2.snapshot?.seqInThread}`);
+    assert.equal(s1.snapshot?.seqInThread, 1);
+    // ② 片段不跨 B:s1/s2 的 A 片段 = 1–2,s3 的 B 片段 = 3–3,s4 的 A 第二段 = 4–4。
+    assert.deepEqual(s1.snapshot?.coverage, {fromStepIndex: 1, toStepIndex: 2});
+    assert.deepEqual(s2.snapshot?.coverage, {fromStepIndex: 1, toStepIndex: 2});
+    assert.deepEqual(s3.snapshot?.coverage, {fromStepIndex: 3, toStepIndex: 3});
+    assert.deepEqual(s4.snapshot?.coverage, {fromStepIndex: 4, toStepIndex: 4}, `s4 coverage=${JSON.stringify(s4.snapshot?.coverage)}`);
+    // 首现口径:同一 A 哈希在 s4 仍显示首现 Step 1。
+    assert.equal(s4.snapshot?.firstSeenStepIndex, 1);
+    // ③ 回切展示:s4(A)相对紧邻前的 B 显示 B→A 变化(旧实现无变化)。
+    assert.ok(s4.changes, "s4 必须展示 B→A 的快照变化");
+    assert.deepEqual(s4.changes?.toolsAdded, ["alpha"]);
+    assert.deepEqual(s4.changes?.toolsRemoved, ["beta"]);
+    // s2 与 s1 同清单:无变化(片段前无不同快照)。
+    assert.equal(s2.changes, undefined);
+    // s3(B)相对 A:added=beta removed=alpha。
+    assert.ok(s3.changes);
+    assert.deepEqual(s3.changes?.toolsAdded, ["beta"]);
+  });
 });

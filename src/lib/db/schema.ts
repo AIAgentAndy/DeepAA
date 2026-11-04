@@ -1,6 +1,6 @@
 import type {DeepaaDatabase} from "@/lib/db/sqlite-driver";
 
-export const SCHEMA_VERSION = 55;
+export const SCHEMA_VERSION = 56;
 
 /**
  * v19：Agent 证据字段。
@@ -768,6 +768,53 @@ function migrateAgentVersionV54(db: DeepaaDatabase): void {
  * idx_steps_snapshot 支撑「按快照哈希」的声明出现反查（快照表按 agent 过滤后
  * 取哈希集合，再命中 step 索引）。纯索引新增，不重算不回填。
  */
+/**
+ * v56：P2-a zcode 原生执行证据（2026-11-04）。
+ * agent_tool_executions 保存 zcode tool_usage 的执行侧字段（真实耗时/首字/退出码/
+ * 审批/重试/取消/错误——wire 层不可见）；`tool_call_id` 与 tool_calls.tool_use_id
+ * 同源，查询侧确定性 join。source 固定 zcode_native；采集侧只读源库（readonly+
+ * query_only 双向阻断）、id 游标增量、单批 ≤500 行；不改 tool_calls 既有行、
+ * 不合成计费、不回填存量。
+ */
+const AGENT_TOOL_EXECUTIONS_V56_SQL = `
+CREATE TABLE IF NOT EXISTS agent_tool_executions (
+  id TEXT PRIMARY KEY,
+  agent_name TEXT NOT NULL,
+  session_id TEXT,
+  turn_id TEXT,
+  tool_call_id TEXT,
+  tool_name TEXT NOT NULL,
+  status TEXT,
+  approval_status TEXT,
+  side_effect_scope TEXT,
+  read_only INTEGER,
+  destructive INTEGER,
+  started_at INTEGER,
+  completed_at INTEGER,
+  duration_ms INTEGER,
+  time_to_first_output_ms INTEGER,
+  exit_code INTEGER,
+  output_bytes INTEGER,
+  retry_count INTEGER,
+  cancelled_by_user INTEGER,
+  error_type TEXT,
+  error_message TEXT,
+  synced_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tool_exec_call_id ON agent_tool_executions(tool_call_id);
+CREATE INDEX IF NOT EXISTS idx_tool_exec_agent_time ON agent_tool_executions(agent_name, started_at);
+CREATE TABLE IF NOT EXISTS agent_tool_execution_state (
+  agent TEXT PRIMARY KEY,
+  last_rowid INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);`;
+
+function migrateAgentToolExecutionsV56(db: DeepaaDatabase): void {
+  if (!hasTable(db, "agent_tool_executions")) {
+    db.exec(AGENT_TOOL_EXECUTIONS_V56_SQL);
+  }
+}
+
 function migrateCapabilityLookupIndexesV55(db: DeepaaDatabase): void {
   // 列存在性防御：旧 v1 形态的 tool_calls 无 created_at（随后续迁移补列后
   // 由重建路径覆盖），不因索引缺失阻断迁移事务。
@@ -2280,6 +2327,7 @@ ${ANALYTICS_TABLES_SQL}
 ${HARNESS_SNAPSHOTS_V27_SQL}
 ${AGENT_LOCAL_IMPORT_V32_SQL}
 ${AGENT_LOCAL_IMPORT_SEEN_V34_SQL}
+${AGENT_TOOL_EXECUTIONS_V56_SQL}
 `;
 
 /**
@@ -2472,6 +2520,9 @@ export function migrateDeepaaDatabase(db: DeepaaDatabase): void {
       }
       if (current < 55) {
         migrateCapabilityLookupIndexesV55(db);
+      }
+      if (current < 56) {
+        migrateAgentToolExecutionsV56(db);
       }
     }
     db.prepare(

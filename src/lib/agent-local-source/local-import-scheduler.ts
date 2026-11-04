@@ -26,6 +26,7 @@ import {
   recordPromptSkeleton,
 } from "./prompt-skeleton";
 import {readImportState, pruneAgentLocalImportSeen, updateImportState} from "./state-store";
+import {syncZcodeToolExecutions} from "./tool-execution-sync";
 import {isAgentLocalIdentityAgent, upsertAgentLocalIdentityLinks} from "./identity-links";
 import {markAgentScanConverged, markAgentScanStarted} from "./scan-readiness";
 import {AGENT_LOCAL_SOURCE_ADAPTERS} from "./registry";
@@ -165,6 +166,18 @@ export async function runAgentLocalImportRound(options: {
     });
     totalImported += processed;
     if (processed < LOCAL_IMPORT_BATCH_LIMIT) break;
+  }
+  // P2-a（2026-11-04）：zcode 原生执行证据增量采集——独立于用量导入链（失败只
+  // 跳过本轮,不影响导入结果;每轮一批 ≤500 行,水位续跑;源库只读）。
+  try {
+    const db = openDeepaaDatabase({dataDir: options.dataDir});
+    try {
+      syncZcodeToolExecutions(db);
+    } finally {
+      db.close();
+    }
+  } catch {
+    // 执行证据采集失败不影响导入轮结果。
   }
   return totalImported;
 }

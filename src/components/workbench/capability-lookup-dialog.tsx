@@ -93,11 +93,15 @@ export function CapabilityLookupDialog({target, onClose, onNavigate}: {
             <div className="caps-lookup-rows">
               {result.calls.items.map(row => (
                 <button type="button" key={`${row.stepId}:${row.exchangeId}`}
-                  className="caps-lookup-row"
+                  className="caps-lookup-row caps-lookup-row-exec"
+                  title={row.execution ? executionTitle(row.execution) : undefined}
                   onClick={() => onNavigate({stepId: row.stepId, sessionId: row.sessionId, threadId: row.threadId, turnId: row.turnId, agentName: row.agentName, targetId: row.targetId})}>
                   <span className="mono">Step {row.stepIndex}</span>
                   <span>{formatLocalDateTime(row.capturedAt)}</span>
-                  <span className="caps-lookup-status" data-status={row.status}>{statusLabel(row.status)}</span>
+                  <span className="caps-lookup-status" data-status={row.status}>
+                    {statusLabel(row.status)}
+                    {row.execution ? <span className="caps-lookup-exec"> · 执行{executionLabel(row.execution)}</span> : null}
+                  </span>
                 </button>
               ))}
               {result.calls.hasMore && result.calls.nextCursor ? (
@@ -131,4 +135,28 @@ function statusLabel(status: string): string {
   if (status === "error") return "有结果·出错";
   if (status === "awaiting_result") return "等待结果";
   return status;
+}
+
+/** 执行侧行内摘要（原生证据;来源 zcode tool_usage）。 */
+function executionLabel(exec: NonNullable<import("@/lib/db/capability-lookup-queries").CapabilityLookupCallRow["execution"]>): string {
+  const parts: string[] = [];
+  if (exec.status) parts.push(exec.status === "completed" ? "完成" : exec.status === "error" ? "出错" : exec.status);
+  if (exec.durationMs !== null && exec.durationMs !== undefined) parts.push(`${(exec.durationMs / 1000).toFixed(1)}s`);
+  if (typeof exec.exitCode === "number") parts.push(`exit ${exec.exitCode}`);
+  if (exec.retryCount && exec.retryCount > 0) parts.push(`重试 ${exec.retryCount}`);
+  if (exec.cancelledByUser) parts.push("用户取消");
+  return parts.length > 0 ? parts.join(" · ") : "有记录";
+}
+
+function executionTitle(exec: NonNullable<import("@/lib/db/capability-lookup-queries").CapabilityLookupCallRow["execution"]>): string {
+  const lines = [
+    `执行状态: ${exec.status ?? "未知"}`,
+    `审批: ${exec.approvalStatus ?? "—"}`,
+    `耗时: ${exec.durationMs !== null ? `${exec.durationMs}ms` : "—"}`,
+    `首输出: ${exec.timeToFirstOutputMs !== null ? `${exec.timeToFirstOutputMs}ms` : "—"}`,
+    `退出码: ${exec.exitCode ?? "—"}`,
+    `错误: ${exec.errorType ?? "—"}`,
+    "来源: zcode 原生 tool_usage（执行侧证据,wire 不可见）",
+  ];
+  return lines.join("\n");
 }

@@ -21,6 +21,7 @@ const nodeTestFiles = [
   "tests/workbench-harness-client.test.ts",
   "tests/sqlite-step-capabilities.test.ts",
   "tests/sqlite-capability-lookup.test.ts",
+  "tests/sqlite-zcode-tool-executions.test.ts",
   "tests/sqlite-step-evidence-p1.test.ts",
   "tests/sqlite-agent-local-import.test.ts",
   "tests/sqlite-dsh-local-import.test.ts",

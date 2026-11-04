@@ -199,21 +199,43 @@ export function loadAgentStepHarness(
          WHERE t.id = ? LIMIT 1`,
       ).pluck().get(step.agent_thread_id) as string | null | undefined;
 
-      // 快照覆盖区间与本 Thread 内序号。
-      const coverage = db.prepare(
-        `SELECT MIN(step_index) AS from_index, MAX(step_index) AS to_index
-         FROM agent_steps
-         WHERE agent_thread_id = ? AND harness_snapshot_hash = ?`,
-      ).get(step.agent_thread_id, step.harness_snapshot_hash) as {
-        from_index: number | null;
-        to_index: number | null;
-      };
-      const distinctBefore = db.prepare(
-        `SELECT COUNT(DISTINCT harness_snapshot_hash) AS seq
-         FROM agent_steps
+      // F6（2026-11-04 查询侧修复）：Thread 内快照序列 → 连续片段。
+      // 旧实现的三个缺陷（docs 方案 F6 隔离反例 A→A→B→A）：
+      // ① seqInThread = distinctBefore+1——第二步清单未变却显示「第 2 个」；
+      // ② coverage = 同哈希全局 MIN/MAX——A 的包络 1–4 跨过中间的 B；
+      // ③ changes 用全局 MIN 作查找边界——第四步回到 A 时 B→A 的变化不展示。
+      // 序列有界（单 Thread ≤5000 行，仅主键列）；片段按数组邻接扩展（不假设 step_index 无洞）。
+      const sequenceRows = db.prepare(
+        `SELECT step_index, harness_snapshot_hash AS hash FROM agent_steps
          WHERE agent_thread_id = ? AND harness_snapshot_hash IS NOT NULL
-           AND step_index < ?`,
-      ).get(step.agent_thread_id, step.step_index) as { seq: number };
+         ORDER BY step_index LIMIT 5000`,
+      ).all(step.agent_thread_id) as Array<{step_index: number; hash: string}>;
+      const currentIndex = sequenceRows.findIndex(row => row.step_index === step.step_index);
+      let segmentStart = step.step_index;
+      let segmentEnd = step.step_index;
+      let hashFirstSeen = step.step_index;
+      const seenHashes = new Set<string>();
+      let seqInThread = 1;
+      if (currentIndex >= 0) {
+        let back = currentIndex - 1;
+        while (back >= 0 && sequenceRows[back]!.hash === snapshot.snapshot_hash) {
+          segmentStart = sequenceRows[back]!.step_index;
+          back -= 1;
+        }
+        let forward = currentIndex + 1;
+        while (forward < sequenceRows.length && sequenceRows[forward]!.hash === snapshot.snapshot_hash) {
+          segmentEnd = sequenceRows[forward]!.step_index;
+          forward += 1;
+        }
+        for (const row of sequenceRows) {
+          if (row.step_index > step.step_index) break;
+          if (!seenHashes.has(row.hash)) {
+            seenHashes.add(row.hash);
+            if (row.hash === snapshot.snapshot_hash) hashFirstSeen = row.step_index;
+          }
+        }
+        seqInThread = seenHashes.size;
+      }
 
       snapshotView = {
         hash: snapshot.snapshot_hash,
@@ -221,12 +243,12 @@ export function loadAgentStepHarness(
         agentName: snapshot.agent_name,
         agentVersion: sessionAgentVersion ?? undefined,
         complete: snapshot.complete === 1,
-        seqInThread: distinctBefore.seq + 1,
+        seqInThread,
         coverage: {
-          fromStepIndex: coverage.from_index ?? step.step_index,
-          toStepIndex: coverage.to_index ?? step.step_index,
+          fromStepIndex: segmentStart,
+          toStepIndex: segmentEnd,
         },
-        firstSeenStepIndex: coverage.from_index ?? step.step_index,
+        firstSeenStepIndex: hashFirstSeen,
       };
     }
   }
@@ -295,23 +317,23 @@ export function loadAgentStepHarness(
     }
   }
 
-  // 快照变化：同 Thread 内、覆盖区间起点之前的最近一个不同快照。
+  // 快照变化：当前连续片段起点之前紧邻一步所属的不同快照（F6 修复：
+  // 用片段边界而非全局 MIN——回到旧清单（A→B→A）时 B→A 的变化正确展示）。
   let changes: HarnessChangesView | undefined;
   if (snapshotView) {
-    const previous = db.prepare(
-      `SELECT s.harness_snapshot_hash AS hash, MIN(s.step_index) AS first_index
-       FROM agent_steps s
-       WHERE s.agent_thread_id = ?
-         AND s.harness_snapshot_hash IS NOT NULL
-         AND s.harness_snapshot_hash != ?
-         AND s.step_index < ?
-       GROUP BY s.harness_snapshot_hash
-       ORDER BY first_index DESC
-       LIMIT 1`,
-    ).get(step.agent_thread_id, step.harness_snapshot_hash, snapshotView.coverage.fromStepIndex) as {
+    const previousRow = db.prepare(
+      `SELECT harness_snapshot_hash AS hash, step_index
+       FROM agent_steps
+       WHERE agent_thread_id = ? AND harness_snapshot_hash IS NOT NULL
+         AND step_index < ?
+       ORDER BY step_index DESC LIMIT 1`,
+    ).get(step.agent_thread_id, snapshotView.coverage.fromStepIndex) as {
       hash: string;
-      first_index: number;
+      step_index: number;
     } | undefined;
+    const previous = previousRow && previousRow.hash !== step.harness_snapshot_hash
+      ? {hash: previousRow.hash, first_index: previousRow.step_index}
+      : undefined;
     if (previous) {
       const previousSnapshot = db.prepare(
         `SELECT tools_json, rules_json, skills_json FROM harness_snapshots WHERE snapshot_hash = ? LIMIT 1`,

@@ -13754,6 +13754,18 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
   overflow-y: auto;
 }
 
+.sqlite-workbench .caps-lookup-row-exec .caps-lookup-status {
+  display: inline-flex;
+  gap: 4px;
+  align-items: baseline;
+  text-align: right;
+}
+
+.sqlite-workbench .caps-lookup-exec {
+  color: var(--ink-400);
+  font-size: 11px;
+}
+
 .sqlite-workbench .caps-lookup-row {
   display: grid;
   grid-template-columns: 80px 1fr auto;
