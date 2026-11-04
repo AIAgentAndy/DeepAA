@@ -96,6 +96,9 @@ import {
 } from "@/lib/workbench-display";
 import { workbenchSelectionQuery } from "@/lib/shared-selection";
 import { formatLocalClock, formatLocalDateTime, formatRelativeLocalTime } from "@/lib/local-time";
+import { useStepCapabilities } from "@/components/workbench/use-step-capabilities";
+import { CapabilityLookupDialog, type CapabilityLookupTarget } from "@/components/workbench/capability-lookup-dialog";
+import { StepCapabilityPanel } from "@/components/workbench/step-capability-panel";
 import {useGlobalTimeZone} from "@/lib/timezone-preference";
 import {
   appendWorkbenchRangeParams,
@@ -445,6 +448,10 @@ export function HarnessWorkbench({ tree, initialQuery, initialRange, retentionDa
   );
   const [stepHarness, setStepHarness] = useState<ApiAgentStepHarness>();
   const [stepHarnessLoading, setStepHarnessLoading] = useState(false);
+  /** 审计修订（2026-11-04）：读取失败与「真无记录」分离——§14.2.8 不得把错误伪装成没能力。 */
+  const [stepHarnessError, setStepHarnessError] = useState<string>();
+  // P1-4（2026-11-03）：能力反查对话框（面板/清单条目 → 反查 → 深链回 Step）。
+  const [capabilityLookup, setCapabilityLookup] = useState<CapabilityLookupTarget>();
   // Harness 页签工具行 → 交互内容的下钻过滤（客户端过滤当前 step 范围条目）。
   const [interactionToolFilter, setInteractionToolFilter] = useState<string>();
   const [interactionCategoryFilter, setInteractionCategoryFilter] = useState<ConversationCategory[] | undefined>(undefined);
@@ -534,6 +541,8 @@ export function HarnessWorkbench({ tree, initialQuery, initialRange, retentionDa
   const selectedStep = selectedStepDetail?.id === selection?.step
     ? selectedStepDetail
     : selectedStepSummary;
+  // P1-3（2026-11-03）：「响应」页签的本次传递能力面板（capability-summary/items 契约）。
+  const stepCapabilities = useStepCapabilities(selectedStep?.id);
   const selectedSession = selectedGroup?.sessions.find(
     session => session.id === selection?.session,
   );
@@ -1468,11 +1477,13 @@ export function HarnessWorkbench({ tree, initialQuery, initialRange, retentionDa
   async function loadStepHarness(step: AgentStep | undefined): Promise<void> {
     if (!step) return;
     setStepHarnessLoading(true);
+    setStepHarnessError(undefined);
     try {
       const harness = await fetchOptionalStepHarness(step.id);
       setStepHarness(harness);
-    } catch {
+    } catch (error) {
       setStepHarness(undefined);
+      setStepHarnessError((error as Error).message || "读取失败");
     } finally {
       setStepHarnessLoading(false);
     }
@@ -2472,26 +2483,76 @@ export function HarnessWorkbench({ tree, initialQuery, initialRange, retentionDa
                 selectInspectorTab("交互内容");
               }}
             /> : null}
-            {activeTab === "请求" ? <WorkbenchRawInspectorTab
-              key={`${selectedStep?.exchangeId || "empty"}:request`}
-              side="request"
-              exchangeId={selectedStep?.exchangeId}
-              projection={exchangeProjection}
-              highlightedEvidence={highlightedEvidence}
-            /> : null}
-            {activeTab === "响应" ? <WorkbenchRawInspectorTab
-              key={`${selectedStep?.exchangeId || "empty"}:response`}
-              side="response"
-              exchangeId={selectedStep?.exchangeId}
-              projection={exchangeProjection}
-              highlightedEvidence={highlightedEvidence}
-            /> : null}
+            {activeTab === "请求" ? (
+              selectedStep ? (
+                <>
+                  {/* 审计修订（2026-11-04）：请求页签同屏展示输入清单（§1.2「请求页签可看同一输入清单」）。 */}
+                  <StepCapabilityPanel
+                    state={stepCapabilities}
+                    variant="request"
+                    onOpenCapability={(kind, name) => setCapabilityLookup({
+                      agentName: stepHarness?.snapshot?.agentName || selection?.agent || "",
+                      kind, name,
+                    })}
+                  />
+                  <WorkbenchRawInspectorTab
+                    key={`${selectedStep.exchangeId}:request`}
+                    side="request"
+                    exchangeId={selectedStep.exchangeId}
+                    projection={exchangeProjection}
+                    highlightedEvidence={highlightedEvidence}
+                  />
+                </>
+              ) : (
+                <WorkbenchRawInspectorTab
+                  key="empty:request"
+                  side="request"
+                  exchangeId={undefined}
+                  projection={exchangeProjection}
+                  highlightedEvidence={highlightedEvidence}
+                />
+              )
+            ) : null}
+            {activeTab === "响应" ? (
+              selectedStep ? (
+                <>
+                  {/* P1-3：本次传递的能力及使用——清单来自对应请求输入、调用来自本次响应；
+                      面板在 Raw 原文之前，复制/下载 Raw 不包含它。 */}
+                  <StepCapabilityPanel
+                    state={stepCapabilities}
+                    variant="compact"
+                    onOpenCapability={(kind, name) => setCapabilityLookup({
+                      agentName: stepHarness?.snapshot?.agentName || selection?.agent || "",
+                      kind, name,
+                    })}
+                  />
+                  <WorkbenchRawInspectorTab
+                    key={`${selectedStep.exchangeId}:response`}
+                    side="response"
+                    exchangeId={selectedStep.exchangeId}
+                    projection={exchangeProjection}
+                    highlightedEvidence={highlightedEvidence}
+                  />
+                </>
+              ) : (
+                <WorkbenchRawInspectorTab
+                  key="empty:response"
+                  side="response"
+                  exchangeId={undefined}
+                  projection={exchangeProjection}
+                  highlightedEvidence={highlightedEvidence}
+                />
+              )
+            ) : null}
             {activeTab === "能力清单" ? <HarnessTab
               step={selectedStep}
               harness={stepHarness}
               harnessLoading={stepHarnessLoading}
+              harnessError={stepHarnessError}
+              onRetryHarness={selectedStep ? () => void loadStepHarness(selectedStep) : undefined}
               protocol={exchangeProjection?.preview.protocol ?? snapshot?.protocol}
               isStreaming={exchangeProjection?.response.isStreaming}
+              onOpenCapability={(kind, name) => setCapabilityLookup({agentName: stepHarness?.snapshot?.agentName || selection?.agent || "", kind, name})}
               onInspectTool={(toolName) => {
                 setInteractionCategoryFilter(undefined);
                 setInteractionToolFilter(toolName);
@@ -2515,6 +2576,24 @@ export function HarnessWorkbench({ tree, initialQuery, initialRange, retentionDa
         </section>
       </div>
       </section>
+      {/* P1-4：能力反查对话框；反查行 → URL 深链回对应 Step（与外部深链恢复同构）。 */}
+      <CapabilityLookupDialog
+        target={capabilityLookup}
+        onClose={() => setCapabilityLookup(undefined)}
+        onNavigate={(loc) => {
+          setCapabilityLookup(undefined);
+          const params = new URLSearchParams({
+            agent: loc.agentName,
+            session: loc.sessionId,
+            thread: loc.threadId,
+            step: loc.stepId,
+            tab: "harness",
+          });
+          if (loc.turnId) params.set("turn", loc.turnId);
+          if (loc.targetId) params.set("target", loc.targetId);
+          router.push(`/sessions?${params.toString()}`, {scroll: false});
+        }}
+      />
       {restoreProgressVisible ? (
         <div className="workbench-progress-toast" role="status">
           <RefreshCw size={13} className="workbench-progress-toast-icon" aria-hidden="true" />
@@ -5343,25 +5422,42 @@ function ProtocolCapabilityPanel({ protocol, isStreaming, step }: {
   );
 }
 
-function HarnessTab({ step, harness, harnessLoading, protocol, isStreaming, onInspectTool, onOpenContext }: {
+function HarnessTab({ step, harness, harnessLoading, harnessError, protocol, isStreaming, onInspectTool, onOpenContext, onOpenCapability, onRetryHarness }: {
   step?: AgentStep;
   harness?: ApiAgentStepHarness;
   harnessLoading: boolean;
+  /** 审计修订：读取失败信息（与「真无记录」空态分离）。 */
+  harnessError?: string;
   /** 协议 wire API（投影 preview.protocol，回退快照 protocol）。 */
   protocol?: string;
   isStreaming?: boolean;
   onInspectTool: (toolName: string) => void;
   onOpenContext: () => void;
+  /** P1-4：工具名反查入口（kind, name）。 */
+  onOpenCapability?: (kind: "tool" | "skill", name: string) => void;
+  /** 审计修订：清单读取失败后的重试。 */
+  onRetryHarness?: () => void;
 }) {
   if (!step) return <EmptyState text="选择 Step 后查看它带了什么 Harness" />;
   if (harnessLoading && !harness) return <EmptyState text="正在加载 Harness 证据…" />;
+  if (harnessError) {
+    return (
+      <div className="empty-state">
+        能力清单读取失败（{harnessError}）·{" "}
+        {onRetryHarness ? <button type="button" className="comp-link" onClick={onRetryHarness}>重试</button> : null}
+      </div>
+    );
+  }
   if (!harness) return <EmptyState text="没有 Step Harness 记录" />;
 
   const { snapshot, inventory, harnessTokens } = harness;
+  const reference = harness.reference;
+  const observedOnlyTools = inventory.observedOnlyTools ?? [];
   const mcpGroups = groupMcpTools(inventory.tools);
   const plainTools = inventory.tools.filter(tool => tool.kind !== "mcp");
   const invokedCount = inventory.tools.filter(tool => tool.invoked).length;
-  const stepInvokedCalls = inventory.tools.reduce((sum, tool) => sum + tool.callsThisStep, 0);
+  const stepInvokedCalls = inventory.tools.reduce((sum, tool) => sum + tool.callsThisStep, 0)
+    + observedOnlyTools.reduce((sum, tool) => sum + tool.callsThisStep, 0);
   const changes = harness.changes;
   const addedToolNames = new Set(changes?.toolsAdded ?? []);
   const plainToolsSorted = sortToolsForStep(plainTools, addedToolNames);
@@ -5379,21 +5475,51 @@ function HarnessTab({ step, harness, harnessLoading, protocol, isStreaming, onIn
         </div>
       ) : null}
 
+      {reference ? (
+        <div className="derived-status-banner building" role="status">
+          参考清单（借补）：本地导入行未捕获当次
+          {reference.borrowed.length > 0 ? ` ${reference.borrowed.join(" / ")}` : ""}
+          {" "}声明，以下清单借自同 Agent 近期快照
+          {reference.donorSnapshotHash
+            ? `（${reference.donorSnapshotHash.slice(0, 8)}${reference.donorLastSeenAt ? ` · ${formatLocalDateTime(reference.donorLastSeenAt)}` : ""}）`
+            : "（来源快照未知，历史数据）"}
+          ，不作为当次确定传递。
+        </div>
+      ) : null}
+
+      {harness.callsLimited && (harness.callsLimited.step || harness.callsLimited.turn) ? (
+        <div className="derived-status-banner building" role="status">
+          调用统计受限：{harness.callsLimited.step ? "本步" : ""}
+          {harness.callsLimited.step && harness.callsLimited.turn ? " / " : ""}
+          {harness.callsLimited.turn ? "本 Turn" : ""}
+          {" "}工具分组达处理上限（201），未处理工具的调用数显示「未知」，不计为 0。
+        </div>
+      ) : null}
+
       <div className="snap-card">
         <div className="snap-cell"><span className="label">快照版本</span><b className="mono snap-hash">{snapshot?.shortHash || "—"}</b></div>
         {snapshot ? <div className="snap-cell"><span className="label">Thread 内快照</span><b>第 {snapshot.seqInThread} 个</b></div> : null}
         {snapshot ? <div className="snap-cell"><span className="label">首次出现</span><b>Step {snapshot.firstSeenStepIndex}</b></div> : null}
         {snapshot ? <div className="snap-cell"><span className="label">生效范围</span><b>Step {snapshot.coverage.fromStepIndex}–{snapshot.coverage.toStepIndex}</b></div> : null}
-        <div className="snap-cell"><span className="label">工具清单</span><b>{inventory.tools.length} 个 · {snapshot ? (snapshot.complete ? "完整" : "受限") : "升级前"}</b></div>
-        <div className="snap-cell"><span className="label">Agent</span><b>{snapshot?.agentName || "—"}</b></div>
+        <div className="snap-cell">
+          <span className="label">工具清单</span>
+          <b>{inventory.tools.length} 个 · {reference ? "参考" : snapshot ? (snapshot.complete ? "完整" : "受限") : "升级前"}</b>
+        </div>
+        <div className="snap-cell"><span className="label">Agent</span><b>{snapshot?.agentName || "—"}{snapshot?.agentVersion ? ` · v${snapshot.agentVersion}` : ""}</b></div>
         {harness.project ? <div className="snap-cell"><span className="label">项目</span><b>{harness.project}</b></div> : null}
       </div>
 
       <div className="stat-chips">
         <div className="schip">
           <div className="n">{inventory.tools.length} <i className="badge-tag">Tools</i></div>
-          <div className="l">本步调用 {stepInvokedCalls}</div>
+          <div className="l">{reference ? "参考清单" : "声明清单"} · 本步调用 {stepInvokedCalls}</div>
         </div>
+        {observedOnlyTools.length > 0 ? (
+          <div className="schip">
+            <div className="n">{observedOnlyTools.length} <i className="badge-tag warn">未匹配</i></div>
+            <div className="l">已调用 · 传递证据未匹配</div>
+          </div>
+        ) : null}
         <div className="schip">
           <div className="n">{mcpGroups.length} <i className="badge-tag">MCP</i></div>
           <div className="l">{mcpGroups.length > 0 ? `服务 ${mcpGroups.map(group => group.server).join(" · ")}` : "无 MCP 服务"}</div>
@@ -5431,6 +5557,7 @@ function HarnessTab({ step, harness, harnessLoading, protocol, isStreaming, onIn
                 tool={tool}
                 onInspectTool={onInspectTool}
                 addedThisStep={addedToolNames.has(tool.name)}
+                onOpenCapability={onOpenCapability}
               />
             ))}
           </>
@@ -5445,7 +5572,9 @@ function HarnessTab({ step, harness, harnessLoading, protocol, isStreaming, onIn
           title={`MCP · ${group.server}`}
           count={group.tools.length}
           defaultOpen={false}
-          note={group.tools.every(tool => !tool.invoked) ? `本步 0 次调用 · 定义 ${group.tools.reduce((sum, tool) => sum + tool.defTokensEst, 0).toLocaleString()} tokens（估算）` : undefined}
+          note={group.tools.every(tool => !tool.invoked)
+            ? `${group.tools.some(tool => tool.callsUnknown) ? "本步调用未知（受限）" : "本步 0 次调用"} · 定义 ${group.tools.reduce((sum, tool) => sum + tool.defTokensEst, 0).toLocaleString()} tokens（估算）`
+            : undefined}
         >
           <div className="trow head">
             <span>名称</span>
@@ -5461,10 +5590,38 @@ function HarnessTab({ step, harness, harnessLoading, protocol, isStreaming, onIn
               tool={tool}
               onInspectTool={onInspectTool}
               addedThisStep={addedToolNames.has(tool.name)}
+              onOpenCapability={onOpenCapability}
             />
           ))}
         </GroupSection>
       ))}
+
+      {observedOnlyTools.length > 0 ? (
+        <GroupSection
+          title="已调用 · 传递证据未匹配"
+          count={observedOnlyTools.length}
+          defaultOpen={false}
+          note="本步真实调用、但请求清单中无对应声明定义；不证明本次传递过其完整定义"
+        >
+          <div className="trow head">
+            <span>名称</span>
+            <span>来源</span>
+            <span className="num">本步 / 本Turn</span>
+            <span className="num">Invoked</span>
+            <span className="num">定义 tokens <i className="badge-tag est">估</i></span>
+            <span className="num">调用记录</span>
+          </div>
+          {observedOnlyTools.map(tool => (
+            <HarnessToolRow
+              key={tool.name}
+              tool={tool}
+              onInspectTool={onInspectTool}
+              addedThisStep={false}
+              onOpenCapability={onOpenCapability}
+            />
+          ))}
+        </GroupSection>
+      ) : null}
 
       <GroupSection
         title="Skills"
@@ -5473,7 +5630,14 @@ function HarnessTab({ step, harness, harnessLoading, protocol, isStreaming, onIn
       >
         {inventory.skills.length > 0 ? inventory.skills.map(skill => (
           <div key={`${skill.name}-${skill.sourceRoot ?? ""}`} className="skill-row">
-            <span className="sname">{skill.name}</span>
+            {onOpenCapability ? (
+              <button type="button" className="tname-btn sname" title="反查该 Skill 的传递记录"
+                onClick={() => onOpenCapability("skill", skill.name)}>
+                {skill.name}
+              </button>
+            ) : (
+              <span className="sname">{skill.name}</span>
+            )}
             <span className={`src src-${skill.sourceLevel}`}>{skillSourceLabel(skill)}</span>
             <span className="kv">
               {skill.sourceRoot || "—"}
@@ -5481,7 +5645,9 @@ function HarnessTab({ step, harness, harnessLoading, protocol, isStreaming, onIn
               {skill.pluginName ? ` · 插件 ${skill.pluginName}（推断）` : ""}
             </span>
           </div>
-        )) : <p className="comp-legacy-note">本步无 Skills 注入名单。</p>}
+        )) : harness.skillsParseStatus === "not_supported" ? (
+          <p className="comp-legacy-note">该 Agent 的 Skills 注入格式解析未支持（待真实样本接入），0 条不代表没有技能。</p>
+        ) : <p className="comp-legacy-note">本步无 Skills 注入名单。</p>}
       </GroupSection>
 
       <GroupSection title="Rules / Instructions" count={inventory.rules.length} defaultOpen={false}>
@@ -5581,22 +5747,38 @@ function sortToolsForStep(tools: HarnessToolEntry[], addedNames: Set<string>): H
     || a.name.localeCompare(b.name));
 }
 
-function HarnessToolRow({ tool, onInspectTool, addedThisStep }: {
+function HarnessToolRow({ tool, onInspectTool, addedThisStep, onOpenCapability }: {
   tool: HarnessToolEntry;
   onInspectTool: (toolName: string) => void;
   addedThisStep: boolean;
+  onOpenCapability?: (kind: "tool" | "skill", name: string) => void;
 }) {
+  const observedOnly = tool.exposure === "observed_only";
+  const callsUnknown = tool.callsUnknown === true;
   return (
     <div className={`trow${tool.invoked ? " on" : ""}`}>
-      <span className={`tname${tool.invoked ? "" : " dim"}`}>{tool.name}</span>
-      <span className={`src${addedThisStep ? " src-step" : ""}`}>{addedThisStep ? "本步定义" : "继承"}</span>
-      <span className={`num${tool.invoked ? "" : " dim"}`}>
-        {tool.invoked ? <b>{tool.callsThisStep}</b> : "0"} / {tool.callsThisTurn}
+      {onOpenCapability ? (
+        <button type="button" className={`tname-btn${tool.invoked ? "" : " dim"}`} title="反查该能力的调用与传递记录"
+          onClick={() => onOpenCapability("tool", tool.name)}>
+          {tool.name}
+        </button>
+      ) : (
+        <span className={`tname${tool.invoked ? "" : " dim"}`}>{tool.name}</span>
+      )}
+      <span className={`src${observedOnly ? " src-observed" : addedThisStep ? " src-step" : ""}`}>
+        {observedOnly ? "调用证据" : addedThisStep ? "本步定义" : "继承"}
       </span>
-      <span className={`num${tool.invoked ? " yes" : " no"}`}>{tool.invoked ? "✓" : "—"}</span>
+      <span className={`num${tool.invoked ? "" : " dim"}`}>
+        {callsUnknown
+          ? <>未知 / {tool.callsThisTurn}</>
+          : <>{tool.invoked ? <b>{tool.callsThisStep}</b> : "0"} / {tool.callsThisTurn}</>}
+      </span>
+      <span className={`num${tool.invoked ? " yes" : " no"}`}>
+        {callsUnknown ? <span className="dim">?</span> : tool.invoked ? "✓" : "—"}
+      </span>
       <span className="num mono dim">{tool.defTokensEst > 0 ? tool.defTokensEst.toLocaleString() : "—"}</span>
       <span className="num">
-        {tool.invoked ? (
+        {tool.invoked || callsUnknown ? (
           <button type="button" className="tool-inspect-link" onClick={() => onInspectTool(tool.name)}>
             交互内容 →
           </button>

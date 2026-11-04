@@ -166,38 +166,55 @@ export function partitionInputText(text: string, projectKey?: string): TextParti
   };
   if (!text) return partition;
 
+  // I7/F7（2026-11-03）：区间互斥——先收集全部候选 span，按起点排序后逐区间只把
+  // 「未被前序区间消费」的字符计入对应桶；嵌套段（如 skills 段嵌在 permissions
+  // 段内）归先出现的外层，单次归属。旧实现各桶独立计数，嵌套段双计（原文 204
+  // 字符被分类合计 368）。守恒不变量：四桶之和 ≤ 文本长度，conversation = 未消费。
   const consumed = new Array<boolean>(text.length).fill(false);
-  const markSpan = (start: number, end: number) => {
-    for (let index = start; index < end; index++) consumed[index] = true;
+  const consumeInto = (start: number, end: number, bucket: "skills" | "rules" | "env"): void => {
+    let added = 0;
+    const from = Math.max(0, start);
+    const to = Math.min(text.length, end);
+    for (let index = from; index < to; index++) {
+      if (consumed[index]) continue;
+      consumed[index] = true;
+      added++;
+    }
+    if (bucket === "skills") partition.skillsChars += added;
+    else if (bucket === "rules") partition.rulesChars += added;
+    else partition.envChars += added;
   };
-  const countSpans = (open: string, close: string): number => {
-    let total = 0;
+
+  interface CandidateSpan { start: number; end: number; bucket: "skills" | "rules" | "env" }
+  const candidates: CandidateSpan[] = [];
+  const collectSpans = (open: string, close: string, bucket: CandidateSpan["bucket"]): void => {
     let from = 0;
     while (from <= text.length - open.length) {
       const start = text.indexOf(open, from);
       if (start < 0) break;
       const end = text.indexOf(close, start + open.length);
       if (end < 0) break;
-      total += end + close.length - start;
-      markSpan(start, end + close.length);
+      candidates.push({start, end: end + close.length, bucket});
       from = end + close.length;
     }
-    return total;
   };
-
-  partition.skillsChars = countSpans("<skills_instructions>", "</skills_instructions>");
-  partition.rulesChars = countSpans(PERMISSIONS_OPEN, PERMISSIONS_CLOSE);
-  partition.envChars = countSpans(ENV_CONTEXT_OPEN, ENV_CONTEXT_CLOSE);
-  partition.envChars += countSpans(ENV_BLOCK_OPEN, ENV_BLOCK_CLOSE);
+  collectSpans("<skills_instructions>", "</skills_instructions>", "skills");
+  collectSpans(PERMISSIONS_OPEN, PERMISSIONS_CLOSE, "rules");
+  collectSpans(ENV_CONTEXT_OPEN, ENV_CONTEXT_CLOSE, "env");
+  collectSpans(ENV_BLOCK_OPEN, ENV_BLOCK_CLOSE, "env");
   const skillToolSpan = skillToolSectionSpan(text);
   if (skillToolSpan) {
-    markSpan(skillToolSpan.start, skillToolSpan.end);
-    partition.skillsChars += skillToolSpan.end - skillToolSpan.start;
+    candidates.push({start: skillToolSpan.start, end: skillToolSpan.end, bucket: "skills"});
+  }
+  candidates.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+  for (const span of candidates) {
+    consumeInto(span.start, span.end, span.bucket);
   }
 
   const mdMatch = matchMdRuleHeader(text);
   if (mdMatch) {
-    partition.rulesChars += text.length;
+    // md 规则块整块归 rules，但已被 skills/env 消费的区间不双计。
+    consumeInto(0, text.length, "rules");
     return partition;
   }
 

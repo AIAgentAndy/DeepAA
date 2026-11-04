@@ -12,6 +12,12 @@ export type RuleKind =
   | "claude_md_global"
   | "permissions";
 
+/**
+ * 工具传递证据来源（F11 分离）：declared = 请求 wire 声明的定义（快照清单），
+ * observed_only = 仅本步调用证据、快照无对应定义——不参与「传递了多少」分母。
+ */
+export type ToolExposure = "declared" | "observed_only";
+
 export interface HarnessToolItem {
   name: string;
   kind: ToolKind;
@@ -21,6 +27,27 @@ export interface HarnessToolItem {
   callsThisStep: number;
   callsThisTurn: number;
   invoked: boolean;
+  exposure: ToolExposure;
+  /** F12：调用分组达处理上限时，未进入已处理集合的工具调用数不可信（未知，非 0）。 */
+  callsUnknown?: boolean;
+}
+
+/**
+ * F1 借补参考标注：本地导入行（官方直连日志不含 tools/skills/rules 声明）的清单
+ * 借自同 Agent 近期快照。清单内容保留展示，但属「参考」，不是当次确定传递。
+ */
+export interface HarnessReferenceView {
+  /** 被借补的组件：tools / skills / rules。 */
+  borrowed: string[];
+  /** donor 快照哈希（新数据带；存量旧诊断未记录时缺省）。 */
+  donorSnapshotHash?: string;
+  donorLastSeenAt?: string;
+}
+
+/** F12：step/turn 调用分组是否达到处理上限（超出部分的计数不可信）。 */
+export interface HarnessCallsLimitedView {
+  step: boolean;
+  turn: boolean;
 }
 
 export interface HarnessSkillItem {
@@ -41,6 +68,8 @@ export interface HarnessSnapshotView {
   hash: string;
   shortHash: string;
   agentName: string;
+  /** P1-1/F10：会话首见的客户端运行版本（存量/未解析为 undefined）。 */
+  agentVersion?: string;
   complete: boolean;
   seqInThread: number;
   coverage: { fromStepIndex: number; toStepIndex: number };
@@ -91,13 +120,22 @@ export interface ApiAgentStepHarness {
   project?: string;
   snapshot?: HarnessSnapshotView;
   inventory: {
+    /** 请求声明清单（declared）。 */
     tools: HarnessToolItem[];
     skills: HarnessSkillItem[];
     rules: HarnessRuleItem[];
+    /** F11：本步调用过但快照无定义的工具（exposure=observed_only，不算传递分母）。 */
+    observedOnlyTools?: HarnessToolItem[];
   };
   harnessTokens?: HarnessTokensView;
   changes?: HarnessChangesView;
   compaction?: HarnessCompactionView;
+  /** F1：清单为借补参考（本地导入行），非当次确定传递。 */
+  reference?: HarnessReferenceView;
+  /** F12：调用分组截断状态。 */
+  callsLimited?: HarnessCallsLimitedView;
+  /** I6/F5：该 Agent 的 Skills 解析能力（not_supported = 0 条显示「解析未支持」而非「无注入」）。 */
+  skillsParseStatus?: "parsed" | "not_supported";
   /** true = Tier A 回填数据（有工具清单与调用，无 skills/rules/构成估算/项目）。 */
   legacyData: boolean;
   candidateCount: number;

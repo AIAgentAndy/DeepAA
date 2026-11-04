@@ -33,6 +33,12 @@ export interface SkillSectionResult {
   skills: ParsedSkill[];
   /** skills 注入段总字符量（含标签），供上下文构成分类。 */
   sectionChars: number;
+  /**
+   * I6（2026-11-03）：解析能力状态——「空集」不再被误读为「该 Agent 没技能」。
+   * not_supported = 该 Agent 的注入格式暂无已验证解析器（dsh/opencode，待真实
+   * 样本接入，绝不猜测格式）；parsed/缺省 = 已解析（0 条 = 确实没有注入）。
+   */
+  status?: "parsed" | "not_supported";
 }
 
 const SKILLS_SECTION_OPEN = "<skills_instructions>";
@@ -58,8 +64,12 @@ export function skillToolSectionSpan(text: string): {start: number; end: number}
     spanStart = Math.max(0, start - SYSTEM_REMINDER_OPEN.length - 4) + openIndex;
   }
   const close = text.indexOf(SYSTEM_REMINDER_CLOSE, spanStart);
-  const fallbackEnd = start + SKILL_TOOL_SECTION_HEADER.length;
-  return {start: spanStart, end: close >= 0 ? close + SYSTEM_REMINDER_CLOSE.length : fallbackEnd};
+  if (close >= 0) return {start: spanStart, end: close + SYSTEM_REMINDER_CLOSE.length};
+  // I6（2026-11-03 实测修复）：claude-code 实际注入存在无 <system-reminder> 包裹的
+  // 裸清单块（本机取证：预览项以标题开头、块内无闭标签，旧回退只取标题长度导致
+  // 条目全丢——claude-code 114 个快照 skills 全 0 的根因）。无闭标签时延伸到文本
+  // 尾：parseSkillEntries 只匹配 `- name: desc` 条目行，尾部多余文本不产生假条目。
+  return {start: spanStart, end: text.length};
 }
 
 /** 提取文本中所有 `<tag>...</tag>` 结构化段落（有界扫描，不使用回溯型正则）。 */
@@ -173,7 +183,7 @@ function parseSkillEntries(section: string, projectKey?: string): ParsedSkill[] 
   return skills;
 }
 
-/** 按 Agent 解析注入 skills 名单；未支持 Agent 返回空集（显式空态，不猜测格式）。 */
+/** 按 Agent 解析注入 skills 名单；未支持 Agent 返回 not_supported 空集（不猜测格式）。 */
 export function parseSkillsForAgent(
   agentName: string,
   inputTexts: string[],
@@ -183,18 +193,34 @@ export function parseSkillsForAgent(
   if (agentName === "claude-code" || agentName === "zcode") {
     return parseSkillToolSection(inputTexts, projectKey);
   }
-  return { skills: [], sectionChars: 0 };
+  return { skills: [], sectionChars: 0, status: "not_supported" };
+}
+
+/**
+ * I6：解析器能力表（查询/UI 共享）——dsh/opencode 的 0 条 skills 显示「解析未支持」
+ * 而非「无注入」。静态代码级事实，无需逐行落库。
+ */
+const SKILL_PARSER_AGENTS = new Set(["codex", "claude-code", "zcode"]);
+
+export function skillsParseStatusForAgent(agentName: string): "parsed" | "not_supported" {
+  return SKILL_PARSER_AGENTS.has(agentName) ? "parsed" : "not_supported";
 }
 
 function parseCodexSkills(inputTexts: string[], projectKey?: string): SkillSectionResult {
   const skills: ParsedSkill[] = [];
   let sectionChars = 0;
+  // I6/F5：函数级去重（与 claude 分支同构）——同一技能目录出现在多个输入块
+  // （instructions + user 消息重复携带）时不得重复计数。
+  const seen = new Set<string>();
   for (const text of inputTexts) {
     if (!text || !text.includes(SKILLS_SECTION_OPEN)) continue;
     for (const section of extractTaggedSections(text, SKILLS_SECTION_OPEN, SKILLS_SECTION_CLOSE)) {
       const fullLength = section.length + SKILLS_SECTION_OPEN.length + SKILLS_SECTION_CLOSE.length;
       sectionChars += fullLength;
       for (const skill of parseSkillEntries(section, projectKey)) {
+        const dedupeKey = `${skill.name}|${skill.sourceRoot ?? ""}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
         skills.push(skill);
       }
     }

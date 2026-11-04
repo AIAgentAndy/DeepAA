@@ -1011,8 +1011,15 @@ function writePreparedExchange(
       `UPDATE agent_steps SET context_compressed = 1 WHERE id = ?`,
     ).run(stepShape.id);
   }
-  // Harness 证据层（v27）：内容寻址快照 upsert + step 引用列回写，同一事务内。
-  // 导入行缺组件（tools/skills/rules）时从同 Agent 最近富快照借补（2026-09-18）：
+  // P1-1/F10（2026-11-03）：会话首见客户端运行版本（UA / 专属头解析）。
+  // COALESCE 首见保留——会话中途升级版本不覆盖；fp-<agent> 指纹与续接语义零变化。
+  const resolvedVersion = fingerprintAgent(hydrated).agentVersion;
+  if (resolvedVersion) {
+    db.prepare(
+      `UPDATE agent_sessions SET agent_version = COALESCE(agent_version, ?) WHERE id = ?`,
+    ).run(resolvedVersion, writtenPath.sessionId);
+  }
+  // Harness 证据层（v27）：内容寻址快照 upsert + step 引用列回写，同一事务内。  // 导入行缺组件（tools/skills/rules）时从同 Agent 最近富快照借补（2026-09-18）：
   // 官方直连本地日志不落工具定义，借补等价清单并收敛到同一快照哈希；来源用
   // derivation diagnostic 可观测。
   const harnessIdentity = buildHarnessSnapshotIdentity(agentName, normalized);
@@ -1027,6 +1034,7 @@ function writePreparedExchange(
         hydrated,
         prepared.projection.preview.projectionVersion,
         borrowed.borrowed,
+        borrowed.donors,
       );
     }
   }
@@ -1358,14 +1366,23 @@ function responseIdFromBody(exchange: RawCapturedExchange): string | undefined {
   return typeof id === "string" && id ? id : undefined;
 }
 
-/** 导入行 Harness 借补的可观测标注：缺哪些组件、从同 Agent 富快照补齐。 */
+/** 导入行 Harness 借补的可观测标注：缺哪些组件、从哪些 donor 快照补齐（I1 起带 donor）。 */
 function writeHarnessInventoryBorrowedDiagnostic(
   db: DeepaaDatabase,
   input: ProcessExchangeInput,
   exchange: RawCapturedExchange,
   projectionVersion: number,
   borrowed: readonly string[],
+  donors: ReadonlyArray<{component: string; snapshotHash: string; lastSeenAt: string}>,
 ): void {
+  const details = JSON.stringify({
+    borrowed,
+    donors: donors.map(donor => ({
+      component: donor.component,
+      snapshotHash: donor.snapshotHash,
+      lastSeenAt: donor.lastSeenAt,
+    })),
+  });
   db.prepare(
     `INSERT INTO derivation_diagnostics(
       exchange_id, source_id, ingestion_record_id, projection_version,
@@ -1381,11 +1398,11 @@ function writeHarnessInventoryBorrowedDiagnostic(
     input.sourceId,
     input.ingestionRecordId ?? null,
     projectionVersion,
-    "官方直连本地日志不含 " + borrowed.join("/") + " 清单，已从同 Agent 最近快照借补（与网关 wire 侧同源）。",
-    JSON.stringify({borrowed}),
+    "官方直连本地日志不含 " + borrowed.join("/") + " 清单，已从同 Agent 最近快照借补（参考清单，非当次确定传递）。",
+    details,
     exchange.capturedAt,
     exchange.exchangeId,
-    JSON.stringify({borrowed}),
+    details,
   );
 }
 
@@ -2447,10 +2464,12 @@ function writeToolCalls(
 ): number {
   for (const result of normalized.harnessPayload.providedToolResults) {
     if (!result.toolUseId) continue;
+    // I5/F4：「有结果」与「成功」分离——is_error 结果落 error 状态，不再一律
+    // completed（completed = 有结果且正常回填；error = 已回填但工具侧报告错误）。
     db.prepare(
-      `UPDATE tool_calls SET status = 'completed'
+      `UPDATE tool_calls SET status = ?
        WHERE agent_thread_id = ? AND agent_turn_id = ? AND tool_use_id = ?`,
-    ).run(path.threadId, turnId, result.toolUseId);
+    ).run(result.isError === true ? "error" : "completed", path.threadId, turnId, result.toolUseId);
   }
 
   normalized.response.toolUses.forEach((toolUse, index) => {

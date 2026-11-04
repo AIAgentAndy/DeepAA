@@ -770,7 +770,7 @@ export function loadApiAgentSteps(
       (SELECT COUNT(*) FROM tool_calls WHERE agent_step_id = s.id)
         AS tool_use_count,
       (SELECT COUNT(*) FROM tool_calls
-       WHERE agent_step_id = s.id AND status = 'completed') AS tool_result_count,
+       WHERE agent_step_id = s.id AND status IN ('completed', 'error')) AS tool_result_count,
       COALESCE(
         s.failover_json,
         json_extract((SELECT summary_json FROM context_snapshots WHERE agent_step_id = s.id), '$.failover'),
@@ -858,7 +858,7 @@ export function loadApiAgentStepDetail(
       (SELECT COUNT(*) FROM tool_calls WHERE agent_step_id = s.id)
         AS tool_use_count,
       (SELECT COUNT(*) FROM tool_calls
-       WHERE agent_step_id = s.id AND status = 'completed') AS tool_result_count,
+       WHERE agent_step_id = s.id AND status IN ('completed', 'error')) AS tool_result_count,
       u.model, u.vendor, u.rate_multiplier,
       COALESCE(u.input_tokens, s.input_tokens) AS input_tokens,
       COALESCE(u.cache_read_tokens, s.cache_read_tokens) AS cache_read_tokens,
@@ -3056,7 +3056,7 @@ function toolsForSteps(
          ) AS group_rank,
          COUNT(*) OVER (PARTITION BY agent_step_id) AS group_count,
          SUM(call_count) OVER (PARTITION BY agent_step_id) AS total_count,
-         SUM(CASE WHEN status = 'completed' THEN call_count ELSE 0 END)
+         SUM(CASE WHEN status IN ('completed', 'error') THEN call_count ELSE 0 END)
            OVER (PARTITION BY agent_step_id) AS result_count
        FROM grouped
      )

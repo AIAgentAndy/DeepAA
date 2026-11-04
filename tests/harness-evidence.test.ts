@@ -7,6 +7,7 @@ import {
 import {
   extractTaggedSections,
   parseSkillsForAgent,
+  skillsParseStatusForAgent,
 } from "../src/lib/harness/skills-parser.js";
 import {
   collectCompositionChars,
@@ -158,11 +159,13 @@ describe("codex skills parsing (real capture format)", () => {
     expect(result.sectionChars).toBeGreaterThan(0);
   });
 
-  test("returns empty result for agents without a parser (no guessing)", () => {
+  test("returns not_supported empty result for agents without a parser (no guessing)", () => {
     // opencode/dsh 仍无已验证样本，保持空集；claude/zcode 见下方 Skill 工具清单用例。
     const result = parseSkillsForAgent("opencode", [CODEX_SKILLS_SECTION], PROJECT_KEY);
     expect(result.skills).toEqual([]);
     expect(result.sectionChars).toBe(0);
+    // I6：空集 ≠ 没技能——未支持 Agent 显式 not_supported。
+    expect(result.status).toBe("not_supported");
     // codex 格式对 claude/zcode 解析器同样无效（标题不匹配）。
     expect(parseSkillsForAgent("claude-code", [CODEX_SKILLS_SECTION], PROJECT_KEY).skills).toEqual([]);
   });
@@ -216,6 +219,37 @@ describe("claude-code / zcode skill-tool section parsing (real capture format)",
   test("dsh / opencode remain explicit empty state (no verified sample)", () => {
     expect(parseSkillsForAgent("dsh", [ZCODE_SKILL_TOOL_SECTION], PROJECT_KEY).skills).toEqual([]);
     expect(parseSkillsForAgent("opencode", [ZCODE_SKILL_TOOL_SECTION], PROJECT_KEY).skills).toEqual([]);
+  });
+
+  test("I6（2026-11-03）：无 system-reminder 包裹的裸清单块也能解析条目（claude skills=0 根因）", () => {
+    // 本机 2026-11-03 真实取证：claude-code 网关请求存在以标题直接开头、无
+    // </system-reminder> 闭标签的清单块（本机装有 5+ skills，库中 15 个请求含
+    // 标题但 114 个快照 skills 全 0）。旧回退只取标题长度导致条目全丢。
+    const bareSection = `The following skills are available for use with the Skill tool:
+
+- faceless-explainer: Turn arbitrary text into a faceless explainer video.
+- brainstorming: Structured brainstorming workflow.`;
+    const result = parseSkillsForAgent("claude-code", [bareSection], PROJECT_KEY);
+    expect(result.skills.map(skill => skill.name)).toEqual(["faceless-explainer", "brainstorming"]);
+    expect(result.sectionChars).toBe(bareSection.length);
+  });
+
+  test("I6：codex 同一技能目录出现在两个输入块时去重（F5 反例）", () => {
+    const single = parseSkillsForAgent("codex", [CODEX_SKILLS_SECTION], PROJECT_KEY);
+    const result = parseSkillsForAgent("codex", [CODEX_SKILLS_SECTION, CODEX_SKILLS_SECTION], PROJECT_KEY);
+    const names = result.skills.map(skill => skill.name);
+    expect(new Set(names).size).toBe(names.length, `重复条目: ${names.join(",")}`);
+    expect(result.skills.length).toBe(single.skills.length);
+    // sectionChars 仍是两段注入的实际字符量（构成估算按注入计，不按去重计）。
+    expect(result.sectionChars).toBe(single.sectionChars * 2);
+  });
+
+  test("I6：skillsParseStatusForAgent 能力表与查询/ UI 共享", () => {
+    expect(skillsParseStatusForAgent("codex")).toBe("parsed");
+    expect(skillsParseStatusForAgent("claude-code")).toBe("parsed");
+    expect(skillsParseStatusForAgent("zcode")).toBe("parsed");
+    expect(skillsParseStatusForAgent("dsh")).toBe("not_supported");
+    expect(skillsParseStatusForAgent("opencode")).toBe("not_supported");
   });
 });
 
@@ -407,3 +441,87 @@ describe("normalizer harness evidence integration", () => {
     expect(chars.toolResults).toBe("output".length);
   });
 });
+
+describe("I7（2026-11-03）：上下文分解守恒与校准口径（F7）", () => {
+  test("嵌套段互斥归属：skills 段嵌在 permissions 内不双计，四桶之和 == 文本长度", () => {
+    // F7 反例原型：204 字符文本（permissions 段内嵌 skills 段）旧实现合计 368。
+    const nested = `<permissions instructions>
+<skills_instructions>
+- alpha: do things
+- beta: more things
+</skills_instructions>
+be careful out there
+</permissions instructions>`;
+    const partition = partitionInputText(nested);
+    const total = partition.skillsChars + partition.rulesChars + partition.envChars + partition.conversationChars;
+    expect(total).toBe(nested.length);
+    // 嵌套段归先出现的外层（permissions），内层 skills 不再重复计入。
+    expect(partition.rulesChars).toBe(nested.length);
+    expect(partition.skillsChars).toBe(0);
+    expect(partition.conversationChars).toBe(0);
+  });
+
+  test("非嵌套场景与旧口径等价（skills/env/permissions 各自独立）", () => {
+    const independent = `chat line one
+<skills_instructions>
+- alpha: do things
+</skills_instructions>
+<env>
+cwd: /tmp
+</env>
+chat line two`;
+    const partition = partitionInputText(independent);
+    const total = partition.skillsChars + partition.rulesChars + partition.envChars + partition.conversationChars;
+    expect(total).toBe(independent.length);
+    expect(partition.skillsChars).toBe("<skills_instructions>\n- alpha: do things\n</skills_instructions>".length);
+    expect(partition.envChars).toBe("<env>\ncwd: /tmp\n</env>".length);
+    // conversation = 两行聊天 + skills 段与 env 段之间的两个换行符。
+    expect(partition.conversationChars).toBe("chat line one\n".length + "\n\n".length + "chat line two".length);
+  });
+
+  test("校准分母包含 cache creation（Anthropic 100+200+300 → 600）", async () => {
+    const {contextCompositionFor} = await import("../src/lib/harness/context-composition.js");
+    const {normalizeExchange} = await import("../src/lib/harness/index.js");
+    const normalized = normalizeExchange(makeUsageExchange({
+      input_tokens: 100,
+      cache_read_input_tokens: 200,
+      cache_creation_input_tokens: 300,
+      output_tokens: 10,
+    }));
+    const composition = contextCompositionFor(normalized, {skills: [], rules: [], projectKey: undefined});
+    expect(composition.calibration?.actualInputTokens).toBe(600);
+    expect(composition.calibratedTokens).toBeDefined();
+  });
+});
+
+function makeUsageExchange(usage: Record<string, number>) {
+  return {
+    schemaVersion: 1,
+    exchangeId: "usage-cal",
+    captureSessionId: "c",
+    sequence: 1,
+    capturedAt: "2026-11-03T08:00:00.000Z",
+    completedAt: "2026-11-03T08:00:01.000Z",
+    durationMs: 1000,
+    routing: {
+      targetId: "t", targetName: "T", targetFormatHint: "anthropic",
+      localUrl: "http://localhost:3211/v1/messages", upstreamUrl: "https://example.test/v1/messages",
+      localPath: "/v1/messages", upstreamPath: "/v1/messages", method: "POST",
+    },
+    request: {
+      headers: {"anthropic-version": "2023-06-01"},
+      rawBody: JSON.stringify({model: "claude-sonnet", messages: [{role: "user", content: [{type: "text", text: "hi"}]}]}),
+      parsedBody: {model: "claude-sonnet", messages: [{role: "user", content: [{type: "text", text: "hi"}]}]},
+      bodySizeBytes: 100, bodySha256: "0".repeat(64),
+    },
+    response: {
+      status: 200, statusText: "OK", headers: {},
+      rawBody: JSON.stringify({type: "message", role: "assistant", content: [{type: "text", text: "ok"}], usage}),
+      parsedBody: {type: "message", role: "assistant", content: [{type: "text", text: "ok"}], usage},
+      bodySizeBytes: 100, bodySha256: "1".repeat(64), isStreaming: false,
+    },
+    bodyStorage: {policy: "inline"},
+    captureDiagnostics: [],
+    security: {containsSensitiveHeaders: false, headerRedactionAppliedInApi: true, rawBodiesStoredLocally: true},
+  } as never;
+}

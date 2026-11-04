@@ -34,6 +34,46 @@ import type {
   PendingImportCandidate,
 } from "../types";
 
+/**
+ * 有界探测不支持格式的会话文件数（I3：目录枚举上限与扫描一致；只 stat 单一路径）。
+ */
+function countUnsupportedSessionFiles(
+  sessionsDir: string,
+  fileName: string,
+): {count: number; limited: boolean} {
+  let count = 0;
+  let scanned = 0;
+  let limited = false;
+  let workspaces: Array<{isDirectory(): boolean; name: string}>;
+  try {
+    workspaces = readdirSync(sessionsDir, {withFileTypes: true});
+  } catch {
+    return {count: 0, limited: false};
+  }
+  for (const workspace of workspaces) {
+    if (scanned >= MAX_SESSION_FILES_PER_SCAN) { limited = true; break; }
+    if (!workspace.isDirectory()) continue;
+    let entries: Array<{isDirectory(): boolean; name: string}>;
+    try {
+      entries = readdirSync(join(sessionsDir, workspace.name), {withFileTypes: true});
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (scanned >= MAX_SESSION_FILES_PER_SCAN) { limited = true; break; }
+      if (!entry.isDirectory()) continue;
+      scanned += 1;
+      try {
+        statSync(join(sessionsDir, workspace.name, entry.name, fileName));
+        count += 1;
+      } catch {
+        // 该会话目录无此格式文件。
+      }
+    }
+  }
+  return {count, limited};
+}
+
 /** 单会话解压上限（与 zcode 时间线同款防御；超过即整会话跳过，绝不 OOM）。 */
 const MAX_SESSION_DECOMPRESSED_BYTES = 64 * 1024 * 1024;
 /** 单轮扫描的会话文件上限（有界目录枚举；超出留给下一轮）。 */
@@ -775,7 +815,18 @@ export function createDshLocalSourceAdapter(
     async discover(): Promise<LocalSourceStatus> {
       try {
         readdirSync(sessionsDir);
-        return {availability: {state: "available"}, dataDir: sessionsDir};
+        // I3（2026-11-03，F9 格式可见性）：有界探测 session.v4 文件计数——适配器
+        // 只支持 v3（文件名硬编码 + version!==3 双重拦截），v4 此前完全静默不可见
+        // （实测本机 60 个 v4 会话未导入）。只 stat、不解析、不读内容。
+        const v4Count = countUnsupportedSessionFiles(sessionsDir, "session.v4.jsonl.zstd");
+        return {
+          availability: {state: "available"},
+          dataDir: sessionsDir,
+          ...(v4Count.count > 0 ? {notices: [{
+            kind: "unsupported_format" as const,
+            detail: `${v4Count.count} 个会话为 session.v4 格式，当前仅支持 v3，暂未导入` + (v4Count.limited ? "（枚举达上限，实际更多）" : ""),
+          }]} : {}),
+        };
       } catch {
         return {availability: {state: "missing", reason: "DSH_SESSIONS_MISSING"}, dataDir: sessionsDir};
       }

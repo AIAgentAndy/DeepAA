@@ -159,9 +159,13 @@ export function contextCompositionFor(
   const { chars, estTokens } = collectCompositionChars(normalized, evidence);
   const composition: ContextComposition = { chars, estTokens };
   const usage = normalized.response.usage;
-  const actualInputTokens = usage?.inputTokens !== undefined
-    ? usage.inputTokens + (usage.cacheReadTokens ?? 0)
-    : undefined;
+  // I7/F7（2026-11-03）：校准分母与 normalizer 总输入口径对齐——统一用
+  // totalInputTokens（三形态均 = 非缓存输入 + cache read + cache creation）。
+  // 旧公式漏 cache_creation（Anthropic 100+200+300 场景校准被钉死在 300 而非 600）。
+  const actualInputTokens = usage?.totalInputTokens
+    ?? (usage?.inputTokens !== undefined
+      ? usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheCreationTokens ?? 0)
+      : undefined);
   const estimatedTotal = Object.values(estTokens).reduce((sum, value) => sum + value, 0);
   if (actualInputTokens !== undefined && actualInputTokens > 0 && estimatedTotal > 0) {
     const scale = actualInputTokens / estimatedTotal;

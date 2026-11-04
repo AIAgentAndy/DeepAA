@@ -33,6 +33,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 /** 人工维护的关键资源清单（第 1 层防线）；目录断言以 / 结尾。 */
 const REQUIRED: readonly string[] = [
   "config/agents/catalog-template.json",
+  "config/agents/harness/mechanism-profiles.json",
   "data/defaults/llm_catalog.jsonl",
   "data/defaults/litellm-model-prices.snapshot.json",
   "dist/proxy/proxy-server.mjs",

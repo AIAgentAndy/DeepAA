@@ -565,7 +565,7 @@ export interface AgentLocalImportStatusEntry {
   /** 直连导入开关（false = 仅身份标注模式：扫描照常、不入账），供 UI 如实说明。 */
   directImportEnabled: boolean;
   binding: {state: "bound" | "disabled"; reason?: string; targetId?: string; floorEpochMs?: number; viaDefaultTarget?: boolean};
-  source?: {state: string; reason?: string; dataDir: string; localSchemaVersion?: string};
+  source?: {state: string; reason?: string; dataDir: string; localSchemaVersion?: string; notices?: Array<{kind: string; detail: string}>};
   importState?: {
     lastStartedAt?: number;
     lastRecordId?: string;
@@ -601,6 +601,7 @@ export async function readAgentLocalImportStatus(dataDir: string): Promise<Agent
           ...(source.availability.state !== "available" ? {reason: source.availability.reason} : {}),
           dataDir: source.dataDir,
           ...(source.localSchemaVersion ? {localSchemaVersion: source.localSchemaVersion} : {}),
+          ...(source.notices && source.notices.length > 0 ? {notices: source.notices} : {}),
         },
         ...(importState ? {
           importState: {

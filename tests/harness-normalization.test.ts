@@ -674,3 +674,49 @@ function makeExchange(options: {
 function lower(headers: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]));
 }
+
+describe("I5（2026-11-03）：Anthropic tool_result is_error 贯通（F4）", () => {
+  test("is_error=true 的 tool_result 产出 providedToolResults.isError，此前在源头被丢弃", () => {
+    const normalized = normalizeExchange(makeExchange({
+      exchangeId: "is-error",
+      path: "/v1/messages",
+      headers: {"anthropic-version": "2023-06-01"},
+      request: {
+        model: "claude-sonnet",
+        messages: [
+          { role: "user", content: [{ type: "text", text: "run" }] },
+          { role: "assistant", content: [{ type: "tool_use", id: "toolu_err", name: "failing_tool", input: {} }] },
+          { role: "user", content: [
+            { type: "tool_result", tool_use_id: "toolu_err", is_error: true, content: "command failed" },
+          ] },
+        ],
+      },
+      response: { type: "message", role: "assistant", content: [{ type: "text", text: "recovered" }] },
+    }));
+    const errorResult = normalized.harnessPayload.providedToolResults.find(r => r.toolUseId === "toolu_err");
+    expect(errorResult).toBeDefined();
+    expect(errorResult?.isError).toBe(true);
+    expect(errorResult?.content).toBe("command failed");
+  });
+
+  test("正常 tool_result 不带 isError（undefined，不落 false）", () => {
+    const normalized = normalizeExchange(makeExchange({
+      exchangeId: "is-ok",
+      path: "/v1/messages",
+      headers: {"anthropic-version": "2023-06-01"},
+      request: {
+        model: "claude-sonnet",
+        messages: [
+          { role: "assistant", content: [{ type: "tool_use", id: "toolu_ok", name: "ok_tool", input: {} }] },
+          { role: "user", content: [
+            { type: "tool_result", tool_use_id: "toolu_ok", content: "fine" },
+          ] },
+        ],
+      },
+      response: { type: "message", role: "assistant", content: [{ type: "text", text: "done" }] },
+    }));
+    const okResult = normalized.harnessPayload.providedToolResults.find(r => r.toolUseId === "toolu_ok");
+    expect(okResult).toBeDefined();
+    expect(okResult?.isError).toBeUndefined();
+  });
+});

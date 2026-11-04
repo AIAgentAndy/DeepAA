@@ -1772,7 +1772,15 @@ describe("SQLite 单 Exchange 事务派生", () => {
       "SELECT details_json FROM derivation_diagnostics WHERE exchange_id = ? AND code = 'harness_inventory_borrowed'",
     ).get(imported.exchangeId!) as {details_json: string} | undefined;
     assert.ok(diag, "借补必须写 harness_inventory_borrowed 诊断");
-    assert.deepEqual(JSON.parse(diag.details_json), {borrowed: ["tools"]});
+    // I1（F1 降级方案甲）：details 带 donor 快照哈希，供 Step 查询透出参考标注。
+    const borrowDetails = JSON.parse(diag.details_json) as {
+      borrowed: string[];
+      donors: Array<{component: string; snapshotHash: string; lastSeenAt: string}>;
+    };
+    assert.deepEqual(borrowDetails.borrowed, ["tools"]);
+    assert.equal(borrowDetails.donors.length, 1);
+    assert.equal(borrowDetails.donors[0].component, "tools");
+    assert.equal(borrowDetails.donors[0].snapshotHash, gatewayHash);
   });
 
   test("原生 Turn 身份优先：native id 未变时内容边界不开新轮（dsh）", async () => {

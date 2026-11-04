@@ -68,6 +68,7 @@ test("package metadata is ready for permissive open source release", () => {
   expect(packageJson.files).toEqual([
     "bin",
     "config/agents/catalog-template.json",
+    "config/agents/harness/mechanism-profiles.json",
     "dist/proxy",
     ".next",
     "!.next/cache",

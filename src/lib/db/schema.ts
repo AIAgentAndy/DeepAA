@@ -1,6 +1,6 @@
 import type {DeepaaDatabase} from "@/lib/db/sqlite-driver";
 
-export const SCHEMA_VERSION = 53;
+export const SCHEMA_VERSION = 55;
 
 /**
  * v19：Agent 证据字段。
@@ -746,6 +746,36 @@ function migrateConsoleCredentialV53(db: DeepaaDatabase): void {
   if (!hasTable(db, "console_accounts")) return;
   if (!hasColumn(db, "console_accounts", "credential_id")) {
     db.exec("ALTER TABLE console_accounts ADD COLUMN credential_id TEXT");
+  }
+}
+
+/**
+ * v54：Agent 运行版本维度（2026-11-03 P1-1，F10）。
+ * agent_sessions.agent_version 记录会话首见的客户端版本（UA / x-zcode-app-version
+ * 解析）；fp-<agent> 指纹 ID 与会话续接语义零变化，版本只作独立统计维度。
+ * 存量会话 NULL，不回填；新会话写入。
+ */
+function migrateAgentVersionV54(db: DeepaaDatabase): void {
+  if (!hasTable(db, "agent_sessions")) return;
+  if (!hasColumn(db, "agent_sessions", "agent_version")) {
+    db.exec("ALTER TABLE agent_sessions ADD COLUMN agent_version TEXT");
+  }
+}
+
+/**
+ * v55：P1-4 双向反查索引（2026-11-03）。
+ * idx_tools_name_time 支撑「按工具名 + 时间窗」的全局调用反查（keyset）；
+ * idx_steps_snapshot 支撑「按快照哈希」的声明出现反查（快照表按 agent 过滤后
+ * 取哈希集合，再命中 step 索引）。纯索引新增，不重算不回填。
+ */
+function migrateCapabilityLookupIndexesV55(db: DeepaaDatabase): void {
+  // 列存在性防御：旧 v1 形态的 tool_calls 无 created_at（随后续迁移补列后
+  // 由重建路径覆盖），不因索引缺失阻断迁移事务。
+  if (hasTable(db, "tool_calls") && hasColumn(db, "tool_calls", "created_at")) {
+    db.exec("CREATE INDEX IF NOT EXISTS idx_tools_name_time ON tool_calls(tool_name, created_at)");
+  }
+  if (hasTable(db, "agent_steps") && hasColumn(db, "agent_steps", "harness_snapshot_hash")) {
+    db.exec("CREATE INDEX IF NOT EXISTS idx_steps_snapshot ON agent_steps(harness_snapshot_hash)");
   }
 }
 
@@ -1893,6 +1923,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   target_name TEXT NOT NULL,
   agent_fingerprint_id TEXT NOT NULL,
   agent_name TEXT NOT NULL,
+  agent_version TEXT,
   external_session_id TEXT,
   external_conversation_id TEXT,
   source TEXT NOT NULL,
@@ -2435,6 +2466,12 @@ export function migrateDeepaaDatabase(db: DeepaaDatabase): void {
       }
       if (current < 53) {
         migrateConsoleCredentialV53(db);
+      }
+      if (current < 54) {
+        migrateAgentVersionV54(db);
+      }
+      if (current < 55) {
+        migrateCapabilityLookupIndexesV55(db);
       }
     }
     db.prepare(

@@ -130,6 +130,16 @@ interface RolloutFileCache {
   records: LocalUsageRecord[];
   recordDetails: Map<string, RecordDetail>;
   /**
+   * token_usage_record 暂存（2026-11-03 I2/F9）：新版 codex 对同一请求双写
+   * token_usage_record（ordinal 小，先到）与 event_msg(token_count)（后到）。
+   * token_count 恒消费且 id 语义不变（存量已导入记录以 token_count ordinal 为 id，
+   * 改变会双计）；token_usage_record 先暂存，同请求 token_count 到来即丢弃，
+   * 确认无 token_count 跟随（新 turn / 下一条 tur / 不同 key 的 tc）才消费——
+   * 覆盖「只有 token_usage_record」的请求（实测 2026-10-29 桌面会话 99 vs 88，
+   * 11 条 tur-only 用量此前丢失）。文件尾部孤儿 tur 至多延迟到文件下次追加。
+   */
+  pendingUsageRecord: {ordinalText: string; usageRaw: Record<string, unknown>; timestampMs: number} | undefined;
+  /**
    * 已消费的 item 总数（单调计数，A 修复）：扫描态不再保留 items 正文——索引
    * （contextEnd / outputIndices）只依赖计数与方向，正文由 readExchangeDetail 按需
    * 从磁盘重析并进入有界 LRU。
@@ -250,7 +260,7 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
       if (!cache) {
         cache = {
           path: file.path, fileKey: file.fileKey, mtimeMs: file.mtimeMs, size: file.size,
-          offset: 0, tail: Buffer.alloc(0), records: [], recordDetails: new Map(),
+          offset: 0, tail: Buffer.alloc(0), records: [], recordDetails: new Map(), pendingUsageRecord: undefined,
           itemCount: 0, pendingOutputIndices: [], pendingOutputTimings: [],
           lastInputActivityMs: undefined,
           sessionMeta: undefined, currentTurn: undefined, requestAnchorMs: undefined,
@@ -764,6 +774,9 @@ function consumeRolloutLine(cache: RolloutFileCache, line: Buffer): void {
     return;
   }
   if (parsed.type === "turn_context" && parsed.payload) {
+    // 新 turn 开始：上一 turn 尾部的 token_usage_record 孤儿确认无 token_count
+    // 跟随（双写的 token_count 与 tur 同 turn 相邻出现），先落它再切换 turn。
+    flushPendingUsageRecord(cache);
     cache.currentTurn = {
       turnId: typeof parsed.payload.turn_id === "string" ? parsed.payload.turn_id : undefined,
       model: typeof parsed.payload.model === "string" ? parsed.payload.model : undefined,
@@ -803,6 +816,21 @@ function consumeRolloutLine(cache: RolloutFileCache, line: Buffer): void {
   }
   if (parsed.type === "event_msg" && parsed.payload?.type === "token_count") {
     consumeTokenCount(cache, String(parsed.ordinal ?? cache.records.length + 1), parsed.payload, validTs ? timestampMs : cache.lastActivityMs);
+    return;
+  }
+  if (parsed.type === "token_usage_record" && parsed.payload) {
+    // 2026-11-03（I2/F9）：新版顶层用量事件（实测 2026-11-03 会话与 event_msg
+    // token_count 双写，ordinal 更小先到；2026-10-29 桌面会话存在 11 条 tur-only
+    // 请求）。先暂存——同请求 token_count 到来即丢弃（防双计），确认孤儿才消费。
+    const usageRaw = (parsed.payload as {usage?: unknown}).usage;
+    if (usageRaw && typeof usageRaw === "object" && !Array.isArray(usageRaw)) {
+      flushPendingUsageRecord(cache);
+      cache.pendingUsageRecord = {
+        ordinalText: String(parsed.ordinal ?? cache.records.length + 1),
+        usageRaw: usageRaw as Record<string, unknown>,
+        timestampMs: validTs ? timestampMs : cache.lastActivityMs,
+      };
+    }
   }
 }
 
@@ -842,6 +870,20 @@ function mapResponseItemToSessionItem(ordinal: number, payload: Record<string, u
       toolInput: payload.input,
     };
   }
+  if (payload.type === "function_call") {
+    // 2026-11-03（I2/F9）：Codex 桌面 App rollout 使用 function_call 形态（实测
+    // 2026-10-29 会话 100 次、10-23 会话 57 次调用此前全部丢失）。与 custom_tool_call
+    // 同构——内部 kind 复用 custom_tool_call（itemWirePayload 序列化为 wire
+    // function_call，与网关捕获形态一致）；arguments 是 JSON 字符串，解析为对象
+    // 保持与 custom 形态一致的回放语义。
+    return {
+      ordinal, turnId,
+      direction: "output", kind: "custom_tool_call", itemId,
+      toolName: typeof payload.name === "string" ? payload.name : undefined,
+      callId: typeof payload.call_id === "string" ? payload.call_id : undefined,
+      toolInput: parseToolCallArguments(payload.arguments),
+    };
+  }
   if (payload.type === "custom_tool_call_output") {
     // 实测 output 是 input_text 段数组（多段文本），拼接为 function_call_output 的字符串。
     const outputText = Array.isArray(payload.output)
@@ -856,7 +898,29 @@ function mapResponseItemToSessionItem(ordinal: number, payload: Record<string, u
       toolOutput: outputText,
     };
   }
+  if (payload.type === "function_call_output") {
+    // 2026-11-03（I2/F9）：桌面形态的 output 实测为纯字符串。
+    return {
+      ordinal, turnId,
+      direction: "input", kind: "custom_tool_call_output", itemId,
+      callId: typeof payload.call_id === "string" ? payload.call_id : undefined,
+      toolOutput: typeof payload.output === "string" ? payload.output : undefined,
+    };
+  }
   return undefined;
+}
+
+/** function_call.arguments（JSON 字符串）→ 对象；解析失败回退空对象（回放保真优先）。 */
+function parseToolCallArguments(argumentsRaw: unknown): Record<string, unknown> | undefined {
+  if (typeof argumentsRaw !== "string" || argumentsRaw === "") return undefined;
+  try {
+    const parsed = JSON.parse(argumentsRaw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {value: parsed};
+  } catch {
+    return {raw: argumentsRaw};
+  }
 }
 
 function consumeResponseItem(cache: RolloutFileCache, ordinal: number, payload: Record<string, unknown>, _timestampMs: number | undefined): void {
@@ -878,7 +942,7 @@ function pushSessionItem(cache: RolloutFileCache, item: SessionItem): void {
 }
 
 /**
- * token_count：一条导入记录（一次模型请求）+ 正文定位 + 时间信息。
+ * token_count / token_usage_record 共用的用量事件消费（2026-11-03 I2 重构）。
  * 时间口径（2026-10-09 三修）：不依赖 response_item ID 与 item_completed ID 的匹配
  * （两套独立标识，实测匹配率仅 3/8）。锚 = 最近一次 input 侧活动（UserMessage /
  * CommandExecution 的 item_completed 行时间戳），首字/完成 = 自上一 token_count 以来
@@ -887,6 +951,43 @@ function pushSessionItem(cache: RolloutFileCache, item: SessionItem): void {
 function consumeTokenCount(cache: RolloutFileCache, ordinalText: string, payload: Record<string, unknown>, lineTimestampMs: number): void {
   const info = payload.info as {last_token_usage?: Record<string, unknown>} | undefined;
   const usageRaw = info?.last_token_usage;
+  if (!usageRaw) return;
+  // 双写防重（I2）：pending 的 token_usage_record 若与本 token_count 同 key →
+  // 同一请求双写，token_count 胜出（id=token_count ordinal 与存量已导入记录一致，
+  // 改变会导致重扫双计）；key 不同 → pending 是上一请求的孤儿，先落它。
+  const pending = cache.pendingUsageRecord;
+  if (pending) {
+    if (usageEventKey(cache, pending.usageRaw) === usageEventKey(cache, usageRaw)) {
+      cache.pendingUsageRecord = undefined;
+    } else {
+      flushPendingUsageRecord(cache);
+    }
+  }
+  appendUsageRecord(cache, ordinalText, usageRaw, lineTimestampMs);
+}
+
+/** 同请求双写判定键：turn + 五维 + total 全等视为同一请求（同 turn 两次完全相同用量的请求会误并——概率可忽略，注释存档）。 */
+function usageEventKey(cache: RolloutFileCache, usageRaw: Record<string, unknown>): string {
+  return [
+    cache.currentTurn?.turnId ?? "",
+    numberOr(usageRaw.input_tokens),
+    numberOr(usageRaw.cached_input_tokens),
+    numberOr(usageRaw.cache_write_input_tokens),
+    numberOr(usageRaw.output_tokens),
+    numberOr(usageRaw.reasoning_output_tokens),
+    numberOr(usageRaw.total_tokens),
+  ].join("|");
+}
+
+/** 消费暂存的 token_usage_record（已被确认为孤儿：新 turn / 下一条 tur / 不同 key 的 tc）。 */
+function flushPendingUsageRecord(cache: RolloutFileCache): void {
+  const pending = cache.pendingUsageRecord;
+  if (!pending) return;
+  cache.pendingUsageRecord = undefined;
+  appendUsageRecord(cache, pending.ordinalText, pending.usageRaw, pending.timestampMs);
+}
+
+function appendUsageRecord(cache: RolloutFileCache, ordinalText: string, usageRaw: Record<string, unknown>, lineTimestampMs: number): void {
   if (!usageRaw || !cache.sessionMeta) return;
   const inputTokens = numberOr(usageRaw.input_tokens);
   const cachedInput = numberOr(usageRaw.cached_input_tokens);

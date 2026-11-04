@@ -2,6 +2,7 @@
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
+  Boxes,
   CircleDollarSign,
   LayoutDashboard,
   ListTree,
@@ -23,7 +24,7 @@ export function ViewToggle() {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const activePath = pathname === "/export" || pathname === "/token-pricing" || pathname === "/proxy-management" || pathname === "/dashboard" || pathname === "/sessions" ? pathname : "/dashboard";
+  const activePath = pathname === "/export" || pathname === "/token-pricing" || pathname === "/proxy-management" || pathname === "/dashboard" || pathname === "/sessions" || pathname === "/agent-capabilities" ? pathname : "/dashboard";
 
   function go(target: TopLevelPath) {
     const liveSearch = typeof window === "undefined" ? searchParams.toString() : window.location.search;
@@ -71,6 +72,14 @@ export function ViewToggle() {
       >
         <Server aria-hidden="true" />
         供应商管理
+      </button>
+      <button
+        type="button"
+        className={`nav-tab${activePath === "/agent-capabilities" ? " active" : ""}`}
+        onClick={() => go("/agent-capabilities")}
+      >
+        <Boxes aria-hidden="true" />
+        Agent 能力
       </button>
     </nav>
   );

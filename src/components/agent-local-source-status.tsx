@@ -12,7 +12,7 @@ interface AgentLocalImportStatusEntry {
   /** 直连导入开关（false = 仅身份标注模式：本地日志照常扫描，不入账）。 */
   directImportEnabled?: boolean;
   binding: {state: "bound" | "disabled"; reason?: string; targetId?: string; viaDefaultTarget?: boolean};
-  source?: {state: string; reason?: string; dataDir: string; localSchemaVersion?: string};
+  source?: {state: string; reason?: string; dataDir: string; localSchemaVersion?: string; notices?: Array<{kind: string; detail: string}>};
   importState?: {
     lastStartedAt?: number;
     lastRecordId?: string;
@@ -93,6 +93,9 @@ export function AgentLocalSourceStatus(props: {agentId: AgentId}) {
       ) : null}
       {binding?.state === "disabled" ? <p className={styles.muted}>未启用原因：{binding.reason}</p> : null}
       {source && source.state !== "available" ? <p className={styles.muted}>本地数据源：{source.state === "missing" ? "未找到" : "不可读"}（{source.reason}）</p> : null}
+      {(source?.notices ?? []).map(notice => (
+        <p key={notice.detail} className={styles.muted}>格式提示：{notice.detail}</p>
+      ))}
       {state ? (
         <p className={styles.muted}>
           {status?.directImportEnabled === false ? "本模式不入账" : `已导入 ${state.importedCount} 条请求`}

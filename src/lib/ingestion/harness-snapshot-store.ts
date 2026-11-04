@@ -149,49 +149,64 @@ function finalizeHarnessSnapshotIdentity(
  * 导入行的空组件从同 Agent 最近一个含该组件的快照（网关行产出）借补。借补只在
  * 组件为空时发生，且以快照表中真实存在的富快照为前提——若该 Agent 网络侧从无
  * 记录则保持为空，不虚构。
+ *
+ * 2026-11-03（I1，F1 降级·方案甲）：借补写入保持不变（快照引用收敛），但返回 donor
+ * 快照哈希与时间，写入诊断供查询层透出——借补清单在 Step 查询中标记为「参考」，
+ * 不再作为当次确定传递。
  */
+export interface HarnessInventoryDonor {
+  component: "tools" | "skills" | "rules";
+  snapshotHash: string;
+  lastSeenAt: string;
+}
+
 export function borrowHarnessInventoryFromPeers(
   db: DeepaaDatabase,
   identity: HarnessSnapshotIdentity,
-): {identity: HarnessSnapshotIdentity; borrowed: string[]} {
+): {identity: HarnessSnapshotIdentity; borrowed: string[]; donors: HarnessInventoryDonor[]} {
   if (identity.toolCount > 0 && identity.skillCount > 0 && identity.ruleCount > 0) {
-    return {identity, borrowed: []};
+    return {identity, borrowed: [], donors: []};
   }
   const borrowed: string[] = [];
+  const donors: HarnessInventoryDonor[] = [];
   let tools = identity.tools;
   let skills = identity.skills;
   let rules = identity.rules;
   if (identity.toolCount === 0) {
     const donor = db.prepare(
-      "SELECT tools_json FROM harness_snapshots WHERE agent_name = ? AND tool_count > 0 ORDER BY last_seen_at DESC LIMIT 1",
-    ).get(identity.agentName) as {tools_json: string} | undefined;
+      "SELECT tools_json, snapshot_hash, last_seen_at FROM harness_snapshots WHERE agent_name = ? AND tool_count > 0 ORDER BY last_seen_at DESC LIMIT 1",
+    ).get(identity.agentName) as {tools_json: string; snapshot_hash: string; last_seen_at: string} | undefined;
     if (donor) {
       tools = parseSnapshotTools(donor.tools_json);
       borrowed.push("tools");
+      donors.push({component: "tools", snapshotHash: donor.snapshot_hash, lastSeenAt: donor.last_seen_at});
     }
   }
   if (identity.skillCount === 0) {
     const donor = db.prepare(
-      "SELECT skills_json FROM harness_snapshots WHERE agent_name = ? AND skill_count > 0 ORDER BY last_seen_at DESC LIMIT 1",
-    ).get(identity.agentName) as {skills_json: string} | undefined;
+      "SELECT skills_json, snapshot_hash, last_seen_at FROM harness_snapshots WHERE agent_name = ? AND skill_count > 0 ORDER BY last_seen_at DESC LIMIT 1",
+    ).get(identity.agentName) as {skills_json: string; snapshot_hash: string; last_seen_at: string} | undefined;
     if (donor) {
       skills = parseSnapshotSkills(donor.skills_json);
       borrowed.push("skills");
+      donors.push({component: "skills", snapshotHash: donor.snapshot_hash, lastSeenAt: donor.last_seen_at});
     }
   }
   if (identity.ruleCount === 0) {
     const donor = db.prepare(
-      "SELECT rules_json FROM harness_snapshots WHERE agent_name = ? AND rule_count > 0 ORDER BY last_seen_at DESC LIMIT 1",
-    ).get(identity.agentName) as {rules_json: string} | undefined;
+      "SELECT rules_json, snapshot_hash, last_seen_at FROM harness_snapshots WHERE agent_name = ? AND rule_count > 0 ORDER BY last_seen_at DESC LIMIT 1",
+    ).get(identity.agentName) as {rules_json: string; snapshot_hash: string; last_seen_at: string} | undefined;
     if (donor) {
       rules = parseSnapshotRules(donor.rules_json);
       borrowed.push("rules");
+      donors.push({component: "rules", snapshotHash: donor.snapshot_hash, lastSeenAt: donor.last_seen_at});
     }
   }
-  if (borrowed.length === 0) return {identity, borrowed: []};
+  if (borrowed.length === 0) return {identity, borrowed: [], donors: []};
   return {
     identity: {...finalizeHarnessSnapshotIdentity(identity.agentName, tools, skills, rules), projectKey: identity.projectKey},
     borrowed,
+    donors,
   };
 }
 

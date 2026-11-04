@@ -431,4 +431,83 @@ describe("Codex 官方直连本地导入", () => {
     assert.match(allRows, /逐出会话A输入/u, "被逐出会话的正文不得丢失");
     assert.match(allRows, /逐出会话B输入/u, "后一会话的正文不得丢失");
   });
+
+  test("I2（2026-11-03）：桌面 function_call 形态映射 + token_usage_record 双写防重与孤儿兜底", async () => {
+    // 实测 2026-10-29 桌面 App 会话：工具调用为 response_item(function_call /
+    // function_call_output)（此前全部静默丢弃）；用量事件与 event_msg(token_count)
+    // 双写（tur ordinal 更小先到），且存在 tur-only 请求（99 tur vs 88 tc）。
+    const desktopKey = "rollout-fixture-desktop-00000000-0000-0000-0000-000000000d";
+    const usageD1 = {input_tokens: 5000, cached_input_tokens: 3000, cache_write_input_tokens: 0, output_tokens: 40, reasoning_output_tokens: 0, total_tokens: 5040};
+    const usageD2 = {input_tokens: 800, cached_input_tokens: 100, cache_write_input_tokens: 0, output_tokens: 10, reasoning_output_tokens: 0, total_tokens: 810};
+    const functionCall = (callId: string, name: string, args: Record<string, unknown>) => ({
+      type: "response_item",
+      payload: {type: "function_call", id: `fc_${callId}`, call_id: callId, name, arguments: JSON.stringify(args)},
+    });
+    const functionCallOutput = (callId: string, output: string) => ({
+      type: "response_item",
+      payload: {type: "function_call_output", id: `fco_${callId}`, call_id: callId, output},
+    });
+    const tokenUsageRecord = (usage: Record<string, number>) => ({
+      type: "token_usage_record",
+      payload: {turn_id: "fixture", response_id: "resp_fixture", usage},
+    });
+    await writeFile(join(sessionsDayDir, `${desktopKey}.jsonl`), rolloutLines([
+      {type: "session_meta", payload: {session_id: "sess-desktop-d", model_provider: "openai", cli_version: "0.165.0", source: "desktop"}},
+      // turn-d1：function_call 调用与结果 + 用量双写（tur 行8 先到、tc 行9 同 key 后到）。
+      {type: "turn_context", payload: {turn_id: "turn-d1", model: "gpt-6.1-sol"}},
+      userMessage("msg_d1", "桌面请求1"),
+      itemCompleted("UserMessage", T0 + 200_000, T0 + 200_300),
+      functionCall("call_d1", "exec_command", {cmd: "ls"}),
+      itemCompleted("AgentMessage", T0 + 200_500, T0 + 200_900),
+      functionCallOutput("call_d1", "file1\nfile2"),
+      tokenUsageRecord(usageD1),
+      tokenCount(usageD1),
+      // turn-d2：tur-only 请求（无 token_count 跟随）。
+      {type: "turn_context", payload: {turn_id: "turn-d2", model: "gpt-6.1-sol"}},
+      userMessage("msg_d2", "桌面请求2"),
+      itemCompleted("UserMessage", T0 + 210_000, T0 + 210_300),
+      tokenUsageRecord(usageD2),
+      // turn-d3：空 turn 触发 turn 边界 flush（d2 的孤儿 tur 在此落账）。
+      {type: "turn_context", payload: {turn_id: "turn-d3", model: "gpt-6.1-sol"}},
+    ]));
+
+    const imported = await runAgentLocalImportRound({dataDir, nowMs: NOW});
+    // 恰好 2 条：d1 双写只记 1 条（token_count 胜出），d2 孤儿 tur 记 1 条。
+    assert.equal(imported, 2, `双写防重失败或孤儿未兜底: imported=${imported}`);
+
+    const captureDir = join(dataDir, "captures", "v2");
+    const fileContents = await Promise.all((await readdir(captureDir))
+      .filter(name => name.startsWith("import-codex-"))
+      .map(async name => (await readFile(join(captureDir, name), "utf8")).trim().split("\n").filter(line => line.includes(desktopKey))));
+    const desktopRows = readRawRows(fileContents.flat());
+    assert.deepEqual(desktopRows.map(row => row.exchangeId).sort(), [
+      // d2 孤儿 tur 记录 id = tur 自身 ordinal 13（字典序在前）。
+      `import-codex-${desktopKey}:13`,
+      // d1 记录 id = token_count 的 ordinal 9（与存量已导入记录的 id 语义一致，防重扫双计）。
+      `import-codex-${desktopKey}:9`,
+    ]);
+
+    // function_call 映射：响应体 output 回放为 wire function_call（name/arguments）。
+    const d1Response = JSON.parse(desktopRows.find(row => row.exchangeId.endsWith(":9"))!.response.rawBody) as {
+      output: Array<{type: string; name?: string; call_id?: string; arguments?: string}>;
+      usage: {input_tokens: number; input_tokens_details: {cached_tokens: number}};
+    };
+    const wireCall = d1Response.output.find(item => item.type === "function_call");
+    assert.ok(wireCall, `function_call 丢失: ${JSON.stringify(d1Response.output)}`);
+    assert.equal(wireCall.name, "exec_command");
+    assert.equal(wireCall.call_id, "call_d1");
+    assert.equal(wireCall.arguments, JSON.stringify({cmd: "ls"}));
+    assert.equal(d1Response.usage.input_tokens, 5000);
+    assert.equal(d1Response.usage.input_tokens_details.cached_tokens, 3000);
+
+    // d2 孤儿 tur 的五维口径（input 含 cached 子集）。
+    const d2Response = JSON.parse(desktopRows.find(row => row.exchangeId.endsWith(":13"))!.response.rawBody) as {
+      usage: {input_tokens: number; input_tokens_details: {cached_tokens: number}};
+    };
+    assert.equal(d2Response.usage.input_tokens, 800);
+    assert.equal(d2Response.usage.input_tokens_details.cached_tokens, 100);
+
+    // 幂等重放：再跑一轮零新增。
+    assert.equal(await runAgentLocalImportRound({dataDir, nowMs: NOW}), 0);
+  });
 });

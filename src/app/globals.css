@@ -13514,6 +13514,362 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
   font-weight: 650;
 }
 
+.agent-caps-header-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.agent-caps-viewtoggle {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.agent-caps-viewtoggle button {
+  border: none;
+  background: none;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--ink-300);
+}
+
+.agent-caps-viewtoggle button.on {
+  background: var(--pine-600);
+  color: #fff;
+}
+
+.agent-caps-grid.hidden {
+  display: none;
+}
+
+.agent-caps-mech {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.agent-caps-summary {
+  font-size: 13px;
+  margin: 0;
+  color: var(--ink-300);
+}
+
+.agent-caps-topics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 12px;
+}
+
+.agent-caps-topic {
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-caps-topic h4 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.agent-caps-entry b {
+  font-size: 12px;
+}
+
+.agent-caps-entry p {
+  font-size: 12px;
+  margin: 3px 0;
+  color: var(--ink-300);
+}
+
+.agent-caps-source {
+  font-size: 10px;
+  color: var(--ink-400);
+}
+
+.agent-caps-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px 0;
+}
+
+.agent-caps-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.agent-caps-header h2 {
+  margin: 0 0 4px;
+}
+
+.agent-caps-header .muted {
+  color: var(--ink-400);
+  font-size: 12px;
+  margin: 0;
+  max-width: 640px;
+}
+
+.agent-caps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
+}
+
+.agent-caps-card {
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-caps-card.missing {
+  opacity: 0.75;
+}
+
+.agent-caps-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.agent-caps-state {
+  font-size: 12px;
+  color: var(--ink-300);
+  white-space: nowrap;
+}
+
+.agent-caps-dir {
+  font-size: 11px;
+  color: var(--ink-400);
+  word-break: break-all;
+  margin: 0;
+}
+
+.agent-caps-scan {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--ink-400);
+}
+
+.agent-caps-scan .warn {
+  color: var(--amber-700, #b45309);
+  font-weight: 600;
+}
+
+.agent-caps-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agent-caps-group h4 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.agent-caps-group .cnt {
+  color: var(--ink-400);
+  font-weight: 500;
+  margin-left: 4px;
+}
+
+.agent-caps-group ul {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.agent-caps-group li {
+  font-size: 12px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--line-2);
+}
+
+.agent-caps-note {
+  font-size: 11px;
+  color: var(--ink-400);
+  margin: 0;
+}
+
+.sqlite-workbench .trow .tname-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sqlite-workbench .trow .tname-btn:hover {
+  text-decoration: underline;
+}
+
+.sqlite-workbench .caps-lookup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sqlite-workbench .caps-lookup h4 {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+.sqlite-workbench .caps-lookup-totals {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sqlite-workbench .caps-lookup-muted {
+  font-size: 11px;
+  color: var(--ink-400);
+  margin: 0;
+}
+
+.sqlite-workbench .caps-lookup-rows {
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.sqlite-workbench .caps-lookup-row {
+  display: grid;
+  grid-template-columns: 80px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 5px 6px;
+  border: none;
+  border-bottom: 1px solid var(--line-2);
+  background: none;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sqlite-workbench .caps-lookup-row:hover {
+  background: var(--pine-50);
+}
+
+.sqlite-workbench .caps-lookup-row[data-status="error"] .caps-lookup-status {
+  color: var(--amber-700, #b45309);
+}
+
+.sqlite-workbench .caps-lookup-status {
+  color: var(--ink-400);
+}
+
+.sqlite-workbench .caps-lookup-more {
+  background: none;
+  border: none;
+  padding: 6px;
+  font-size: 12px;
+  color: var(--pine-700);
+  cursor: pointer;
+}
+
+.sqlite-workbench .step-caps-panel {
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 0 0 12px;
+  background: var(--bg-raised, rgba(127, 127, 127, 0.06));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sqlite-workbench .step-caps-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sqlite-workbench .step-caps-source {
+  color: var(--ink-400);
+  font-size: 11px;
+}
+
+.sqlite-workbench .step-caps-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sqlite-workbench .step-caps-group-title {
+  font-weight: 650;
+  font-size: 12px;
+  color: var(--ink-300);
+}
+
+.sqlite-workbench .step-caps-group-title .cnt {
+  color: var(--ink-400);
+  font-weight: 500;
+  margin-left: 4px;
+}
+
+.sqlite-workbench .step-caps-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.sqlite-workbench .step-caps-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--line-2);
+  font-size: 12px;
+}
+
+.sqlite-workbench .step-caps-row:last-child {
+  border-bottom: 0;
+}
+
+.sqlite-workbench .step-caps-row.on .tname {
+  color: var(--pine-700);
+  font-weight: 600;
+}
+
+.sqlite-workbench .step-caps-row .num {
+  color: var(--ink-400);
+  white-space: nowrap;
+}
+
+.sqlite-workbench .step-caps-more,
+.sqlite-workbench .step-caps-panel .comp-legacy-note {
+  font-size: 11px;
+  color: var(--ink-400);
+  margin: 0;
+}
+
+.sqlite-workbench .trow .src-observed {
+  color: var(--amber-700, #b45309);
+  font-weight: 650;
+}
+
 .sqlite-workbench .trow:last-child {
   border-bottom: 0;
 }

@@ -1,0 +1,134 @@
+"use client";
+
+/**
+ * P1-4（2026-11-03）：能力详情对话框（双向反查·最小版）。
+ * 从「响应」能力面板 / 能力清单条目打开：显示该能力（Agent + 名字级身份）的
+ * 调用反查（keyset 分页）与声明出现；反查行可点击回到对应 Step（selection 深链）。
+ * 诚实边界：coverage=name-level（能力台账落地前不冒充精确身份）。
+ */
+
+import {useCallback, useEffect, useRef, useState} from "react";
+import {SimpleDialog} from "@/components/simple-dialog";
+import {formatLocalDateTime} from "@/lib/local-time";
+import type {CapabilityLookupResult} from "@/lib/db/capability-lookup-queries";
+
+export interface CapabilityLookupTarget {
+  agentName: string;
+  kind: "tool" | "skill";
+  name: string;
+}
+
+export interface CapabilityNavigateTarget {
+  stepId: string;
+  sessionId: string;
+  threadId: string;
+  turnId?: string;
+  agentName: string;
+  targetId: string;
+}
+
+export function CapabilityLookupDialog({target, onClose, onNavigate}: {
+  target: CapabilityLookupTarget | undefined;
+  onClose: () => void;
+  onNavigate: (loc: CapabilityNavigateTarget) => void;
+}) {
+  const [result, setResult] = useState<CapabilityLookupResult>();
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const seqRef = useRef(0);
+
+  const load = useCallback(async (cursor?: string) => {
+    if (!target) return;
+    const seq = ++seqRef.current;
+    setLoading(true);
+    setError("");
+    try {
+      const params = new URLSearchParams({agent: target.agentName, kind: target.kind, name: target.name});
+      if (cursor) params.set("cursor", cursor);
+      const response = await fetch(`/api/capabilities/lookup?${params}`, {cache: "no-store"});
+      if (seq !== seqRef.current) return;
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json() as CapabilityLookupResult;
+      if (seq !== seqRef.current) return;
+      setResult(payload);
+    } catch (err) {
+      if (seq !== seqRef.current) return;
+      setError((err as Error).message || "读取失败");
+    } finally {
+      if (seq === seqRef.current) setLoading(false);
+    }
+  }, [target]);
+
+  useEffect(() => {
+    if (target) void load();
+    else {
+      setResult(undefined);
+      setError("");
+    }
+  }, [target, load]);
+
+  if (!target) return null;
+  return (
+    <SimpleDialog
+      title={`${target.name}`}
+      description={`能力反查 · ${target.agentName} · ${target.kind === "tool" ? "工具" : "Skill"}（名字级身份）`}
+      onClose={onClose}
+      footer={<button type="button" className="ghost-btn" onClick={onClose}>关闭</button>}
+    >
+      {loading && !result ? <p className="caps-lookup-muted">正在读取反查数据…</p> : null}
+      {error ? (
+        <p className="caps-lookup-muted">反查读取失败（{error}）· <button type="button" className="comp-link" onClick={() => void load()}>重试</button></p>
+      ) : null}
+      {result ? (
+        <div className="caps-lookup">
+          <div className="caps-lookup-totals">
+            <span>声明出现 {result.totals.declaredStepCount} 步</span>
+            <span>调用 {result.totals.invokedStepCount} 步 / {result.totals.invokedCallCount} 次</span>
+            {result.totals.lastActivityAt ? <span>最近活动 {formatLocalDateTime(result.totals.lastActivityAt)}</span> : null}
+          </div>
+          <p className="caps-lookup-muted">身份口径：Agent + 名字（同名跨 MCP/插件的歧义在能力台账落地前不判定）。</p>
+
+          <h4>调用记录（最近 {result.calls.processedCount}{result.calls.hasMore ? "，共 " + result.calls.candidateCount : ""}）</h4>
+          {result.calls.items.length > 0 ? (
+            <div className="caps-lookup-rows">
+              {result.calls.items.map(row => (
+                <button type="button" key={`${row.stepId}:${row.exchangeId}`}
+                  className="caps-lookup-row"
+                  onClick={() => onNavigate({stepId: row.stepId, sessionId: row.sessionId, threadId: row.threadId, turnId: row.turnId, agentName: row.agentName, targetId: row.targetId})}>
+                  <span className="mono">Step {row.stepIndex}</span>
+                  <span>{formatLocalDateTime(row.capturedAt)}</span>
+                  <span className="caps-lookup-status" data-status={row.status}>{statusLabel(row.status)}</span>
+                </button>
+              ))}
+              {result.calls.hasMore && result.calls.nextCursor ? (
+                <button type="button" className="caps-lookup-more" onClick={() => void load(result.calls.nextCursor)}>加载更早 20 条…</button>
+              ) : null}
+            </div>
+          ) : <p className="caps-lookup-muted">未观察到调用。</p>}
+
+          <h4>声明出现（最近 {result.declaredIn.processedCount}{result.declaredIn.hasMore ? `，共 ${result.declaredIn.candidateCount}（只显示首页）` : ""}）</h4>
+          {result.declaredIn.items.length > 0 ? (
+            <div className="caps-lookup-rows">
+              {result.declaredIn.items.map(row => (
+                <button type="button" key={row.stepId}
+                  className="caps-lookup-row"
+                  onClick={() => onNavigate({stepId: row.stepId, sessionId: row.sessionId, threadId: row.threadId, turnId: row.turnId, agentName: target.agentName, targetId: ""})}>
+                  <span className="mono">Step {row.stepIndex}</span>
+                  <span>{formatLocalDateTime(row.capturedAt)}</span>
+                  <span>{row.invokedThisStep > 0 ? `本步调用 ${row.invokedThisStep} 次` : "声明未调用"}</span>
+                </button>
+              ))}
+            </div>
+          ) : <p className="caps-lookup-muted">未观察到声明（可能仅作为调用出现，或为借补参考清单外的工具）。</p>}
+        </div>
+      ) : null}
+    </SimpleDialog>
+  );
+}
+
+function statusLabel(status: string): string {
+  if (status === "completed") return "有结果";
+  if (status === "error") return "有结果·出错";
+  if (status === "awaiting_result") return "等待结果";
+  return status;
+}

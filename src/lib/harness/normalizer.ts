@@ -104,6 +104,8 @@ export interface NormalizedContentBlock {
   providerType?: string;
   toolUseId?: string;
   toolName?: string;
+  /** Anthropic tool_result 的 is_error（I5/F4：错误语义此前在源头被丢弃）。 */
+  isError?: boolean;
   evidence: EvidencePointer[];
 }
 
@@ -400,6 +402,7 @@ function buildHarnessPayload(
       toolUseId: block.toolUseId || "",
       content: block.text,
       providerType: "tool_result",
+      ...(block.isError ? {isError: true} : {}),
       evidence: block.evidence,
     }))),
     ...request.inputItems
@@ -556,6 +559,7 @@ function normalizeContent(exchange: RawCapturedExchange, raw: unknown, path: str
         text: textFromUnknown(block.content),
         providerType: "tool_result",
         toolUseId: typeof block.tool_use_id === "string" ? block.tool_use_id : undefined,
+        isError: block.is_error === true ? true : undefined,
         evidence: [pointer(exchange, "request", `${path}.content[${index}]`)],
       };
     }

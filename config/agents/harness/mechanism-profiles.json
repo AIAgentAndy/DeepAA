@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-11-03",
+  "note": "Agent 机制剖面（P1-7 最小版）：按八主题解释各 Agent 的底层机制要点。全部条目来自本项目实测取证、本地源码核对或官方公开文档（见每条 source），不是运行时自动分析源码的产物；版本升级时人工修订并更新 updatedAt。主题 key：startup=启动与配置合成 instructions=指令与上下文 capability-discovery=能力发现与路由 tool-execution=工具执行 security=安全门禁 control-flow=控制流程 subagents=子 Agent persistence=持久化与可观测性。",
+  "topics": [
+    {"key": "startup", "label": "启动与配置合成"},
+    {"key": "instructions", "label": "指令与上下文"},
+    {"key": "capability-discovery", "label": "能力发现与路由"},
+    {"key": "tool-execution", "label": "工具执行"},
+    {"key": "security", "label": "安全门禁"},
+    {"key": "control-flow", "label": "控制流程"},
+    {"key": "subagents", "label": "子 Agent"},
+    {"key": "persistence", "label": "持久化与可观测性"}
+  ],
+  "agents": {
+    "codex": {
+      "summary": "OpenAI 官方 CLI/桌面双形态；Responses 协议；官方订阅模式直连（请求体无 model 字段），网关模式注入带前缀模型。",
+      "mechanisms": [
+        {"topic": "startup", "title": "CLI 与桌面双形态", "detail": "CLI（codex-tui UA）与桌面 App 共用 rollout 会话格式但工具调用形态不同：桌面用 function_call/function_call_output item，CLI 新版用 custom_tool_call（shell 工具名从 exec_command 演进为 exec）。", "source": "本机实测 2026-10-29/11-03"},
+        {"topic": "startup", "title": "官方模式无 model 字段", "detail": "官方订阅登录态（requires_openai_auth 形态）下请求体无 model 字段（0.160 桌面/0.161 CLI 双端实证），标准网关解析无法路由；订阅账号须走官方直连形态。", "source": "AGENTS 2026-10-09 实证"},
+        {"topic": "instructions", "title": "skills_instructions 注入", "detail": "技能以 <skills_instructions> 段落注入请求（roots 表 + Available skills 名单），仅目录不加载正文；正文经 Skill 读取按需进入后续请求。", "source": "本机抓包验证 2026-09-11"},
+        {"topic": "capability-discovery", "title": "工具声明与动态发现", "detail": "网关模式请求 body.tools 声明工具（含 mcp__ 前缀命名空间与服务端内置工具如 tool_search）；官方直连 rollout 结构上不含 tools 声明（本地导入靠骨架缓存兜底）。", "source": "本机取证 2026-11-03"},
+        {"topic": "tool-execution", "title": "工具执行链", "detail": "工具调用经宿主执行后以 *_call_output 回填下一请求；同一请求的 token_count 与 token_usage_record 用量事件双写（tur 先到、tc 后到，tur-only 请求实测存在）。", "source": "本机实测 2026-11-03"},
+        {"topic": "security", "title": "沙箱与审批", "detail": "config.toml 的 sandbox_mode 控制执行沙箱；启动弹窗偏好（上下文窗口/推理档）经目录条目生效而非 config 顶层键。", "source": "AGENTS 2026-10-02 实证"},
+        {"topic": "persistence", "title": "rollout 与 state 库", "detail": "会话正文落 sessions/<date>/rollout-*.jsonl；state_*.sqlite 含线程、版本、thread_dynamic_tools（线程级动态工具与命名空间）与父子边——DeepAA P2 的深度来源。", "source": "本机取证 2026-10-29"}
+      ]
+    },
+    "claude": {
+      "summary": "Anthropic 官方 CLI；Messages 协议；技能清单经 system-reminder 注入；hooks/遥测默认关闭。",
+      "mechanisms": [
+        {"topic": "startup", "title": "配置层级", "detail": "全局 ~/.claude/settings.json + 项目级 .claude/settings.json + 本地层；DeepAA 受管写入只动声明管理的键（env 受管键含模型与三个别名）。", "source": "AGENTS 2026-09 确认"},
+        {"topic": "instructions", "title": "Skill 清单注入形态", "detail": "技能清单以 <system-reminder> 包裹注入；另存在无包裹的裸清单块形态（以标题直接开头、无闭标签）——两种形态均已支持解析。", "source": "本机取证 2026-11-03"},
+        {"topic": "instructions", "title": "is_error 结果语义", "detail": "tool_result 的 is_error=true 标记工具侧错误（区别于会话错误）；DeepAA 自 I5 起贯通该语义到调用状态。", "source": "Anthropic Messages 协议"},
+        {"topic": "capability-discovery", "title": "MCP 与插件", "detail": "MCP 服务配置于 settings.json mcpServers；插件经市场安装（installed_plugins.json v2 清单 + plugins/cache 目录），插件可贡献技能/命令/Agent。", "source": "本机取证 2026-11-03"},
+        {"topic": "tool-execution", "title": "工具调用与包装器", "detail": "tool_use/tool_result 块成对回填；存在 multi_tool_use.parallel 并行包装器形态（内层调用不能靠外层名计数覆盖）。", "source": "本机实测 2026-11-03"},
+        {"topic": "security", "title": "权限与 hooks", "detail": "权限模式与审批由 settings 控制；Hooks（指令加载/工具生命周期事件）默认未启用，本机未显式开启遥测。", "source": "官方文档 + 本机 settings 取证"},
+        {"topic": "subagents", "title": "子 Agent", "detail": "支持子 Agent 派发（Task 工具族），父/子会话的调用统计应分开归属。", "source": "官方文档"}
+      ]
+    },
+    "zcode": {
+      "summary": "智谱官方客户端（CLI/桌面）；GLM 系模型；官方积分折扣凭客户端签名认定（×0.67，网关转发无法获得）。",
+      "mechanisms": [
+        {"topic": "startup", "title": "双层配置热加载", "detail": "供应商真相文件 ~/.zcode/v2/provider_config.json（个人规则层，约 1 秒轮询热加载免重启）；v2/config.json 为 legacy 导入源。DeepAA 双写两层。", "source": "AGENTS 2026-10-06 asar 逆向实证"},
+        {"topic": "instructions", "title": "骨架滚动窗口", "detail": "系统提示+工具定义只写进 model-io 滚动窗口（单文件 64MiB），窗口滚动即永久消失——本地导入靠趁热读取的骨架缓存（borrowed 标注）。", "source": "本机实测 2026-10"},
+        {"topic": "capability-discovery", "title": "插件市场与技能", "detail": "插件安装于 cli/plugins/cache/<market>/<plugin>；插件可携带 skills/ 目录贡献技能；MCP 工具名 mcp__ 前缀。", "source": "本机取证 2026-11-03"},
+        {"topic": "tool-execution", "title": "原生 tool_usage 库", "detail": "db.sqlite 的 tool_usage 含真实耗时、审批状态、重试、退出码、输出字节——wire 层看不到的执行侧证据（P2 接入）。", "source": "本机取证 2026-10-29"},
+        {"topic": "security", "title": "签名权益", "detail": "官方 Agent 活动折扣凭客户端密码学签名认定，经网关转发无法获得——直连是主链路。", "source": "双链路观测总设计文档"},
+        {"topic": "persistence", "title": "本地库", "detail": "model_usage（用量）+ rollout model-io（正文）+ tool_usage（执行）三库；DeepAA 通道 B 只读导入合成 wire。", "source": "AGENTS 2026-09-15"}
+      ]
+    },
+    "dsh": {
+      "summary": "DeepSeek Harness 桌面/CLI 双形态；chat_completions 协议；Cordis 插件树架构。",
+      "mechanisms": [
+        {"topic": "startup", "title": "双形态与 profile", "detail": "web=终端常驻 dsh web（3080）；app=桌面客户端。配置为双格式布局：≤0.1.6 写 settings.yaml 受管分节，≥0.1.7 改写已初始化 profile 的 cordis.patch.yml。", "source": "AGENTS 2026-10-05 实证"},
+        {"topic": "instructions", "title": "v4 会话格式", "detail": "会话文件 session.v3/v4.jsonl.zstd（zstd 压缩）；v4 为新代格式（本机 60 个 v4 会话，DeepAA 当前仅支持 v3，v4 已可见未导入）。", "source": "本机取证 2026-11-03"},
+        {"topic": "capability-discovery", "title": "skill-catalog 来源", "detail": "技能目录有 skill-catalog 事件来源；显式用户技能为 skill-invocation 来源；模型可调用 skill 工具加载正文。", "source": "本地参考源码 0.2.1"},
+        {"topic": "tool-execution", "title": "插件式工具流水线", "detail": "工具执行为 tool/call → pre/execute/post → tool/result 事件链；MCP 是单独插件，不可把整个插件树计成 MCP。", "source": "本地参考源码 0.2.1"},
+        {"topic": "security", "title": "权限三预设", "detail": "permission 配置须全表自持官方三预设（read-only 不在内置默认表，低层整行替换会丢基线）。", "source": "AGENTS 2026-10-05 事故实证"},
+        {"topic": "control-flow", "title": "多 generation 会话", "detail": "同一会话可有多代 generation 日志；应选适用的最高代，不因高代不支持悄悄回退老代当最新。", "source": "剖析方案 §7.4"}
+      ]
+    },
+    "opencode": {
+      "summary": "开源 CLI/服务器形态；多协议绑定（responses/chat_completions/messages）；技能经 skill 工具按需加载。",
+      "mechanisms": [
+        {"topic": "startup", "title": "XDG 配置", "detail": "配置位于 ~/.config/opencode/（opencode.json 等），支持全局/项目/插件/agents/permissions 分层；本机装有第三方插件（oh-my-openagent），官方默认工具名不等于实际生效实现。", "source": "本机取证 2026-11-03"},
+        {"topic": "instructions", "title": "技能按需加载", "detail": "技能经 skill 工具按需加载，可用名单可放在该工具的 description 内联注入——无独立文件台账形态，DeepAA 台账如实显示 0 并注明。", "source": "官方文档"},
+        {"topic": "capability-discovery", "title": "模型×协议能力", "detail": "模型在目录中声明 supportedWireApis（如 grok-4.5 走 /v1/responses、GLM 走 /v1/chat/completions），页面下拉按「归属 ∩ wire API」过滤。", "source": "AGENTS 2026-09-01"},
+        {"topic": "tool-execution", "title": "插件事件", "detail": "插件有 tool.execute.before/after 与 session.compacted 等事件钩子；工具执行可被插件覆盖。", "source": "官方文档"},
+        {"topic": "persistence", "title": "本地数据库", "detail": "session/message/part/event/session_context_epoch 等表存于本地 SQLite——P3 只读适配的来源（JSON 字段按安装版本核对）。", "source": "本机取证 2026-10-29"}
+      ]
+    }
+  }
+}

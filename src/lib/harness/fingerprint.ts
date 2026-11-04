@@ -126,7 +126,7 @@ function routingAgentName(value: string): AgentFingerprint["agentName"] | undefi
 }
 
 function makeFingerprint(
-  _exchange: RawCapturedExchange,
+  exchange: RawCapturedExchange,
   agentName: AgentFingerprint["agentName"],
   protocol: string,
   evidence: AgentFingerprint["evidence"],
@@ -138,8 +138,31 @@ function makeFingerprint(
     // 掺入身份会让同一业务会话在会话追踪里被拆散。
     id: `fp-${agentName}`,
     agentName,
+    // I7/P1-1（2026-11-03，F10）：运行版本从 UA / 专属头解析（CLI/桌面/不同版本
+    // 此前在能力统计中归到同一 fp-<agent>）。id 保持不变（会话续接语义零影响），
+    // 版本作为独立维度透出，缺省 unknown 不虚构。
+    agentVersion: resolveAgentVersion(exchange, agentName),
     protocol,
     confidence,
     evidence,
   };
+}
+
+/** 从 UA / 专属头解析运行版本；解析不到返回 undefined（不猜测）。 */
+/** Agent 专属版本头（表驱动；新增 Agent 加一行，不写条件分派）。 */
+const AGENT_VERSION_HEADERS: Partial<Record<AgentFingerprint["agentName"], string>> = {
+  zcode: "x-zcode-app-version",
+};
+
+function resolveAgentVersion(exchange: RawCapturedExchange, agentName: AgentFingerprint["agentName"]): string | undefined {
+  const versionHeaderName = AGENT_VERSION_HEADERS[agentName];
+  if (versionHeaderName) {
+    const header = exchange.request.headers[versionHeaderName];
+    if (typeof header === "string" && /^\d+\.\d+/u.test(header)) return header;
+  }
+  const userAgent = exchange.request.headers["user-agent"] || "";
+  // UA 形态（本机实测）：codex-tui/0.165.0、ZCode/1.2.3、claude-cli/2.1.34、
+  // deepseek-harness/0.2.1、opencode/0.x。
+  const match = /\b(?:codex-tui|claude-cli|zcode|deepseek-harness|opencode)\/(\d+[A-Za-z0-9.\-+]*)/iu.exec(userAgent);
+  return match ? match[1] : undefined;
 }

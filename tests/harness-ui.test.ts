@@ -349,8 +349,21 @@ describe("SQLite 会话追踪与一级页面外壳", () => {
     expect(client).not.toContain("<FullRawBodyView");
     expect(client).toContain("function RawTextLineViewer(");
     expect(client).toContain("title={`${sideLabel}完整Raw`}");
-    expect(client).toContain('activeTab === "请求" ? <WorkbenchRawInspectorTab');
-    expect(client).toContain('activeTab === "响应" ? <WorkbenchRawInspectorTab');
+    expect(client).toContain('activeTab === "请求" ? (');
+    // P1-3（2026-11-03，2026-11-04 审计修订）：响应页签 = 能力面板 + 单侧 Raw；
+    // 请求页签 = 输入清单面板（request 变体）+ 单侧 Raw——§1.2「请求页签可看同一输入清单」。
+    expect(client).toContain('activeTab === "响应" ? (');
+    expect(client).toContain('variant="compact"');
+    expect(client).toContain('activeTab === "请求" ? (');
+    expect(client).toContain('variant="request"');
+    expect(client).toContain('side="response"');
+    // 面板条目反查入口（闭环起点在面板内,panel 源码）+ 能力清单错误态与 Skill 反查（workbench 源码）。
+    const panelSource = readFileSync("src/components/workbench/step-capability-panel.tsx", "utf8");
+    expect(panelSource).toContain('onOpenCapability ? name => onOpenCapability("tool", name) : undefined');
+    expect(panelSource).toContain('onOpenCapability ? name => onOpenCapability("skill", name) : undefined');
+    expect(client).toContain('onOpenCapability("skill", skill.name)');
+    expect(client).toContain('能力清单读取失败');
+    expect(client).toContain('stepHarnessError');
     const selectTabStart = client.indexOf("function selectInspectorTab(tab: InspectorTab)");
     const selectTabEnd = client.indexOf("function focusEvidencePath", selectTabStart);
     const selectTab = client.slice(selectTabStart, selectTabEnd);

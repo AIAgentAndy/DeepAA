@@ -144,11 +144,24 @@ export type LocalSourceAvailability =
   | {state: "missing"; reason: string}
   | {state: "unreadable"; reason: string};
 
+export interface LocalSourceStatusNotice {
+  /** 可见性提示类别：本地存在当前适配器不支持的格式（不阻断已支持格式的导入）。 */
+  kind: "unsupported_format";
+  /** 面向用户的说明（中文，含数量与格式名）。 */
+  detail: string;
+}
+
 export interface LocalSourceStatus {
   availability: LocalSourceAvailability;
   /** 数据目录路径（探测到的实际路径；缺失时为预期路径）。 */
   dataDir: string;
   localSchemaVersion?: string;
+  /**
+   * 格式可见性提示（2026-11-03 I3/F9）：如 dsh 本地存在 session.v4 文件但适配器
+   * 只支持 v3——此前静默跳过（实测本机 60 个 v4 会话完全不可见）。只读探测产出，
+   * 不触发任何解析动作。
+   */
+  notices?: LocalSourceStatusNotice[];
 }
 
 export interface LocalImportCursor {

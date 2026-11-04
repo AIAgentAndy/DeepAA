@@ -1,4 +1,4 @@
-export type TopLevelPath = "/sessions" | "/export" | "/token-pricing" | "/proxy-management" | "/dashboard";
+export type TopLevelPath = "/sessions" | "/export" | "/token-pricing" | "/proxy-management" | "/dashboard" | "/agent-capabilities";
 
 export interface SharedSelection {
   target?: string;

@@ -29,6 +29,8 @@ export function parseAgentStepHarness(value: unknown): ApiAgentStepHarness | und
   const tokensRecord = objectRecord(record.harnessTokens);
   const changesRecord = objectRecord(record.changes);
   const compactionRecord = objectRecord(record.compaction);
+  const referenceRecord = objectRecord(record.reference);
+  const callsLimitedRecord = objectRecord(record.callsLimited);
   const tokensComponent = objectRecord(tokensRecord?.byComponent);
   return {
     stepId: record.stepId,
@@ -42,6 +44,7 @@ export function parseAgentStepHarness(value: unknown): ApiAgentStepHarness | und
           hash: typeof snapshotRecord.hash === "string" ? snapshotRecord.hash : "",
           shortHash: typeof snapshotRecord.shortHash === "string" ? snapshotRecord.shortHash : "",
           agentName: typeof snapshotRecord.agentName === "string" ? snapshotRecord.agentName : "",
+          agentVersion: typeof snapshotRecord.agentVersion === "string" ? snapshotRecord.agentVersion : undefined,
           complete: snapshotRecord.complete === true,
           seqInThread: typeof snapshotRecord.seqInThread === "number" ? snapshotRecord.seqInThread : 1,
           coverage: {
@@ -58,6 +61,7 @@ export function parseAgentStepHarness(value: unknown): ApiAgentStepHarness | und
       tools: harnessItemArray(inventory.tools) as unknown as ApiAgentStepHarness["inventory"]["tools"],
       skills: harnessItemArray(inventory.skills) as unknown as ApiAgentStepHarness["inventory"]["skills"],
       rules: harnessItemArray(inventory.rules) as unknown as ApiAgentStepHarness["inventory"]["rules"],
+      observedOnlyTools: harnessItemArray(inventory.observedOnlyTools) as unknown as ApiAgentStepHarness["inventory"]["observedOnlyTools"],
     },
     harnessTokens: tokensRecord && tokensComponent
       ? {
@@ -97,6 +101,24 @@ export function parseAgentStepHarness(value: unknown): ApiAgentStepHarness | und
         contextCompressed: compactionRecord.contextCompressed === true,
       }
       : undefined,
+    reference: referenceRecord
+      ? {
+        borrowed: stringArray(referenceRecord.borrowed),
+        donorSnapshotHash: typeof referenceRecord.donorSnapshotHash === "string"
+          ? referenceRecord.donorSnapshotHash
+          : undefined,
+        donorLastSeenAt: typeof referenceRecord.donorLastSeenAt === "string"
+          ? referenceRecord.donorLastSeenAt
+          : undefined,
+      }
+      : undefined,
+    callsLimited: callsLimitedRecord
+      ? {
+        step: callsLimitedRecord.step === true,
+        turn: callsLimitedRecord.turn === true,
+      }
+      : undefined,
+    skillsParseStatus: record.skillsParseStatus === "not_supported" ? "not_supported" : undefined,
     legacyData: record.legacyData === true,
     candidateCount: typeof record.candidateCount === "number" ? record.candidateCount : 1,
     processedCount: typeof record.processedCount === "number" ? record.processedCount : 1,

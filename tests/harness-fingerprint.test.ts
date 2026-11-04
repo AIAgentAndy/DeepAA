@@ -166,3 +166,44 @@ function exchange(options: {
     },
   };
 }
+
+describe("P1-1/F10（2026-11-03）：agentVersion 从 UA / 专属头解析", () => {
+  test("codex-tui UA 版本解析,指纹 id 保持 fp-<agent>", () => {
+    const fp = fingerprintAgent(exchange({
+      path: "/codex/v1/responses",
+      headers: {"user-agent": "codex-tui/0.165.0 (Mac OS X 15.2.0)"},
+    }));
+    expect(fp.agentName).toBe("codex");
+    expect(fp.agentVersion).toBe("0.165.0");
+    expect(fp.id).toBe("fp-codex");
+  });
+
+  test("zcode 优先 x-zcode-app-version 头;claude-cli/dsh/opencode UA 同规则", () => {
+    const zcode = fingerprintAgent(exchange({
+      path: "/zcode/v1/messages",
+      headers: {"user-agent": "ZCode/1.0.0", "x-zcode-app-version": "1.2.34"},
+    }));
+    expect(zcode.agentName).toBe("zcode");
+    expect(zcode.agentVersion).toBe("1.2.34");
+
+    const claude = fingerprintAgent(exchange({
+      path: "/claude/v1/messages",
+      headers: {"user-agent": "claude-cli/2.1.34 (external, cli)"},
+    }));
+    expect(claude.agentVersion).toBe("2.1.34");
+
+    const dsh = fingerprintAgent(exchange({
+      path: "/dsh/v1/chat/completions",
+      headers: {"user-agent": "deepseek-harness/0.2.1-rc.1", "x-deepseek-harness-session-id": "s"},
+    }));
+    expect(dsh.agentVersion).toBe("0.2.1-rc.1");
+  });
+
+  test("无可解析版本时 undefined,不虚构", () => {
+    const fp = fingerprintAgent(exchange({
+      path: "/codex/v1/responses",
+      headers: {"user-agent": "curl/8.0"},
+    }));
+    expect(fp.agentVersion).toBeUndefined();
+  });
+});

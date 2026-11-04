@@ -7,8 +7,10 @@
 import type {DeepaaDatabase} from "@/lib/db/sqlite-driver";
 import type {
   ApiAgentStepHarness,
+  HarnessCallsLimitedView,
   HarnessChangesView,
   HarnessCompactionView,
+  HarnessReferenceView,
   HarnessRuleItem,
   HarnessSkillItem,
   HarnessSnapshotView,
@@ -16,6 +18,7 @@ import type {
   HarnessTokensView,
 } from "../harness/harness-step";
 import { classifyToolName } from "../harness/evidence";
+import { skillsParseStatusForAgent } from "../harness/skills-parser";
 import type { ContextComposition } from "../harness/context-composition";
 import {
   parseSnapshotRules,
@@ -81,21 +84,29 @@ export function loadAgentStepHarness(
   ).get(stepId) as StepCoreRow | undefined;
   if (!step) return undefined;
 
-  // 本步每工具调用计数（Used 侧）。
+  // 本步每工具调用计数（Used 侧）。F12：limit+1 哨兵——达上限时超出分组不可信，
+  // 未进入已处理集合的工具调用数标 unknown，不落成 0。
   const stepCallRows = db.prepare(
     `SELECT tool_name, COUNT(*) AS calls
      FROM tool_calls WHERE agent_step_id = ?
-     GROUP BY tool_name LIMIT 201`,
+     GROUP BY tool_name LIMIT 202`,
   ).all(stepId) as Array<{ tool_name: string; calls: number }>;
-  const callsThisStep = new Map(stepCallRows.map(row => [row.tool_name, row.calls]));
+  const stepCallsLimited = stepCallRows.length > 201;
+  const callsThisStep = new Map(
+    (stepCallsLimited ? stepCallRows.slice(0, 201) : stepCallRows).map(row => [row.tool_name, row.calls]),
+  );
 
-  // 本 Turn 每工具累计调用。
+  // 本 Turn 每工具累计调用（同样哨兵）。
   const turnCallRows = db.prepare(
     `SELECT tool_name, COUNT(*) AS calls
      FROM tool_calls WHERE agent_turn_id = ?
-     GROUP BY tool_name LIMIT 201`,
+     GROUP BY tool_name LIMIT 202`,
   ).all(step.agent_turn_id) as Array<{ tool_name: string; calls: number }>;
-  const callsThisTurn = new Map(turnCallRows.map(row => [row.tool_name, row.calls]));
+  const turnCallsLimited = turnCallRows.length > 201;
+  const callsThisTurn = new Map(
+    (turnCallsLimited ? turnCallRows.slice(0, 201) : turnCallRows).map(row => [row.tool_name, row.calls]),
+  );
+  const callsLimited: HarnessCallsLimitedView = {step: stepCallsLimited, turn: turnCallsLimited};
 
   // 当前步的实际 usage（供 Harness tokens 占比）。
   const usageRow = db.prepare(
@@ -104,9 +115,14 @@ export function loadAgentStepHarness(
 
   let snapshotView: HarnessSnapshotView | undefined;
   let tools: HarnessToolItem[] = [];
+  let observedOnlyTools: HarnessToolItem[] = [];
   let skills: HarnessSkillItem[] = [];
   let rules: HarnessRuleItem[] = [];
+  let reference: HarnessReferenceView | undefined;
   let legacyData = true;
+  // 声明清单（快照内工具名集合）；无快照时为空集——observed_only 调用证据
+  // 独立于快照存在（审计修订 2026-11-04：无快照的 step 此前连调用证据也不显示）。
+  let declaredNames = new Set<string>();
 
   if (step.harness_snapshot_hash) {
     const snapshot = db.prepare(
@@ -116,6 +132,7 @@ export function loadAgentStepHarness(
     ).get(step.harness_snapshot_hash) as SnapshotRow | undefined;
     if (snapshot) {
       const storedTools = parseSnapshotTools(snapshot.tools_json);
+      declaredNames = new Set(storedTools.map(tool => tool.name));
       skills = parseSnapshotSkills(snapshot.skills_json).map(skill => ({
         name: skill.name,
         sourceLevel: skill.sourceLevel,
@@ -132,7 +149,8 @@ export function loadAgentStepHarness(
         const classification = classifyToolName(tool.name);
         const kind = tool.kind === "mcp" || classification.kind === "mcp" ? "mcp" : "tool";
         const mcpServer = tool.mcpServer ?? classification.mcpServer;
-        const stepCalls = callsThisStep.get(tool.name) ?? 0;
+        const knownStep = callsThisStep.has(tool.name);
+        const stepCalls = knownStep ? (callsThisStep.get(tool.name) ?? 0) : 0;
         return {
           name: tool.name,
           kind,
@@ -141,23 +159,45 @@ export function loadAgentStepHarness(
           callsThisStep: stepCalls,
           callsThisTurn: callsThisTurn.get(tool.name) ?? 0,
           invoked: stepCalls > 0,
+          exposure: "declared" as const,
+          callsUnknown: stepCallsLimited && !knownStep ? true : undefined,
         };
       });
-      // 本步实际调用过但清单缺失的工具（如截断或异常），补在末尾保证事实完整。
-      for (const [toolName, calls] of callsThisStep) {
-        if (!tools.some(tool => tool.name === toolName)) {
-          const classification = classifyToolName(toolName);
-          tools.push({
-            name: toolName,
-            kind: classification.kind,
-            mcpServer: classification.mcpServer,
-            defTokensEst: 0,
-            callsThisStep: calls,
-            callsThisTurn: callsThisTurn.get(toolName) ?? 0,
-            invoked: true,
-          });
+      // F1：该 step 的清单若为导入行借补产物（诊断可观测），标记为参考而非当次确定传递。
+      const borrowedDiag = db.prepare(
+        `SELECT details_json FROM derivation_diagnostics
+         WHERE exchange_id = ? AND code = 'harness_inventory_borrowed'
+         ORDER BY created_at DESC LIMIT 1`,
+      ).get(step.exchange_id) as {details_json: string} | undefined;
+      if (borrowedDiag) {
+        let borrowed: string[] = [];
+        let donorSnapshotHash: string | undefined;
+        let donorLastSeenAt: string | undefined;
+        try {
+          const details = JSON.parse(borrowedDiag.details_json) as {
+            borrowed?: unknown;
+            donors?: Array<{component?: string; snapshotHash?: string; lastSeenAt?: string}>;
+          };
+          if (Array.isArray(details.borrowed)) {
+            borrowed = details.borrowed.filter((item): item is string => typeof item === "string");
+          }
+          const firstDonor = Array.isArray(details.donors) ? details.donors[0] : undefined;
+          if (firstDonor && typeof firstDonor.snapshotHash === "string") {
+            donorSnapshotHash = firstDonor.snapshotHash;
+            donorLastSeenAt = typeof firstDonor.lastSeenAt === "string" ? firstDonor.lastSeenAt : undefined;
+          }
+        } catch {
+          // 存量诊断 details 损坏时保持无 donor 的参考标注，不阻断响应。
         }
+        reference = {borrowed, donorSnapshotHash, donorLastSeenAt};
       }
+
+      // P1-1/F10：会话首见运行版本（轻量单列读取，存量 NULL）。
+      const sessionAgentVersion = db.prepare(
+        `SELECT s.agent_version FROM agent_sessions s
+         JOIN agent_threads t ON t.agent_session_id = s.id
+         WHERE t.id = ? LIMIT 1`,
+      ).pluck().get(step.agent_thread_id) as string | null | undefined;
 
       // 快照覆盖区间与本 Thread 内序号。
       const coverage = db.prepare(
@@ -179,6 +219,7 @@ export function loadAgentStepHarness(
         hash: snapshot.snapshot_hash,
         shortHash: shortHash(snapshot.snapshot_hash),
         agentName: snapshot.agent_name,
+        agentVersion: sessionAgentVersion ?? undefined,
         complete: snapshot.complete === 1,
         seqInThread: distinctBefore.seq + 1,
         coverage: {
@@ -188,6 +229,23 @@ export function loadAgentStepHarness(
         firstSeenStepIndex: coverage.from_index ?? step.step_index,
       };
     }
+  }
+
+  // F11（审计修订 2026-11-04）：本步实际调用过但清单无定义的工具单独成组——
+  // 调用证据独立于快照存在，无快照/借补/截断场景同样如实展示；不进传递分母。
+  for (const [toolName, calls] of callsThisStep) {
+    if (declaredNames.has(toolName)) continue;
+    const classification = classifyToolName(toolName);
+    observedOnlyTools.push({
+      name: toolName,
+      kind: classification.kind,
+      mcpServer: classification.mcpServer,
+      defTokensEst: 0,
+      callsThisStep: calls,
+      callsThisTurn: callsThisTurn.get(toolName) ?? 0,
+      invoked: true,
+      exposure: "observed_only" as const,
+    });
   }
 
   // 构成估算：来自本步 context snapshot 的 contextComposition（升级前数据缺失）。
@@ -299,10 +357,15 @@ export function loadAgentStepHarness(
     stepIndex: step.step_index,
     project: step.project_key ? step.project_key.split("/").filter(Boolean).pop() : undefined,
     snapshot: snapshotView,
-    inventory: { tools, skills, rules },
+    inventory: observedOnlyTools.length > 0
+      ? { tools, skills, rules, observedOnlyTools }
+      : { tools, skills, rules },
     harnessTokens,
     changes,
     compaction: loadAgentStepCompaction(db, step),
+    reference,
+    callsLimited,
+    skillsParseStatus: snapshotView ? skillsParseStatusForAgent(snapshotView.agentName) : undefined,
     legacyData: legacyData && !skills.length && !rules.length,
     candidateCount: 1,
     processedCount: 1,

@@ -429,4 +429,30 @@ describe("dsh 解析失败预算与退避（2026-10-10 无界重解压修复）"
       "退避到期后修复文件必须恢复解析",
     );
   });
+
+  test("I3（2026-11-03）：v4 会话文件 discover 可见（unsupported_format notice），不参与解析", async () => {
+    // 实测本机 ~/.dsh/sessions：115 个 v3 + 60 个 v4，v4 此前因文件名硬编码完全
+    // 静默不可见。discover 只 stat 探测、绝不解压。
+    const cliDir = mkdtempSync(join(tmpdir(), "deepaa-dsh-v4-"));
+    const workspaceDir = join(cliDir, "sessions", "ws-v4", "sess-v4-a");
+    mkdirSync(workspaceDir, {recursive: true});
+    writeFileSync(join(workspaceDir, "session.v4.jsonl.zstd"), Buffer.from("v4-fixture"));
+    const v3Dir = join(cliDir, "sessions", "ws-v4", "sess-v3-a");
+    mkdirSync(v3Dir, {recursive: true});
+    writeFileSync(join(v3Dir, "session.v3.jsonl.zstd"), zstdCompressSync(Buffer.from(sessionJsonl({
+      sessionId: "sess-v3-live",
+      steps: [{turn: 1, step: 1}],
+    }))));
+
+    const adapter = createDshLocalSourceAdapter({cliDir});
+    const status = await adapter.discover();
+    assert.equal(status.availability.state, "available");
+    assert.ok(status.notices && status.notices.length === 1, `notice 缺失: ${JSON.stringify(status.notices)}`);
+    assert.equal(status.notices[0].kind, "unsupported_format");
+    assert.match(status.notices[0].detail, /1 个会话为 session\.v4 格式/u);
+
+    // v4 不参与解析：候选里只有 v3 会话的步骤，v4 文件零读取。
+    const candidates = adapter.readPendingCandidates(1, new Set(["deepseek-chat"]));
+    assert.ok(candidates.every(candidate => !candidate.id.includes("v4")));
+  });
 });

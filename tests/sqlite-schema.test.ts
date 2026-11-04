@@ -622,7 +622,7 @@ describe("SQLite schema", () => {
       assert.equal(names.includes("plan_credit_unit"), true);
       assert.equal(names.includes("plan_credit_formula_version"), true);
       assert.equal(migrated.pragma("user_version", { simple: true }), SCHEMA_VERSION);
-      assert.equal(SCHEMA_VERSION, 53);
+      assert.equal(SCHEMA_VERSION, 55);
       assert.equal(hasTable(migrated, "pricing_source_baselines"), true);
     } finally {
       migrated.close();
@@ -658,7 +658,7 @@ describe("SQLite schema", () => {
       assert.equal(hasIndex(migrated, "idx_raw_wire_api"), false);
       assert.equal(hasIndex(migrated, "idx_steps_native_step_id"), false);
       assert.equal(migrated.pragma("user_version", { simple: true }), SCHEMA_VERSION);
-      assert.equal(SCHEMA_VERSION, 53);
+      assert.equal(SCHEMA_VERSION, 55);
     } finally {
       migrated.close();
     }
@@ -699,7 +699,7 @@ describe("SQLite schema", () => {
         "SELECT sync_interval_minutes FROM plan_sync_configs WHERE target_id = 'target-1'",
       ).pluck().get(), 30);
       assert.equal(migrated.pragma("user_version", { simple: true }), SCHEMA_VERSION);
-      assert.equal(SCHEMA_VERSION, 53);
+      assert.equal(SCHEMA_VERSION, 55);
     } finally {
       migrated.close();
     }
@@ -1030,7 +1030,7 @@ describe("SQLite schema", () => {
 
     const migrated = openDeepaaDatabase({ dataDir: fixture.dataDir });
     try {
-      assert.equal(SCHEMA_VERSION, 53);
+      assert.equal(SCHEMA_VERSION, 55);
       assert.equal(migrated.pragma("user_version", { simple: true }), SCHEMA_VERSION);
       assert.equal(hasColumn(migrated, "ingestion_sources", "generation"), true);
       assert.equal(hasColumn(migrated, "ingestion_sources", "scan_offset"), true);
@@ -1110,7 +1110,7 @@ describe("SQLite schema", () => {
 
     const migrated = openDeepaaDatabase({ dataDir: fixture.dataDir });
     try {
-      assert.equal(SCHEMA_VERSION, 53);
+      assert.equal(SCHEMA_VERSION, 55);
       assert.equal(migrated.pragma("user_version", { simple: true }), SCHEMA_VERSION);
       assert.equal(hasColumn(migrated, "ingestion_sources", "scan_offset"), true);
       assert.deepEqual(
@@ -1181,7 +1181,7 @@ describe("SQLite schema", () => {
 
     const migrated = openDeepaaDatabase({ dataDir: fixture.dataDir });
     try {
-      assert.equal(SCHEMA_VERSION, 53);
+      assert.equal(SCHEMA_VERSION, 55);
       assert.equal(migrated.pragma("user_version", { simple: true }), SCHEMA_VERSION);
       assert.equal(
         migrated.prepare("SELECT schema_version FROM schema_meta WHERE id = 1").pluck().get(),
@@ -1229,7 +1229,7 @@ describe("SQLite schema", () => {
 
     const migrated = openDeepaaDatabase({ dataDir: fixture.dataDir });
     try {
-      assert.equal(SCHEMA_VERSION, 53);
+      assert.equal(SCHEMA_VERSION, 55);
       assert.equal(migrated.pragma("user_version", { simple: true }), SCHEMA_VERSION);
       assert.equal(hasIndex(migrated, "idx_sessions_conversation"), true);
       assert.equal(
@@ -1276,7 +1276,7 @@ describe("SQLite schema", () => {
 
     const migrated = openDeepaaDatabase({ dataDir: fixture.dataDir });
     try {
-      assert.equal(SCHEMA_VERSION, 53);
+      assert.equal(SCHEMA_VERSION, 55);
       assert.equal(migrated.pragma("user_version", { simple: true }), SCHEMA_VERSION);
       assert.equal(
         migrated.prepare("SELECT schema_version FROM schema_meta WHERE id = 1").pluck().get(),
@@ -1328,7 +1328,7 @@ describe("SQLite schema", () => {
 
     const migrated = openDeepaaDatabase({ dataDir: fixture.dataDir });
     try {
-      assert.equal(SCHEMA_VERSION, 53);
+      assert.equal(SCHEMA_VERSION, 55);
       assert.equal(migrated.pragma("user_version", { simple: true }), SCHEMA_VERSION);
       assert.equal(
         migrated.prepare("SELECT schema_version FROM schema_meta WHERE id = 1").pluck().get(),
@@ -1459,7 +1459,7 @@ describe("SQLite schema", () => {
 
     const migrated = openDeepaaDatabase({ dataDir: fixture.dataDir });
     try {
-      assert.equal(SCHEMA_VERSION, 53);
+      assert.equal(SCHEMA_VERSION, 55);
       assert.equal(migrated.pragma("user_version", { simple: true }), SCHEMA_VERSION);
       assert.equal(
         hasColumn(migrated, "exchange_content_filter_status", "request_comparison_kind"),
