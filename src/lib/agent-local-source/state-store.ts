@@ -156,6 +156,35 @@ export function updateImportState(db: DeepaaDatabase, update: ImportStateUpdate)
  * imported_at（导入发生在完成之后），被删行对应候选必然已早于窗口下界、不可能
  * 重新成为候选——幂等反联不受影响。返回实际删除行数（0 = 无过期行）。
  */
+/** OOM 修复 C-2 审计 R4（2026-11-05）：v58 前沿/记录表随 seen 同款有界清理。 */
+export function pruneAgentLocalImportRolloutState(
+  db: DeepaaDatabase,
+  options: {nowMs: number; maxRows?: number},
+): number {
+  const cutoff = new Date(options.nowMs - LOCAL_IMPORT_LOOKBACK_DAYS_MS - SEEN_RETENTION_MARGIN_MS).toISOString();
+  const maxRows = options.maxRows ?? 2_000;
+  const staleFiles = db.prepare(
+    "SELECT agent, file_key FROM agent_local_import_rollout_files WHERE updated_at < ? LIMIT ?",
+  ).all(cutoff, maxRows) as Array<{agent: string; file_key: string}>;
+  if (staleFiles.length === 0) return 0;
+  let deleted = 0;
+  db.transaction(() => {
+    const delRecords = db.prepare(
+      "DELETE FROM agent_local_import_records WHERE agent = ? AND record_id LIKE ? ESCAPE '\\'",
+    );
+    const delFile = db.prepare(
+      "DELETE FROM agent_local_import_rollout_files WHERE agent = ? AND file_key = ?",
+    );
+    for (const row of staleFiles) {
+      const escaped = row.file_key.replace(/[%_\\]/g, (m: string) => `\\${m}`);
+      delRecords.run(row.agent, `${escaped}:%`);
+      delFile.run(row.agent, row.file_key);
+      deleted += 1;
+    }
+  })();
+  return deleted;
+}
+
 export function pruneAgentLocalImportSeen(
   db: DeepaaDatabase,
   options: {nowMs: number; maxRows?: number},

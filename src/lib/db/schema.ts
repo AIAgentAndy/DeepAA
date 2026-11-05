@@ -1,6 +1,6 @@
 import type {DeepaaDatabase} from "@/lib/db/sqlite-driver";
 
-export const SCHEMA_VERSION = 57;
+export const SCHEMA_VERSION = 58;
 
 /**
  * v19：Agent 证据字段。
@@ -835,6 +835,55 @@ CREATE INDEX IF NOT EXISTS idx_skill_act_agent_skill_time
   ON skill_activations(agent_name, skill_name, activated_at);
 CREATE INDEX IF NOT EXISTS idx_skill_act_step ON skill_activations(agent_step_id);
 `;
+
+/**
+ * v58：OOM 修复 C-2（2026-11-05）——codex rollout 解析前沿与记录索引持久化。
+ * 重启后扫描态（offset/records/usage/timing）从本表恢复，只解析尾部新增字节，
+ * 不再从 0 重扫（96-124MB 文件此前的冷启动 ~32 秒重析 + 全量 items 重建是
+ * 生产 OOM 的触发链）。范式同 ingestion_sources（offset/签名/截短重置）与
+ * agent_tool_execution_state（水位）。随 seen 同款有界清理。
+ */
+const AGENT_LOCAL_IMPORT_ROLLOUT_V58_SQL = `
+CREATE TABLE IF NOT EXISTS agent_local_import_rollout_files (
+  agent TEXT NOT NULL,
+  file_key TEXT NOT NULL,
+  path TEXT NOT NULL,
+  mtime_ms REAL NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  offset INTEGER NOT NULL,
+  item_count INTEGER NOT NULL DEFAULT 0,
+  session_id TEXT,
+  last_activity_ms INTEGER,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (agent, file_key)
+);
+CREATE TABLE IF NOT EXISTS agent_local_import_records (
+  agent TEXT NOT NULL,
+  record_id TEXT NOT NULL,
+  session_id TEXT,
+  turn_id TEXT,
+  provider_id TEXT,
+  model_id TEXT,
+  started_at INTEGER,
+  completed_at INTEGER,
+  first_token_ms INTEGER,
+  duration_ms INTEGER,
+  usage_json TEXT NOT NULL DEFAULT '{}',
+  context_end INTEGER NOT NULL,
+  item_count INTEGER NOT NULL,
+  output_indices_json TEXT NOT NULL DEFAULT '[]',
+  anchor_offset INTEGER NOT NULL DEFAULT 0,
+  captured_at TEXT NOT NULL,
+  PRIMARY KEY (agent, record_id)
+);
+CREATE INDEX IF NOT EXISTS idx_alir_session ON agent_local_import_records(agent, session_id, captured_at);
+`;
+
+function migrateAgentLocalImportRolloutV58(db: DeepaaDatabase): void {
+  if (!hasTable(db, "agent_local_import_rollout_files")) {
+    db.exec(AGENT_LOCAL_IMPORT_ROLLOUT_V58_SQL);
+  }
+}
 
 function migrateSkillActivationsV57(db: DeepaaDatabase): void {
   if (!hasTable(db, "skill_activations")) {
@@ -2356,6 +2405,7 @@ ${AGENT_LOCAL_IMPORT_V32_SQL}
 ${AGENT_LOCAL_IMPORT_SEEN_V34_SQL}
 ${AGENT_TOOL_EXECUTIONS_V56_SQL}
 ${SKILL_ACTIVATIONS_V57_SQL}
+${AGENT_LOCAL_IMPORT_ROLLOUT_V58_SQL}
 `;
 
 /**
@@ -2554,6 +2604,9 @@ export function migrateDeepaaDatabase(db: DeepaaDatabase): void {
       }
       if (current < 57) {
         migrateSkillActivationsV57(db);
+      }
+      if (current < 58) {
+        migrateAgentLocalImportRolloutV58(db);
       }
     }
     db.prepare(

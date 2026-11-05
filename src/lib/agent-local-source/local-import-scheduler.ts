@@ -25,7 +25,7 @@ import {
   loadLatestPromptSkeleton,
   recordPromptSkeleton,
 } from "./prompt-skeleton";
-import {readImportState, pruneAgentLocalImportSeen, updateImportState} from "./state-store";
+import {readImportState, pruneAgentLocalImportRolloutState, pruneAgentLocalImportSeen, updateImportState} from "./state-store";
 import {syncZcodeToolExecutions} from "./tool-execution-sync";
 import {isAgentLocalIdentityAgent, upsertAgentLocalIdentityLinks} from "./identity-links";
 import {markAgentScanConverged, markAgentScanStarted} from "./scan-readiness";
@@ -549,6 +549,7 @@ async function runOneBatchRound(options: {
       // 空闲轮（批未满）执行——追赶期跳过，不打断满载续批。
       if (pendingRemaining === 0) {
         pruneAgentLocalImportSeen(db, {nowMs});
+        pruneAgentLocalImportRolloutState(db, {nowMs});
       }
     } catch (error) {
       try {

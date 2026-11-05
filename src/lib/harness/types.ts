@@ -216,6 +216,11 @@ export const CAPTURE_DIAGNOSTIC_CODES = [
   "request_skeleton_missing",
   "request_skeleton_borrowed",
   "assistant_parts_incomplete",
+  /**
+   * OOM 修复 B 门（2026-11-05）：本地导入单轮合成请求超预算，前文按有界投影
+   * 降级（头尾条目 + 省略标记）。与 worker projected_text_limit_exceeded 同构。
+   */
+  "request_context_bounded",
 ] as const;
 
 export type CaptureDiagnosticCode = typeof CAPTURE_DIAGNOSTIC_CODES[number];

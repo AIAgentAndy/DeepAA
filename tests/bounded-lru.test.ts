@@ -27,18 +27,20 @@ describe("BoundedLruMap（字节预算有界 LRU 公共件）", () => {
     assert.equal(lru.get("d"), "1234");
   });
 
-  test("至少保留 1 条（单条自身超预算不发生自噬）", () => {
+  test("单条自身超预算拒绝插入（OOM 修复 2026-11-05 新语义）", () => {
     const lru = new BoundedLruMap<string, string>({
       maxBytes: 1,
       bytesOf: value => value.length,
     });
-    lru.set("big", "0123456789");
-    assert.equal(lru.get("big"), "0123456789", "刚插入的条目必须可读");
-    assert.equal(lru.size, 1);
-    lru.set("another", "x");
-    // 新条目更小，旧的超大条目被逐出。
+    // 旧语义「至少保留 1 条」使超预算单条无条件驻留（生产 124MB 会话 items
+    // 150-300MB 堆打穿 64MiB 预算的根因）——新语义拒绝插入,调用方 miss 时从
+    // 磁盘有界重建。
+    assert.equal(lru.set("big", "0123456789"), false, "超预算单条拒绝");
     assert.equal(lru.get("big"), undefined);
-    assert.equal(lru.get("another"), "x");
+    assert.equal(lru.size, 0);
+    assert.equal(lru.set("small", "x"), true);
+    assert.equal(lru.get("small"), "x");
+    assert.equal(lru.size, 1);
   });
 
   test("覆盖同键更新字节数并触达", () => {

@@ -262,6 +262,11 @@ export async function executeRawPurge(
     }
   }
 
+  // OOM 修复租约审计 R7（2026-11-05 双路审核）:初版「剔除近 7 天导入行 blob 哈希」
+  // 实为 no-op——purge 循环已删除 ingestion_records 行,租约查询(在循环后 join 该表)
+  // 必然落空;而窗内活跃引用本就被 gcExternalBlobs 引用计数保留。前文源 blob 的
+  // 真实保护 = retention 窗口 + 引用计数;被 retention 清理时 C-1 前文读取走 B 降级
+  // 兜底(wire-prefix 返回 undefined)。据此移除无效代码,保留语义说明。
   result.deletedBlobFiles = await gcExternalBlobs(db, dataDir, gcBlobHashes);
   result.deletedDerivedArtifactFiles = await gcDerivedArtifacts(
     db,

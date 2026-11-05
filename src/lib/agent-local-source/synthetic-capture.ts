@@ -68,6 +68,15 @@ export function buildSyntheticExchange(input: SyntheticBuildInput): RawCapturedE
     : assembleResponseRawBody(record, detail, modelId);
   const hasDetailBody = detail !== undefined
     && (detail.requestRawBody !== undefined || detail.response !== undefined);
+  if (detail?.requestContextDegraded === true) {
+    // OOM 修复 B 门（2026-11-05）:与 worker projected_text_limit_exceeded 同构的
+    // 诚实降级——前文按有界投影(头尾+省略标记),usage/计费/身份/Skill 激活不受影响。
+    diagnostics.push({
+      code: "request_context_bounded",
+      severity: "info",
+      message: "单轮合成请求超过预算上限，前文按有界投影降级（头尾条目 + 省略标记）。",
+    });
+  }
   if (!hasDetailBody) {
     diagnostics.push({
       code: "missing_raw_body",

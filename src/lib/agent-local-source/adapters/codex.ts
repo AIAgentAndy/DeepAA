@@ -36,6 +36,11 @@ import {closeSync, fstatSync, openSync, readSync, readdirSync, statSync} from "n
 import {homedir} from "node:os";
 import {join} from "node:path";
 import {BoundedLruMap} from "../bounded-lru";
+import {
+  openRolloutStateDb,
+  persistRolloutFrontier,
+  restoreRolloutState,
+} from "../codex-rollout-state";
 import {openSeenProbeDatabase, probeSeenExchangeIds} from "../seen-probe";
 import type {
   AgentLocalSourceAdapter,
@@ -170,7 +175,7 @@ interface RolloutFileCache {
   lastActivityMs: number;
 }
 
-export function createCodexLocalSourceAdapter(options: {cliDir?: string; contentCacheMaxBytes?: number; registryRescanIntervalMs?: number; readChunkMaxBytes?: number} = {}): AgentLocalSourceAdapter {
+export function createCodexLocalSourceAdapter(options: {cliDir?: string; contentCacheMaxBytes?: number; registryRescanIntervalMs?: number; readChunkMaxBytes?: number; composeBudgetBytes?: number} = {}): AgentLocalSourceAdapter {
   const cliDir = options.cliDir ?? process.env.CODEX_CLI_DIR ?? join(homedir(), ".codex");
   const sessionsDir = join(cliDir, "sessions");
   const caches = new Map<string, RolloutFileCache>();
@@ -179,6 +184,11 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
     maxBytes: options.contentCacheMaxBytes ?? CONTENT_CACHE_MAX_BYTES,
     bytesOf: estimateContentEntryBytes,
   });
+  // OOM 修复 B 门（2026-11-05）：单轮合成 request 的硬上限（与 Worker 侧
+  // SMALL_BODY_MAX_BYTES=8MiB 分界同构——超限走有界投影降级,语义零新增）。
+  const composeBudgetBytes = options.composeBudgetBytes ?? 8 * 1024 * 1024;
+  /** C-2 审计 R5:per-file 上次持久化签名(未变化跳过轮末写)。 */
+  const lastPersistSignature = new Map<string, string>();
   /** 缓存内容版本（任何文件解析到新字节即 +1）：有序候选列表的失效判据。 */
   let cachesVersion = 0;
   let orderedCache: {version: number; list: PendingImportCandidate[]} | undefined;
@@ -240,7 +250,11 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
   };
 
   /** 扫描 + 增量续析（readPendingCandidates / readPendingBatch 共用入口）。 */
-  const scanAndIndex = (floorEpochMs: number): void => {
+  const scanAndIndex = (floorEpochMs: number, dataDir?: string): void => {
+    // OOM 修复 C-2（2026-11-05）：dataDir 可用（readPendingBatch 路径）时,内存 miss
+    // 的文件先从 SQLite 恢复解析前沿/记录索引——重启只续析尾部新增字节,不再冷重扫;
+    // 扫描轮末把前沿落库。恢复的 records 与 appendUsageRecord 产物同构。
+    const stateDb = dataDir !== undefined ? openRolloutStateDb(dataDir) : undefined;
     const windowed = listRolloutFiles(sessionsDir, floorEpochMs);
     const tracked = refreshTrackedFiles(Date.now(), floorEpochMs);
     const files = mergeRolloutFileLists(windowed, tracked);
@@ -256,6 +270,55 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
       if (cache && cache.mtimeMs === file.mtimeMs && cache.size === file.size
         && !cache.coldPending && cache.offset >= file.size) {
         continue;
+      }
+      if (!cache && stateDb !== undefined) {
+        // C-2 恢复:offset > 0 的持久前沿 → 只续析尾部新增字节(不进冷预算门)。
+        const restored = restoreRolloutState(stateDb, file.fileKey, file.path);
+        if (restored !== undefined && restored.offset <= file.size) {
+          cache = {
+            path: file.path, fileKey: file.fileKey, mtimeMs: file.mtimeMs, size: file.size,
+            offset: restored.offset, tail: Buffer.alloc(0),
+            records: restored.records.map(record => ({
+              id: record.id,
+              attemptIndex: 0,
+              providerId: record.providerId,
+              modelId: record.modelId,
+              status: "completed" as const,
+              startedAt: record.startedAt,
+              completedAt: record.completedAt,
+              ...(record.durationMs !== undefined ? {durationMs: record.durationMs} : {}),
+              ...(record.firstTokenMs !== undefined ? {firstTokenMs: record.firstTokenMs} : {}),
+              usage: record.usage as LocalUsageRecord["usage"],
+              sessionId: record.sessionId,
+              ...(record.turnId ? {turnId: record.turnId} : {}),
+              detailRef: {
+                sessionId: record.sessionId,
+                ...(record.turnId ? {turnId: record.turnId} : {}),
+                requestId: record.id,
+                startedAt: record.startedAt,
+              },
+            })),
+            recordDetails: new Map(restored.records.map(record => [record.id, {
+              contextEnd: record.contextEnd,
+              outputIndices: record.outputIndices,
+              itemCount: record.itemCount,
+            }])),
+            pendingUsageRecord: undefined,
+            itemCount: restored.itemCount, pendingOutputIndices: [], pendingOutputTimings: [],
+            lastInputActivityMs: undefined,
+            sessionMeta: restored.baseInstructions !== undefined || restored.modelProvider !== undefined ? {
+              sessionId: restored.sessionId ?? file.fileKey,
+              modelProvider: restored.modelProvider ?? "openai",
+              ...(restored.cliVersion ? {cliVersion: restored.cliVersion} : {cliVersion: ""}),
+              ...(restored.source ? {source: restored.source} : {}),
+              ...(restored.threadSource ? {threadSource: restored.threadSource} : {}),
+              ...(restored.baseInstructions !== undefined ? {baseInstructions: restored.baseInstructions} : {}),
+            } : undefined,
+            currentTurn: undefined, requestAnchorMs: undefined,
+            coldPending: false, lastActivityMs: file.mtimeMs,
+          };
+          caches.set(file.fileKey, cache);
+        }
       }
       if (!cache) {
         cache = {
@@ -290,6 +353,48 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
       }
     }
     if (parsedAnyBytes) cachesVersion += 1;
+    // C-2：轮末持久化全部内存 cache 的前沿（幂等 upsert;失败只跳过下一轮重试）。
+    if (stateDb !== undefined) {
+      try {
+        for (const cache of caches.values()) {
+          if (cache.offset <= 0) continue;
+          // 审计 R5:签名(offset+记录数)未变且已追平时跳过——避免每 2s tick 对
+          // 空闲文件全量 re-upsert records 的写放大。
+          const persistSignature = `${cache.offset}:${cache.records.length}`;
+          if (lastPersistSignature.get(cache.fileKey) === persistSignature
+            && cache.offset >= cache.size) continue;
+          lastPersistSignature.set(cache.fileKey, persistSignature);
+          persistRolloutFrontier(stateDb, {
+            fileKey: cache.fileKey, path: cache.path, mtimeMs: cache.mtimeMs, size: cache.size,
+            // 审计 R2(2026-11-05):offset 语义是「已读取字节数」含尾部半行(tail 缓冲),
+            // 持久化必须对齐到最后一个完整行边界(减 tail 长度)——否则重启续析时
+            // 半行残段成为独立行,JSON.parse 失败被丢弃(丢 response_item 会使扫描
+            // 计数与重析 items 错位 1 条;丢 token_count 则静默少记一条用量)。
+            offset: cache.offset - cache.tail.length, itemCount: cache.itemCount,
+            ...(cache.sessionMeta?.sessionId ? {sessionId: cache.sessionMeta.sessionId} : {}),
+            lastActivityMs: cache.lastActivityMs,
+            records: cache.records.map(record => ({
+              id: record.id, sessionId: record.sessionId ?? "",
+              ...(record.turnId ? {turnId: record.turnId} : {}),
+              providerId: record.providerId, modelId: record.modelId,
+              startedAt: record.startedAt, completedAt: record.completedAt,
+              ...(record.firstTokenMs !== undefined ? {firstTokenMs: record.firstTokenMs} : {}),
+              ...(record.durationMs !== undefined ? {durationMs: record.durationMs} : {}),
+              usage: record.usage,
+              contextEnd: cache.recordDetails.get(record.id)?.contextEnd ?? 0,
+              itemCount: cache.recordDetails.get(record.id)?.itemCount ?? 0,
+              outputIndices: [...(cache.recordDetails.get(record.id)?.outputIndices ?? [])],
+              anchorOffset: 0,
+              capturedAt: new Date(record.completedAt ?? record.startedAt).toISOString(),
+            })),
+          });
+        }
+      } catch {
+        // 持久化失败不阻断扫描。
+      } finally {
+        try { stateDb.close(); } catch { /* 短命连接。 */ }
+      }
+    }
     // 活跃清单之外的缓存条目必须逐出（2026-11-03 修复配套红线）：文件滑出活跃窗
     // （7 天无写入）或被清理后，其解析元数据（caches）与正文条目（contentLru）
     // 不得继续驻留内存——内存严格有界于活跃文件集合，与历史目录长度彻底解耦。
@@ -421,7 +526,7 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
       // 仅「seen 反联 + LIMIT」改为主键索引分块探针（公共 seen-probe 模块）——取代
       // 调度器旧路径的「整表 seen 加载 + 全量候选 JS Set 过滤」（实测随历史线性放大）。
       if (query.allowedModels.size === 0) return {records: [], mode: "chunked"};
-      scanAndIndex(query.floorEpochMs);
+      scanAndIndex(query.floorEpochMs, query.dataDir);
       const ordered = candidatesForQuery(query.floorEpochMs, query.allowedModels);
       const records: PendingImportCandidate[] = [];
       const seenDb = openSeenProbeDatabase(query.dataDir);
@@ -467,7 +572,48 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
       const items = resolveSessionItems(cache, detail.itemCount);
       if (items === undefined) return Promise.resolve(undefined);
       const meta = cache.sessionMeta;
-      const input = items.slice(0, detail.contextEnd).map(item => itemWirePayload(item));
+      // 审计 R6 已知限制（2026-11-05）:LRU 拒绝驻留后,超预算会话批内每条详情都会
+      // 全量重析 items(124MB 文件 ~1s/条,串行不叠加、内存安全但吞吐回退)——根治
+      // 待 C-1 流式前文(读上一导入 blob + 尾部增量拼接,不物化全量 items)。
+      // OOM 修复 B 门（2026-11-05）：逐 item 累计 wire 字节,超 composeBudgetBytes
+      //（默认 8MiB,与 Worker SMALL_BODY_MAX_BYTES 分界同构）产出有界降级体——
+      // 保留头部 8 条 + 尾部 32 条 + 省略标记;model/instructions 骨架恒完整。
+      // 累积式请求的超大前文不再物化(与 worker 侧 projected_text_limit_exceeded
+      // 降级语义同构,usage/计费/身份/Skill 激活均不受影响——它们只消费响应侧)。
+      const input: Array<Record<string, unknown>> = [];
+      let composedBytes = 0;
+      let degraded = false;
+      let omittedCount = 0;
+      let omissionMarkerInserted = false;
+      const keepHead = 8;
+      const keepTail = 32;
+      const contextCount = Math.min(detail.contextEnd, items.length);
+      const tailStart = Math.max(keepHead, contextCount - keepTail);
+      for (let index = 0; index < contextCount; index += 1) {
+        const wire = itemWirePayload(items[index]!);
+        const wireBytes = estimateWireItemBytes(wire);
+        const keep = index < keepHead || index >= tailStart;
+        if (!degraded && composedBytes + wireBytes > composeBudgetBytes && index >= keepHead) {
+          degraded = true;
+        }
+        if (degraded) {
+          if (!keep) {
+            omittedCount += 1;
+            continue;
+          }
+          // 第一个保留下来的尾部条目前插入省略标记(保头尾受条数约束,总量有界)。
+          if (!omissionMarkerInserted && omittedCount > 0) {
+            omissionMarkerInserted = true;
+            input.push({
+              type: "message",
+              role: "user",
+              content: [{type: "input_text", text: `[deepaa] 前文已省略 ${omittedCount} items:单轮合成超 ${composeBudgetBytes} 字节上限,按有界投影降级;完整前文见上一已导入 exchange 的 request blob。`}],
+            });
+          }
+        }
+        composedBytes += wireBytes;
+        input.push(wire);
+      }
       const response = aggregateResponse(items, detail.outputIndices);
       const lastOutputItem = detail.outputIndices
         .map(index => items[index])
@@ -488,6 +634,7 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
         // codex rollout 结构上不含工具定义（tools），系统提示视会话可能有——骨架缺失
         // 是已知常态，标记后合成层跳过诊断，不产生 request_skeleton_missing 警告。
         ...(meta?.baseInstructions === undefined ? {skeletonUnavailable: true} : {}),
+        ...(degraded && omittedCount > 0 ? {requestContextDegraded: true} : {}),
         skeletonSource: "rollout",
       });
     },
@@ -1041,6 +1188,15 @@ function appendUsageRecord(cache: RolloutFileCache, ordinalText: string, usageRa
   cache.pendingOutputIndices = [];
   cache.pendingOutputTimings = [];
   cache.requestAnchorMs = completedAt;
+}
+
+/** wire item 的近似字节(与 estimateContentEntryBytes 同口径,双字节高估)。 */
+function estimateWireItemBytes(wire: Record<string, unknown>): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(wire));
+  } catch {
+    return 2048;
+  }
 }
 
 /** item → wire 原始 payload（请求回放保真；与网关捕获的 responses input 形态一致）。 */

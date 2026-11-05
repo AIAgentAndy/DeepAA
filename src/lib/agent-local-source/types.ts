@@ -115,6 +115,8 @@ export interface LocalExchangeDetail {
    * 这是已知常态而非异常（2026-10-09 用户确认）。
    */
   skeletonUnavailable?: boolean;
+  /** OOM 修复 B 门：单轮合成超预算,请求前文按有界投影降级(头尾+省略标记)。 */
+  requestContextDegraded?: boolean;
 }
 
 /** 结构化响应的最小契约（zcode rollout 实测形态；其它 Agent adapter 自行映射）。 */
