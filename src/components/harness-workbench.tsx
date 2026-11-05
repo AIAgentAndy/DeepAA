@@ -5492,7 +5492,7 @@ function HarnessTab({ step, harness, harnessLoading, harnessError, protocol, isS
           调用统计受限：{harness.callsLimited.step ? "本步" : ""}
           {harness.callsLimited.step && harness.callsLimited.turn ? " / " : ""}
           {harness.callsLimited.turn ? "本 Turn" : ""}
-          {" "}工具分组达处理上限（201），未处理工具的调用数显示「未知」，不计为 0。
+          {" "}工具分组达处理上限（201），未处理工具的本步/本Turn 调用数显示「未知」，不计为 0{harness.observedLimited ? "；未匹配列表为下界（超出分组的仅调用工具不可见）" : ""}。
         </div>
       ) : null}
 

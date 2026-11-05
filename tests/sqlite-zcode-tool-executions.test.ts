@@ -174,4 +174,68 @@ describe("P2-a zcode 原生执行证据", () => {
     assert.equal(codex.calls.items.length, 0);
     void stepId;
   });
+  test("审计修订 A:ID 碰撞不误挂 + 重复 tool_call_id 取最新 + rowid 漂移自愈", async () => {
+    const cliDir = makeMockZcodeCli([
+      {id: "u-collision", tool_call_id: "call_shared", tool_name: "Bash", status: "completed", duration_ms: 111},
+    ]);
+    const fixture = await createSqliteFixture();
+    fixtures.push(fixture);
+    assert.equal(syncZcodeToolExecutions(fixture.db, {cliDir}).processedCount, 1);
+    // 手工插入「另一 agent 同 call_id」+「同 agent 重复 call_id(更新的一条)」:
+    const ins = fixture.db.prepare(
+      `INSERT INTO agent_tool_executions(id, agent_name, tool_call_id, tool_name, status, duration_ms, synced_at)
+       VALUES(?, ?, ?, ?, ?, ?, ?)`,
+    );
+    ins.run("e-codex", "codex", "call_shared", "Bash", "completed", 999, "2026-11-04T00:00:00Z");
+    ins.run("e-zcode-older", "zcode", "call_shared", "Bash", "completed", 222, "2026-11-04T00:00:00Z");
+
+    // 构造 zcode 的 wire 调用 call_shared(processor 可靠路径,同第三用例)。
+    const sourceId = fixture.db.prepare(
+      `INSERT INTO ingestion_sources(relative_path, file_id, file_size, updated_at)
+       VALUES('captures/v2/p2a2.jsonl', 'f', 4096, ?) RETURNING id`,
+    ).pluck().get(BASE_TIME) as number;
+    const requestBody = JSON.stringify({model: "m", instructions: "You are Codex.", input: [], tools: [{type: "function", name: "Bash", parameters: {type: "object"}}]});
+    const responseBody = JSON.stringify({id: "r1", object: "response", status: "completed", model: "m",
+      output: [{type: "function_call", call_id: "call_shared", name: "Bash", arguments: "{}"}],
+      usage: {input_tokens: 100, output_tokens: 4}});
+    const exchange = {
+      schemaVersion: 2, exchangeId: "capture-p2a2:ex-1", captureSessionId: "capture-p2a2", sequence: 1,
+      capturedAt: BASE_TIME, completedAt: BASE_TIME, durationMs: 25,
+      routing: {targetId: "t", targetName: "T", targetFormatHint: "openai",
+        localUrl: "http://127.0.0.1:3211/zcode/v1/responses", upstreamUrl: "https://e.test/v1/responses",
+        localPath: "/zcode/v1/responses", upstreamPath: "/v1/responses", method: "POST", agent: "zcode", wireApi: "responses"},
+      request: {headers: {"user-agent": "ZCode/1.0.0", session_id: "sess-y", thread_id: "th-y",
+        "x-codex-turn-metadata": JSON.stringify({session_id: "sess-y", thread_id: "th-y", turn_id: "tu-y", request_kind: "turn", workspaces: {}})},
+        rawBody: requestBody, bodySizeBytes: 100, bodySha256: "r1"},
+      response: {status: 200, statusText: "OK", headers: {}, rawBody: responseBody, bodySizeBytes: 100, bodySha256: "s1", isStreaming: false},
+      bodyStorage: {policy: "inline"}, captureDiagnostics: [],
+      security: {containsSensitiveHeaders: false, headerRedactionAppliedInApi: true, rawBodiesStoredLocally: true},
+    } as never;
+    const processor = createExchangeProcessor({db: fixture.db, dataDir: fixture.dataDir});
+    await processor.processExchangeRecord({sourceId, sourceRelativePath: "captures/v2/p2a2.jsonl", byteOffset: 0, lineLengthBytes: 100, exchange});
+    const stepId = "unused";
+    const lookup = lookupCapability(fixture.db, {agentName: "zcode", kind: "tool", name: "Bash"});
+    assert.ok(lookup);
+    const call = lookup.calls.items[0]!;
+    assert.ok(call.execution);
+    // agent 过滤:codex 的 999ms 不误挂;zcode 两条取 synced_at 最新(采集行 111ms,后于手工 222ms 的 synced_at)。
+    assert.notEqual(call.execution.durationMs, 999, "跨 Agent 同 call_id 不得误挂");
+    assert.notEqual(call.execution.durationMs, 222, "重复 call_id 不得取旧行");
+    void stepId;
+
+    // rowid 漂移自愈:水位抬高到源 MAX 之上(模拟源库重建),再插入新行(rowid 从 1)
+    // → 采集器重置水位全量重采,新行被捕获。
+    fixture.db.prepare("UPDATE agent_tool_execution_state SET last_rowid = 99999 WHERE agent = 'zcode'").run();
+    const source = new DeepaaDatabase(join(cliDir, "db", "db.sqlite"));
+    source.exec("PRAGMA query_only = OFF");
+    source.prepare(
+      `INSERT INTO tool_usage(id, tool_call_id, tool_name, status, started_at) VALUES('u-after-rebuild', 'call_new', 'Bash', 'completed', 1)`,
+    ).run();
+    source.close();
+    const resync = syncZcodeToolExecutions(fixture.db, {cliDir});
+    assert.ok(resync.processedCount >= 2, `漂移重采应覆盖旧行+新行: ${resync.processedCount}`);
+    assert.ok(fixture.db.prepare(
+      "SELECT COUNT(*) c FROM agent_tool_executions WHERE id = 'u-after-rebuild'",
+    ).get().c === 1, "重建后的新行(rowid 小于旧水位)必须被重采捕获");
+  });
 });

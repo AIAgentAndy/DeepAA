@@ -123,6 +123,9 @@ export function loadAgentStepHarness(
   // 声明清单（快照内工具名集合）；无快照时为空集——observed_only 调用证据
   // 独立于快照存在（审计修订 2026-11-04：无快照的 step 此前连调用证据也不显示）。
   let declaredNames = new Set<string>();
+  // F6 时间序序列与当前行位置(快照分支填充,changes 复用)。
+  let sequenceRows: Array<{id: string; step_index: number; hash: string}> = [];
+  let currentIndexRef = -1;
 
   if (step.harness_snapshot_hash) {
     const snapshot = db.prepare(
@@ -205,12 +208,22 @@ export function loadAgentStepHarness(
       // ② coverage = 同哈希全局 MIN/MAX——A 的包络 1–4 跨过中间的 B；
       // ③ changes 用全局 MIN 作查找边界——第四步回到 A 时 B→A 的变化不展示。
       // 序列有界（单 Thread ≤5000 行，仅主键列）；片段按数组邻接扩展（不假设 step_index 无洞）。
-      const sequenceRows = db.prepare(
-        `SELECT step_index, harness_snapshot_hash AS hash FROM agent_steps
-         WHERE agent_thread_id = ? AND harness_snapshot_hash IS NOT NULL
-         ORDER BY step_index LIMIT 5000`,
-      ).all(step.agent_thread_id) as Array<{step_index: number; hash: string}>;
-      const currentIndex = sequenceRows.findIndex(row => row.step_index === step.step_index);
+      // 审计修订 B(P-2, 2026-11-04):真实 thread 的 step_index 每 turn 重置为 1
+      // (实测 zcode/codex 多 turn thread),ORDER BY step_index 会把各 turn 交错排列。
+      // 序列必须按捕获时间序(同刻稳定序:step 主键),窗口放宽到 10000 行;
+      // 当前步不在窗口内(超长 thread,极罕见)时保守显示自身片段,不误报全局序。
+      const sequenceRowsLocal = db.prepare(
+        `SELECT s.id, s.step_index, s.harness_snapshot_hash AS hash
+         FROM agent_steps s JOIN raw_exchange_refs r ON r.exchange_id = s.exchange_id
+         WHERE s.agent_thread_id = ? AND s.harness_snapshot_hash IS NOT NULL
+         ORDER BY r.captured_at, s.id LIMIT 10000`,
+      ).all(step.agent_thread_id) as Array<{id: string; step_index: number; hash: string}>;
+      sequenceRows = sequenceRowsLocal;
+      // 审计修订 B 关键:step_index 每 turn 重置,必须按 step 主键定位当前行
+      // (按 step_index findIndex 会命中其它 turn 的同号行)。超长 thread 越界
+      // (>10000 行)时保守退化为自身片段,不误报全局序。
+      const currentIndex = sequenceRows.findIndex(row => row.id === stepId);
+      currentIndexRef = currentIndex;
       let segmentStart = step.step_index;
       let segmentEnd = step.step_index;
       let hashFirstSeen = step.step_index;
@@ -227,8 +240,10 @@ export function loadAgentStepHarness(
           segmentEnd = sequenceRows[forward]!.step_index;
           forward += 1;
         }
-        for (const row of sequenceRows) {
-          if (row.step_index > step.step_index) break;
+        // 审计修订 B:遍历到当前行(序列位置)为止——step_index 每 turn 重置,
+        // 不可作比较键。
+        for (let i = 0; i <= currentIndex && i < sequenceRows.length; i += 1) {
+          const row = sequenceRows[i]!;
           if (!seenHashes.has(row.hash)) {
             seenHashes.add(row.hash);
             if (row.hash === snapshot.snapshot_hash) hashFirstSeen = row.step_index;
@@ -253,6 +268,9 @@ export function loadAgentStepHarness(
     }
   }
 
+  // 审计修订 A(F12):step 分组截断时,observed-only 集合只含已处理分组——
+  // 是下界,响应带 observedLimited 如实标注(超出分组的仅调用工具不可见)。
+  const observedLimited = stepCallsLimited;
   // F11（审计修订 2026-11-04）：本步实际调用过但清单无定义的工具单独成组——
   // 调用证据独立于快照存在，无快照/借补/截断场景同样如实展示；不进传递分母。
   for (const [toolName, calls] of callsThisStep) {
@@ -320,18 +338,11 @@ export function loadAgentStepHarness(
   // 快照变化：当前连续片段起点之前紧邻一步所属的不同快照（F6 修复：
   // 用片段边界而非全局 MIN——回到旧清单（A→B→A）时 B→A 的变化正确展示）。
   let changes: HarnessChangesView | undefined;
-  if (snapshotView) {
-    const previousRow = db.prepare(
-      `SELECT harness_snapshot_hash AS hash, step_index
-       FROM agent_steps
-       WHERE agent_thread_id = ? AND harness_snapshot_hash IS NOT NULL
-         AND step_index < ?
-       ORDER BY step_index DESC LIMIT 1`,
-    ).get(step.agent_thread_id, snapshotView.coverage.fromStepIndex) as {
-      hash: string;
-      step_index: number;
-    } | undefined;
-    const previous = previousRow && previousRow.hash !== step.harness_snapshot_hash
+  if (snapshotView && currentIndexRef >= 1) {
+    // 审计修订 B:紧邻前一行取自时间序序列(step_index 每 turn 重置不可作键);
+    // 同清单片段内的前行(同哈希)不产生变化。
+    const previousRow = sequenceRows[currentIndexRef - 1]!;
+    const previous = previousRow.hash !== step.harness_snapshot_hash
       ? {hash: previousRow.hash, first_index: previousRow.step_index}
       : undefined;
     if (previous) {
@@ -387,6 +398,7 @@ export function loadAgentStepHarness(
     compaction: loadAgentStepCompaction(db, step),
     reference,
     callsLimited,
+    ...(observedLimited ? {observedLimited: true} : {}),
     skillsParseStatus: snapshotView ? skillsParseStatusForAgent(snapshotView.agentName) : undefined,
     legacyData: legacyData && !skills.length && !rules.length,
     candidateCount: 1,

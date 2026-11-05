@@ -134,6 +134,8 @@ export interface ApiAgentStepHarness {
   reference?: HarnessReferenceView;
   /** F12：调用分组截断状态。 */
   callsLimited?: HarnessCallsLimitedView;
+  /** F12（审计修订 A）：未匹配（observed-only）列表受限为下界。 */
+  observedLimited?: true;
   /** I6/F5：该 Agent 的 Skills 解析能力（not_supported = 0 条显示「解析未支持」而非「无注入」）。 */
   skillsParseStatus?: "parsed" | "not_supported";
   /** true = Tier A 回填数据（有工具清单与调用，无 skills/rules/构成估算/项目）。 */

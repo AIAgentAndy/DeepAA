@@ -5,7 +5,9 @@
  * - 声明步数（暴露分母）＝窗口内、该 Agent 快照 tools_json 含该工具的不同 step 数
  *   （json_each 展开聚合，快照表小表有界）；
  * - 调用步数/次数＝tool_calls 聚合（idx_tools_name_time 索引族）；
- * - 回合调用覆盖率＝调用步数 ÷ 声明步数（分母为 0 时 N/A——仅调用工具单列）；
+ * - 步级调用覆盖率＝「声明过该工具的步中调用过它的步数」÷ 声明步数（§11.1 红线:
+ *   分子必须是同分母子集——审计修订 A,仅调用/其它快照上的调用不计入分子,
+ *   覆盖率恒 ≤100%;分母为 0 时 N/A——仅调用工具单列）;
  * - 执行侧（zcode）＝agent_tool_executions 聚合（平均耗时/错误/取消——P2-a 数据）；
  * - 低调用候选＝声明步数 ≥ 阈值且覆盖率 < 阈值（初始 10 步 / 20%，文档 §11.3 待确认值），
  *   仅观察结论，不下价值判断。
@@ -59,17 +61,21 @@ export function capabilityUsageForAgent(
   const windowStart = new Date(Date.now() - windowDays * 24 * 3_600_000).toISOString();
 
   // 声明分母:窗口内该 Agent 的 step × 快照工具条目(json_each 展开小表)。
+  // 审计修订 A(json_valid 防御):损坏的 tools_json 会使 json_each 抛错放大为整端点
+  // 500——过滤无效行(写路径 jsonBounded 恒产合法 JSON,此为防御层)。
   const declaredRows = db.prepare(
     `SELECT json_extract(j.value, '$.name') AS name,
             COUNT(DISTINCT s.id) AS steps
      FROM agent_steps s
      JOIN harness_snapshots h ON h.snapshot_hash = s.harness_snapshot_hash
      JOIN raw_exchange_refs r ON r.exchange_id = s.exchange_id, json_each(h.tools_json) j
-     WHERE h.agent_name = ? AND r.captured_at >= ?
+     WHERE h.agent_name = ? AND r.captured_at >= ? AND json_valid(h.tools_json)
      GROUP BY json_extract(j.value, '$.name')`,
   ).all(agentName, windowStart) as Array<{name: string; steps: number}>;
 
   // 调用聚合(全窗口;窗口过滤在 JOIN 侧完成)。
+  // 调用聚合拆两个口径:总调用步/次数(分母无关,含 observed-only)与
+  // 声明内调用步数(分子——仅计「该步快照声明了此工具」的调用,§11.1 子集红线)。
   const callRows = db.prepare(
     `SELECT t.tool_name AS name, COUNT(*) AS calls, COUNT(DISTINCT t.agent_step_id) AS steps,
             MAX(t.created_at) AS last_at
@@ -79,6 +85,18 @@ export function capabilityUsageForAgent(
      WHERE se.agent_name = ? AND r.captured_at >= ?
      GROUP BY t.tool_name`,
   ).all(agentName, windowStart) as Array<{name: string; calls: number; steps: number; last_at: string}>;
+  const invokedInDeclaredRows = db.prepare(
+    `SELECT json_extract(j.value, '$.name') AS name, COUNT(DISTINCT t.agent_step_id) AS steps
+     FROM tool_calls t
+     JOIN agent_sessions se ON se.id = t.agent_session_id
+     JOIN raw_exchange_refs r ON r.exchange_id = t.exchange_id
+     JOIN agent_steps s ON s.id = t.agent_step_id
+     JOIN harness_snapshots h ON h.snapshot_hash = s.harness_snapshot_hash, json_each(h.tools_json) j
+     WHERE se.agent_name = ? AND r.captured_at >= ? AND json_valid(h.tools_json)
+       AND t.tool_name = json_extract(j.value, '$.name')
+     GROUP BY json_extract(j.value, '$.name')`,
+  ).all(agentName, windowStart) as Array<{name: string; steps: number}>;
+  const invokedInDeclared = new Map(invokedInDeclaredRows.map(row => [row.name, row.steps]));
 
   // 执行侧聚合(zcode 原生;其它 Agent 空集)。
   const execRows = new Map(
@@ -116,7 +134,7 @@ export function capabilityUsageForAgent(
   for (const row of callRows) {
     const existing = byName.get(row.name);
     if (existing) {
-      existing.invokedSteps = row.steps;
+      existing.invokedSteps = invokedInDeclared.get(row.name) ?? 0;
       existing.invokedCalls = row.calls;
       if (row.last_at) existing.lastActivityAt = row.last_at;
     } else {

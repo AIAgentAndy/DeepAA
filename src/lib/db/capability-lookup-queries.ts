@@ -101,7 +101,12 @@ export function lookupCapability(
      FROM tool_calls t
      JOIN agent_sessions se ON se.id = t.agent_session_id
      JOIN raw_exchange_refs r ON r.exchange_id = t.exchange_id
-     LEFT JOIN agent_tool_executions e ON e.tool_call_id = t.tool_use_id
+     LEFT JOIN (
+       SELECT tool_call_id, agent_name, status, approval_status, duration_ms,
+              time_to_first_output_ms, exit_code, retry_count, cancelled_by_user, error_type,
+              ROW_NUMBER() OVER (PARTITION BY tool_call_id ORDER BY synced_at DESC) AS rn
+       FROM agent_tool_executions
+     ) e ON e.tool_call_id = t.tool_use_id AND e.agent_name = se.agent_name AND e.rn = 1
      WHERE se.agent_name = ? AND t.tool_name = ?
        ${input.cursor ? "AND t.created_at < ?" : ""}
      ORDER BY t.created_at DESC LIMIT ? + 1`,

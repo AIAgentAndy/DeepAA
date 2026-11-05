@@ -108,6 +108,14 @@ describe("SQLite 能力利用率（P2-b）", () => {
     assert.equal(orphan.declaredSteps, 0);
     assert.equal(orphan.coverage, undefined, "仅调用工具覆盖率不适用");
     assert.equal(orphan.lowUseCandidate, false, "无分母不进候选");
+    // 审计修订 A(§11.1 红线):分子必须是同分母子集——覆盖率恒 ≤100%,
+    // 其它快照上的调用(observed-only)不得计入分子。
+    for (const item of usage.items) {
+      if (item.coverage !== undefined) {
+        assert.ok(item.coverage <= 1, `${item.name} coverage=${item.coverage} 超过 100%`);
+        assert.ok(item.invokedSteps <= item.declaredSteps, `${item.name} 分子超过分母`);
+      }
+    }
     // 候选排序优先。
     assert.equal(usage.items[0]?.name, "idle-tool");
     assert.equal(usage.borrowedStepCount, 0);

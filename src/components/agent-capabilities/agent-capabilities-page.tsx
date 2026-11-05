@@ -246,7 +246,7 @@ function UsageView() {
         {["codex", "claude", "zcode", "dsh", "opencode"].map(id => (
           <button type="button" key={id} role="tab" aria-selected={agentId === id}
             className={agentId === id ? "on" : ""} onClick={() => setAgentId(id)}>
-            {agentLabel(id === "claude" ? "claude-code" : id)}
+            {agentLabel(id)}
           </button>
         ))}
         <button type="button" role="tab" aria-selected={days === 7} className={days === 7 ? "on" : ""} onClick={() => setDays(7)}>近 7 天</button>
@@ -259,7 +259,7 @@ function UsageView() {
         <>
           <p className="agent-caps-summary">
             窗口近 {data.windowDays} 天 · 工具 {data.items.length} 种 · 低调用候选 {candidates.length} 个
-            （标准：声明 ≥{data.thresholds.minDeclaredSteps} 步且回合调用覆盖率 {'<'}{Math.round(data.thresholds.maxCoverage * 100)}%）
+            （标准：声明 ≥{data.thresholds.minDeclaredSteps} 步且步级调用覆盖率 {'<'}{Math.round(data.thresholds.maxCoverage * 100)}%）
             {data.borrowedStepCount > 0 ? ` · ${data.borrowedStepCount} 步清单为借补参考（计入声明分母，覆盖率仅供参考）` : ""}
             {data.limited ? ` · 达 ${data.processedCount} 行上限（共 ${data.candidateCount}）` : ""}。
             覆盖率是观察结论，不构成「没价值」判断；无声明分母的工具（仅调用）覆盖率不适用。
@@ -268,7 +268,7 @@ function UsageView() {
             <div className="agent-caps-usage-table">
               <div className="agent-caps-usage-row head">
                 <span>工具</span><span className="num">声明步</span><span className="num">调用步/次</span>
-                <span className="num">覆盖率</span><span className="num">执行侧</span><span>候选</span>
+                <span className="num">步级覆盖率</span><span className="num">执行侧</span><span>候选</span>
               </div>
               {data.items.map(item => (
                 <div key={item.name} className={`agent-caps-usage-row${item.lowUseCandidate ? " cand" : ""}`}>
@@ -278,7 +278,7 @@ function UsageView() {
                   <span className="num">{item.coverage !== undefined ? `${Math.round(item.coverage * 100)}%` : "—"}</span>
                   <span className="num">
                     {item.executedCount !== undefined
-                      ? `${item.executedCount} 次${item.avgDurationMs !== undefined ? ` · 均 ${(item.avgDurationMs / 1000).toFixed(1)}s` : ""}${item.errorCount ? ` · 错 ${item.errorCount}` : ""}`
+                      ? `${item.executedCount} 次${item.avgDurationMs !== undefined ? ` · 均 ${(item.avgDurationMs / 1000).toFixed(1)}s` : ""}${item.errorCount ? ` · 错 ${item.errorCount}` : ""}${item.cancelledCount ? ` · 取消 ${item.cancelledCount}` : ""}`
                       : "—"}
                   </span>
                   <span>{item.lowUseCandidate ? "低调用（观察）" : ""}</span>

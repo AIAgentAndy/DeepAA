@@ -81,7 +81,18 @@ export function syncZcodeToolExecutions(
   const source = openSourceReadonly(cliDir);
   if (!source) return {processedCount: 0, hasMore: false, limited: false};
   try {
-    const lastRowid = readWatermark(db, "zcode");
+    let lastRowid = readWatermark(db, "zcode");
+    // 审计修订 A(rowid 漂移自愈):无 AUTOINCREMENT 的表删尾行后 rowid 可能复用,
+    // 源库清理/重建会使新行 rowid ≤ 水位被永久跳过。水位异常高于源 MAX(rowid)
+    // 时判定漂移,重置为 0 全量重采(主键幂等,零重复)。
+    const sourceMax = (source.prepare("SELECT MAX(rowid) AS m FROM tool_usage").get() as {m: number | null}).m ?? 0;
+    if (lastRowid > sourceMax) {
+      lastRowid = 0;
+      db.prepare(
+        `INSERT INTO agent_tool_execution_state(agent, last_rowid, updated_at)
+         VALUES('zcode', 0, ?) ON CONFLICT(agent) DO UPDATE SET last_rowid = 0, updated_at = excluded.updated_at`,
+      ).run(new Date().toISOString());
+    }
     const rows = source.prepare(
       `SELECT rowid, id, session_id, turn_id, tool_call_id, tool_name, status, approval_status,
               side_effect_scope, read_only, destructive, started_at, completed_at,

@@ -325,4 +325,47 @@ describe("SQLite Harness 清单可信（F1/F11/F12）", () => {
     assert.ok(s3.changes);
     assert.deepEqual(s3.changes?.toolsAdded, ["beta"]);
   });
+  test("审计修订 B(P-2)：多 turn thread(step_index 每 turn 重置)按时间序计算片段", async () => {
+    const fixture = await createSqliteFixture();
+    fixtures.push(fixture);
+    const source = seedIngestionSource(fixture, "captures/v2/trust.jsonl");
+    const toolsA = [{type: "function", name: "alpha", parameters: {type: "object"}}];
+    const toolsB = [{type: "function", name: "beta", parameters: {type: "object"}}];
+    // 三 turn:turn1(A×2步) → turn2(B×1步) → turn3(A×1步);step_index 各 turn 从 1 重置。
+    // makeExchange 的 metadata turn_id 固定——手工覆盖 x-codex-turn-metadata 的 turn。
+    const steps: Array<{id: string; seq: number}> = [];
+    let offset = 0;
+    const plan: Array<[number, unknown[], string]> = [
+      [1, toolsA, "turn-1"], [2, toolsA, "turn-1"],
+      [3, toolsB, "turn-2"],
+      [4, toolsA, "turn-3"],
+    ];
+    for (const [seq, tools, turnId] of plan) {
+      const exchange = makeExchange({sequence: seq, threadId: "thread-multi-turn", declaredTools: tools as Array<{type: string; name: string}>});
+      // 覆盖 turn 元数据使每 turn 的 step_index 重置(模拟真实形态)。
+      const raw = JSON.parse(exchange.request.rawBody as string);
+      void raw;
+      const headers = exchange.request.headers as Record<string, string>;
+      const meta = JSON.parse(headers["x-codex-turn-metadata"]);
+      meta.turn_id = turnId;
+      headers["x-codex-turn-metadata"] = JSON.stringify(meta);
+      const processor = createExchangeProcessor({db: fixture.db, dataDir: fixture.dataDir});
+      const result = await processor.processExchangeRecord({...source, sourceRelativePath: "captures/v2/trust.jsonl", byteOffset: offset, lineLengthBytes: 100, exchange});
+      offset += 100;
+      const id = fixture.db.prepare("SELECT id FROM agent_steps WHERE exchange_id = ?").pluck().get(result.exchangeId) as string;
+      steps.push({id, seq});
+    }
+    // 时间序断言:最后一个 A(turn-3 的 seq4)片段=自身、序号=2、相对 B 有变化。
+    const s4 = loadAgentStepHarness(fixture.db, steps[3]!.id);
+    assert.ok(s4);
+    assert.equal(s4.snapshot?.seqInThread, 2, `多turn时间序 seq=${s4.snapshot?.seqInThread}`);
+    assert.deepEqual(s4.snapshot?.coverage, {fromStepIndex: 1, toStepIndex: 1}, "turn-3 的 A 是独立片段");
+    assert.ok(s4.changes, "turn-3 的 A 必须相对紧邻前的 B 展示变化");
+    assert.deepEqual(s4.changes?.toolsAdded, ["alpha"]);
+    // turn-1 的 A(前两步):片段含同 turn 两步、无变化、序号 1。
+    const s1 = loadAgentStepHarness(fixture.db, steps[0]!.id);
+    assert.ok(s1);
+    assert.equal(s1.snapshot?.seqInThread, 1);
+    assert.equal(s1.changes, undefined);
+  });
 });
