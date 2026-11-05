@@ -13545,6 +13545,49 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
   display: none;
 }
 
+.agent-caps-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.agent-caps-usage-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.agent-caps-usage-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 2fr) 70px 110px 70px minmax(180px, 2fr) 120px;
+  gap: 10px;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line-2);
+  align-items: baseline;
+}
+
+.agent-caps-usage-row:last-child {
+  border-bottom: 0;
+}
+
+.agent-caps-usage-row.head {
+  font-weight: 700;
+  color: var(--ink-400);
+  background: rgba(127, 127, 127, 0.08);
+}
+
+.agent-caps-usage-row.cand {
+  background: rgba(180, 83, 9, 0.08);
+}
+
+.agent-caps-usage-row .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .agent-caps-mech {
   display: flex;
   flex-direction: column;

@@ -25,7 +25,7 @@ export function AgentCapabilitiesPage({mechanismProfiles}: {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string>();
-  const [view, setView] = useState<"ledger" | "mechanisms">("ledger");
+  const [view, setView] = useState<"ledger" | "mechanisms" | "usage">("ledger");
   const seqRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -60,6 +60,7 @@ export function AgentCapabilitiesPage({mechanismProfiles}: {
           <div className="agent-caps-viewtoggle" role="tablist">
             <button type="button" role="tab" aria-selected={view === "ledger"} className={view === "ledger" ? "on" : ""} onClick={() => setView("ledger")}>台账</button>
             <button type="button" role="tab" aria-selected={view === "mechanisms"} className={view === "mechanisms" ? "on" : ""} onClick={() => setView("mechanisms")}>机制剖析</button>
+            <button type="button" role="tab" aria-selected={view === "usage"} className={view === "usage" ? "on" : ""} onClick={() => setView("usage")}>使用分析</button>
           </div>
           {view === "ledger" ? (
             <button type="button" className="ghost-btn" onClick={() => void load()} disabled={loading}>
@@ -73,6 +74,7 @@ export function AgentCapabilitiesPage({mechanismProfiles}: {
       {data?.limited ? <p className="agent-caps-note">部分 Agent 目录项达扫描上限（500），清单可能不完整。</p> : null}
 
       {view === "mechanisms" ? <MechanismView profiles={mechanismProfiles} /> : null}
+      {view === "usage" ? <UsageView /> : null}
 
       <div className={`agent-caps-grid${view === "mechanisms" ? " hidden" : ""}`}>
         {(data?.agents ?? []).map(agent => (
@@ -201,4 +203,114 @@ function MechanismView({profiles}: {profiles?: MechanismProfiles}) {
       ) : <p className="agent-caps-note">该 Agent 暂无剖面。</p>}
     </div>
   );
+}
+
+/**
+ * P2-b 使用分析视图：利用率首版（§11 最小版）——声明/调用覆盖率、执行侧聚合、
+ * 低调用候选（观察结论，绝不说「从未使用/没价值」）；借补参考清单计入声明分母
+ * 时注明。数据来自 /api/capabilities/usage（只读 SQLite 聚合）。
+ */
+function UsageView() {
+  const [agentId, setAgentId] = useState("zcode");
+  const [days, setDays] = useState<7 | 30>(7);
+  const [data, setData] = useState<CapabilityUsageResponse>();
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const seqRef = useRef(0);
+
+  const load = useCallback(async () => {
+    const seq = ++seqRef.current;
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/capabilities/usage?agent=${encodeURIComponent(agentId)}&days=${days}`, {cache: "no-store"});
+      if (seq !== seqRef.current) return;
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json() as CapabilityUsageResponse;
+      if (seq !== seqRef.current) return;
+      setData(payload);
+    } catch (err) {
+      if (seq !== seqRef.current) return;
+      setError((err as Error).message || "读取失败");
+    } finally {
+      if (seq === seqRef.current) setLoading(false);
+    }
+  }, [agentId, days]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const candidates = (data?.items ?? []).filter(item => item.lowUseCandidate);
+  return (
+    <div className="agent-caps-usage">
+      <div className="agent-caps-viewtoggle" role="tablist">
+        {["codex", "claude", "zcode", "dsh", "opencode"].map(id => (
+          <button type="button" key={id} role="tab" aria-selected={agentId === id}
+            className={agentId === id ? "on" : ""} onClick={() => setAgentId(id)}>
+            {agentLabel(id === "claude" ? "claude-code" : id)}
+          </button>
+        ))}
+        <button type="button" role="tab" aria-selected={days === 7} className={days === 7 ? "on" : ""} onClick={() => setDays(7)}>近 7 天</button>
+        <button type="button" role="tab" aria-selected={days === 30} className={days === 30 ? "on" : ""} onClick={() => setDays(30)}>近 30 天</button>
+      </div>
+
+      {error ? <p className="agent-caps-note">使用数据读取失败（{error}）· <button type="button" className="comp-link" onClick={() => void load()}>重试</button></p> : null}
+      {loading && !data ? <p className="agent-caps-note">正在聚合使用数据…</p> : null}
+      {data ? (
+        <>
+          <p className="agent-caps-summary">
+            窗口近 {data.windowDays} 天 · 工具 {data.items.length} 种 · 低调用候选 {candidates.length} 个
+            （标准：声明 ≥{data.thresholds.minDeclaredSteps} 步且回合调用覆盖率 {'<'}{Math.round(data.thresholds.maxCoverage * 100)}%）
+            {data.borrowedStepCount > 0 ? ` · ${data.borrowedStepCount} 步清单为借补参考（计入声明分母，覆盖率仅供参考）` : ""}
+            {data.limited ? ` · 达 ${data.processedCount} 行上限（共 ${data.candidateCount}）` : ""}。
+            覆盖率是观察结论，不构成「没价值」判断；无声明分母的工具（仅调用）覆盖率不适用。
+          </p>
+          {data.items.length > 0 ? (
+            <div className="agent-caps-usage-table">
+              <div className="agent-caps-usage-row head">
+                <span>工具</span><span className="num">声明步</span><span className="num">调用步/次</span>
+                <span className="num">覆盖率</span><span className="num">执行侧</span><span>候选</span>
+              </div>
+              {data.items.map(item => (
+                <div key={item.name} className={`agent-caps-usage-row${item.lowUseCandidate ? " cand" : ""}`}>
+                  <span className="mono">{item.name}</span>
+                  <span className="num">{item.declaredSteps}</span>
+                  <span className="num">{item.invokedSteps} / {item.invokedCalls}</span>
+                  <span className="num">{item.coverage !== undefined ? `${Math.round(item.coverage * 100)}%` : "—"}</span>
+                  <span className="num">
+                    {item.executedCount !== undefined
+                      ? `${item.executedCount} 次${item.avgDurationMs !== undefined ? ` · 均 ${(item.avgDurationMs / 1000).toFixed(1)}s` : ""}${item.errorCount ? ` · 错 ${item.errorCount}` : ""}`
+                      : "—"}
+                  </span>
+                  <span>{item.lowUseCandidate ? "低调用（观察）" : ""}</span>
+                </div>
+              ))}
+            </div>
+          ) : <p className="agent-caps-note">窗口内无该 Agent 的声明/调用记录（0 条不代表该工具没价值）。</p>}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+interface CapabilityUsageResponse {
+  agentName: string;
+  windowDays: number;
+  windowStart: string;
+  items: Array<{
+    name: string;
+    declaredSteps: number;
+    invokedSteps: number;
+    invokedCalls: number;
+    coverage?: number;
+    avgDurationMs?: number;
+    executedCount?: number;
+    errorCount?: number;
+    cancelledCount?: number;
+    lowUseCandidate: boolean;
+  }>;
+  borrowedStepCount: number;
+  candidateCount: number;
+  processedCount: number;
+  limited: boolean;
+  thresholds: {minDeclaredSteps: number; maxCoverage: number};
 }
