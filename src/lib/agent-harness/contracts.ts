@@ -28,6 +28,10 @@ export interface StepCapabilitySummary {
   /** Skills 目录条目数（三态见 skillsParseStatus）。 */
   skillCount: number;
   skillsParseStatus: SkillsParseStatus;
+  /** P2/v57：本步 Skill 激活数（显式调用 Skill 工具加载;目录出现≠激活）。 */
+  activatedSkillCount: number;
+  /** 节点 C：注入名单涉及的插件来源数（推断口径）。 */
+  pluginSourceCount: number;
 
   /** 活动口径（本步真实调用；次数按 occurrence、种类按工具名去重）。 */
   invokedToolKinds: number;
@@ -81,6 +85,8 @@ export interface StepCapabilityItem {
   sourceLevel?: string;
   pluginName?: string;
   estTokens?: number;
+  /** skill 专属：本步激活（模型显式调用 Skill 工具）。 */
+  activatedThisStep?: boolean;
 }
 
 /** items 分类页：keyset（name 游标），candidateCount 为该分类全集数。 */

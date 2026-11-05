@@ -9,6 +9,7 @@
  */
 
 import type {DeepaaDatabase} from "@/lib/db/sqlite-driver";
+import {parseSnapshotTools} from "@/lib/ingestion/harness-snapshot-store";
 
 export interface CapabilityLookupCallRow {
   stepId: string;
@@ -47,6 +48,15 @@ export interface CapabilityLookupDeclaredRow {
   invokedThisStep: number;
 }
 
+/** 节点 B：该工具在各快照中的定义演变（schemaTokensEst 随时间;快照小表提取）。 */
+export interface CapabilityDefinitionRevision {
+  firstSeenAt: string;
+  lastSeenAt: string;
+  schemaTokensEst: number;
+  /** 同一快照哈希（同名同规模的连续段收敛为同一演变行）。 */
+  snapshotHash: string;
+}
+
 export interface CapabilityLookupResult {
   identity: {
     kind: "tool" | "skill";
@@ -76,6 +86,8 @@ export interface CapabilityLookupResult {
     hasMore: boolean;
     limited: boolean;
   };
+  /** 节点 B：定义演变（kind=tool 时按快照历史提取;名字级口径）。 */
+  definitions?: CapabilityDefinitionRevision[];
 }
 
 export const CAPABILITY_LOOKUP_PAGE_LIMIT = 20;
@@ -87,6 +99,84 @@ export function lookupCapability(
   const {agentName, kind, name} = input;
   if (!agentName || !name) return undefined;
   const limit = CAPABILITY_LOOKUP_PAGE_LIMIT;
+
+  // P2/v57：kind=skill 的「调用记录」语义 = Skill 激活记录（加载动作）。分支置于
+  // tool 主查询之前（审计 P5:避免先跑 tool 窗口查询再整体丢弃）。
+  if (kind === "skill") {
+    // P1:LIKE 转义(name 含 %/_ 时精确匹配);P2:cursor = activated_at keyset。
+    const pattern = `%:${escapeLike(name)}`;
+    const cursorClause = input.cursor ? "AND a.activated_at < ?" : "";
+    const cursorParams = input.cursor ? [input.cursor] : [];
+    const activationRows = db.prepare(
+      `SELECT a.agent_step_id AS step_id, a.exchange_id, a.activated_at AS captured_at,
+              s.agent_session_id AS session_id, s.agent_thread_id AS thread_id, s.agent_turn_id AS turn_id,
+              s.step_index, se.agent_name, se.target_id
+       FROM skill_activations a
+       LEFT JOIN agent_steps s ON s.id = a.agent_step_id
+       LEFT JOIN agent_sessions se ON se.id = s.agent_session_id
+       WHERE a.agent_name = ? AND (a.skill_name = ? OR a.skill_name LIKE ? ESCAPE '\\')
+         ${cursorClause}
+       ORDER BY a.activated_at DESC, a.id DESC LIMIT ? + 1`,
+    ).all(agentName, name, pattern, ...cursorParams, limit + 1) as Array<{
+      step_id: string | null; exchange_id: string; captured_at: string;
+      session_id: string | null; thread_id: string | null; turn_id: string | null;
+      step_index: number | null; agent_name: string | null; target_id: string | null;
+    }>;
+    const actHasMore = activationRows.length > limit;
+    const actPage = actHasMore ? activationRows.slice(0, limit) : activationRows;
+    const actTotals = db.prepare(
+      `SELECT COUNT(*) AS total, COUNT(DISTINCT a.agent_step_id) AS steps
+       FROM skill_activations a
+       WHERE a.agent_name = ? AND (a.skill_name = ? OR a.skill_name LIKE ? ESCAPE '\\')`,
+    ).get(agentName, name, pattern) as {total: number; steps: number};
+    // P3:声明出现 = 快照命中 hash 集合的真实步数(与 tool 分支同口径)。
+    const skillHashes = (db.prepare(
+      `SELECT snapshot_hash FROM harness_snapshots
+       WHERE agent_name = ? AND skills_json LIKE ? ESCAPE '\\'`,
+    ).all(agentName, `%"name":"${escapeLike(name)}"%`) as Array<{snapshot_hash: string}>)
+      .map(row => row.snapshot_hash);
+    const placeholders = skillHashes.map(() => "?").join(",");
+    const declaredStepCountSkill = skillHashes.length > 0
+      ? (db.prepare(
+          `SELECT COUNT(*) AS c FROM agent_steps WHERE harness_snapshot_hash IN (${placeholders})`,
+        ).get(...skillHashes) as {c: number}).c
+      : 0;
+    return {
+      identity: {kind, name, agentName, coverage: "name-level"},
+      totals: {
+        declaredStepCount: declaredStepCountSkill,
+        invokedStepCount: actTotals.steps,
+        invokedCallCount: actTotals.total,
+        ...(actPage[0]?.captured_at ? {lastActivityAt: actPage[0].captured_at} : {}),
+      },
+      calls: {
+        items: actPage.map(row => ({
+          stepId: row.step_id ?? "",
+          exchangeId: row.exchange_id,
+          sessionId: row.session_id ?? "",
+          threadId: row.thread_id ?? "",
+          turnId: row.turn_id ?? "",
+          stepIndex: row.step_index ?? 0,
+          agentName: row.agent_name ?? agentName,
+          targetId: row.target_id ?? "",
+          capturedAt: row.captured_at,
+          status: "skill-activation",
+        })),
+        candidateCount: actTotals.total,
+        processedCount: actPage.length,
+        hasMore: actHasMore,
+        ...(actHasMore && actPage.length > 0 ? {nextCursor: actPage[actPage.length - 1]!.captured_at} : {}),
+        limited: actHasMore,
+      },
+      declaredIn: {
+        items: [],
+        candidateCount: declaredStepCountSkill,
+        processedCount: 0,
+        hasMore: false,
+        limited: false,
+      },
+    };
+  }
 
   // 调用反查：idx_tools_name_time 覆盖 (tool_name, created_at) keyset（倒序）。
   const callRows = db.prepare(
@@ -175,8 +265,39 @@ export function lookupCapability(
      WHERE se.agent_name = ? AND t.tool_name = ?`,
   ).get(agentName, name) as {calls: number; steps: number; last_at: string | null};
 
+  // 节点 B：定义演变——快照小表按 agent 过滤 + LIKE 命中,提取该工具条目。
+  const definitionsAll: CapabilityDefinitionRevision[] = kind === "tool"
+    ? (db.prepare(
+        `SELECT h.first_seen_at, h.last_seen_at, h.snapshot_hash, h.tools_json
+         FROM harness_snapshots h
+         WHERE h.agent_name = ? AND h.tools_json LIKE ? ESCAPE '\\'
+         ORDER BY h.first_seen_at`,
+      ).all(agentName, `%"name":"${escapeLike(name)}"%`) as Array<{
+        first_seen_at: string; last_seen_at: string; snapshot_hash: string; tools_json: string;
+      }>).flatMap(row => {
+        const entry = parseSnapshotTools(row.tools_json).find(tool => tool.name === name);
+        return entry ? [{
+          firstSeenAt: row.first_seen_at,
+          lastSeenAt: row.last_seen_at,
+          schemaTokensEst: entry.schemaTokensEst ?? 0,
+          snapshotHash: row.snapshot_hash,
+        }] : [];
+      })
+    : [];
+  // 审计(性能路):连续同规模快照收敛为一段;总量上限 50 段(截断标注截断前总数)。
+  const definitionsMerged: CapabilityDefinitionRevision[] = [];
+  for (const def of definitionsAll) {
+    const last = definitionsMerged[definitionsMerged.length - 1];
+    if (last && last.schemaTokensEst === def.schemaTokensEst) {
+      last.lastSeenAt = def.lastSeenAt;
+    } else {
+      definitionsMerged.push({...def});
+    }
+  }
+  const definitions = definitionsMerged.slice(0, 50);
   return {
     identity: {kind, name, agentName, coverage: "name-level"},
+    definitions,
     totals: {
       declaredStepCount: declaredCount,
       invokedStepCount: totalsRow.steps,

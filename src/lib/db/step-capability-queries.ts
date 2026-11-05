@@ -43,6 +43,12 @@ export function summarizeHarness(harness: ApiAgentStepHarness): StepCapabilitySu
     mcpServerCount: mcpServers.size,
     skillCount: harness.inventory.skills.length,
     skillsParseStatus: harness.skillsParseStatus ?? "parsed",
+    // P2/v57：本步激活数（模型显式调用 Skill 工具;目录出现≠激活）。
+    activatedSkillCount: harness.inventory.skills.filter(skill => skill.activatedThisStep === true).length,
+    // 节点 C：注入名单涉及的插件来源数（推断口径,不与工具数相加）。
+    pluginSourceCount: new Set(
+      harness.inventory.skills.map(skill => skill.pluginName).filter(Boolean),
+    ).size,
     invokedToolKinds: invokedDeclared.length + observedOnly.length,
     invokedToolCalls:
       declared.reduce((sum, tool) => sum + tool.callsThisStep, 0)
@@ -149,6 +155,7 @@ function collectItems(
       sourceLevel: skill.sourceLevel,
       ...(skill.pluginName ? {pluginName: skill.pluginName} : {}),
       estTokens: skill.estTokens,
+      ...(skill.activatedThisStep ? {activatedThisStep: true} : {}),
     }));
   }
   // mcp：server 级聚合条目（叶子见 tools 分类）。

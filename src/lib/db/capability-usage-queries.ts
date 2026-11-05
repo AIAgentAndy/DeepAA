@@ -85,15 +85,20 @@ export function capabilityUsageForAgent(
      WHERE se.agent_name = ? AND r.captured_at >= ?
      GROUP BY t.tool_name`,
   ).all(agentName, windowStart) as Array<{name: string; calls: number; steps: number; last_at: string}>;
+  // 审计(性能路):先在子查询按窗口+agent 收窄 tool_calls(消外层 SCAN t),
+  // 再与快照展开做名字相等连接——窗口内行数有界。
   const invokedInDeclaredRows = db.prepare(
-    `SELECT json_extract(j.value, '$.name') AS name, COUNT(DISTINCT t.agent_step_id) AS steps
-     FROM tool_calls t
-     JOIN agent_sessions se ON se.id = t.agent_session_id
-     JOIN raw_exchange_refs r ON r.exchange_id = t.exchange_id
-     JOIN agent_steps s ON s.id = t.agent_step_id
+    `SELECT json_extract(j.value, '$.name') AS name, COUNT(DISTINCT tc.agent_step_id) AS steps
+     FROM (
+       SELECT t.agent_step_id, t.tool_name FROM tool_calls t
+       JOIN agent_sessions se ON se.id = t.agent_session_id
+       JOIN raw_exchange_refs r ON r.exchange_id = t.exchange_id
+       WHERE se.agent_name = ? AND r.captured_at >= ?
+     ) tc
+     JOIN agent_steps s ON s.id = tc.agent_step_id
      JOIN harness_snapshots h ON h.snapshot_hash = s.harness_snapshot_hash, json_each(h.tools_json) j
-     WHERE se.agent_name = ? AND r.captured_at >= ? AND json_valid(h.tools_json)
-       AND t.tool_name = json_extract(j.value, '$.name')
+     WHERE json_valid(h.tools_json)
+       AND tc.tool_name = json_extract(j.value, '$.name')
      GROUP BY json_extract(j.value, '$.name')`,
   ).all(agentName, windowStart) as Array<{name: string; steps: number}>;
   const invokedInDeclared = new Map(invokedInDeclaredRows.map(row => [row.name, row.steps]));

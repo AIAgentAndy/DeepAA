@@ -981,6 +981,7 @@ function writePreparedExchange(
     stepShape.id,
     hydrated,
     normalized,
+    agentName,
   );
   writeUsageLedger(db, {
     exchange: hydrated,
@@ -2454,6 +2455,19 @@ function writePreviewRequestContext(
   ).run(serialized, sizeBytes, exchangeId);
 }
 
+/** Skill 加载工具名集合（数据驱动，无 agent 分派；新增 Agent 加条目即可）。 */
+const SKILL_LOADER_TOOL_NAMES = new Set(["Skill", "skill"]);
+
+/** 从 loader 调用 input 提取技能名（实测键 "skill"；防御兼容 name/command）。 */
+function skillLoaderTargetOf(toolName: unknown, input: unknown): string | undefined {
+  if (typeof toolName !== "string" || !SKILL_LOADER_TOOL_NAMES.has(toolName)) return undefined;
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const record = input as Record<string, unknown>;
+  const candidate = record.skill ?? record.name ?? record.command;
+  if (typeof candidate !== "string" || !candidate.trim()) return undefined;
+  return candidate.trim().slice(0, 200);
+}
+
 function writeToolCalls(
   db: DeepaaDatabase,
   path: { sessionId: string; threadId: string },
@@ -2461,6 +2475,7 @@ function writeToolCalls(
   stepId: string,
   exchange: RawCapturedExchange,
   normalized: NormalizedExchange,
+  agentNameOfExchange: string,
 ): number {
   for (const result of normalized.harnessPayload.providedToolResults) {
     if (!result.toolUseId) continue;
@@ -2499,6 +2514,25 @@ function writeToolCalls(
       hasInlineResult ? "completed" : "awaiting_result",
       exchange.capturedAt,
     );
+    // P2/v57（2026-11-05）：Skill 激活证据——模型显式调用 Skill 加载工具
+    //（实测 zcode：name=Skill、input={"skill":"<名>","args":...}，名字可带
+    // 插件前缀）。目录出现≠激活；激活是加载正文的动作（§14.2.9-4 最小版）。
+    const activationSkillName = skillLoaderTargetOf(toolUse.name, toolUse.input);
+    if (activationSkillName) {
+      db.prepare(
+        `INSERT OR IGNORE INTO skill_activations(
+          id, agent_name, skill_name, exchange_id, agent_step_id, agent_turn_id, activated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        toolCallId,
+        agentNameOfExchange,
+        activationSkillName,
+        exchange.exchangeId,
+        stepId,
+        turnId,
+        exchange.capturedAt,
+      );
+    }
   });
   return normalized.response.toolUses.length;
 }

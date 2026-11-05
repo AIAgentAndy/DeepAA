@@ -5640,6 +5640,7 @@ function HarnessTab({ step, harness, harnessLoading, harnessError, protocol, isS
             )}
             <span className={`src src-${skill.sourceLevel}`}>{skillSourceLabel(skill)}</span>
             <span className="kv">
+              {skill.activatedThisStep ? <i className="badge-tag warn">本步激活</i> : null}
               {skill.sourceRoot || "—"}
               {skill.estTokens > 0 ? <> · {formatTokensShort(skill.estTokens)} tok <i className="badge-tag est">估</i></> : null}
               {skill.pluginName ? ` · 插件 ${skill.pluginName}（推断）` : ""}

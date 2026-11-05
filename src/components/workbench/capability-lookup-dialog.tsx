@@ -126,6 +126,22 @@ export function CapabilityLookupDialog({target, onClose, onNavigate}: {
           ) : <p className="caps-lookup-muted">未观察到声明（可能仅作为调用出现，或为借补参考清单外的工具）。</p>}
         </div>
       ) : null}
+
+      {result && result.definitions && result.definitions.length > 0 ? (
+        <>
+          <h4>定义演变（{result.definitions.length} 个快照形态 · 名字级）</h4>
+          <div className="caps-lookup-rows">
+            {result.definitions.map(def => (
+              <div key={def.snapshotHash} className="caps-lookup-row" role="presentation">
+                <span className="mono">{new Date(def.firstSeenAt).toLocaleDateString()}</span>
+                <span>→ {new Date(def.lastSeenAt).toLocaleDateString()}</span>
+                <span className="caps-lookup-status">定义约 {def.schemaTokensEst.toLocaleString()} tokens</span>
+              </div>
+            ))}
+          </div>
+          <p className="caps-lookup-muted">同一名字在不同时期快照中的定义规模;变化时旧值保留为历史,不回改。</p>
+        </>
+      ) : null}
     </SimpleDialog>
   );
 }
@@ -134,6 +150,7 @@ function statusLabel(status: string): string {
   if (status === "completed") return "有结果";
   if (status === "error") return "有结果·出错";
   if (status === "awaiting_result") return "等待结果";
+  if (status === "skill-activation") return "Skill 激活";
   return status;
 }
 

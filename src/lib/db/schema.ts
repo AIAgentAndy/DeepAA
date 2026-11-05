@@ -1,6 +1,6 @@
 import type {DeepaaDatabase} from "@/lib/db/sqlite-driver";
 
-export const SCHEMA_VERSION = 56;
+export const SCHEMA_VERSION = 57;
 
 /**
  * v19：Agent 证据字段。
@@ -812,6 +812,33 @@ CREATE TABLE IF NOT EXISTS agent_tool_execution_state (
 function migrateAgentToolExecutionsV56(db: DeepaaDatabase): void {
   if (!hasTable(db, "agent_tool_executions")) {
     db.exec(AGENT_TOOL_EXECUTIONS_V56_SQL);
+  }
+}
+
+/**
+ * v57：P2 Skill 激活证据（2026-11-05）。skill_activations 记录「模型显式调用
+ * Skill 加载工具」的事实（实测 zcode：tool_use name=Skill、input={"skill":"<名>",
+ * "args":...}，名字可带插件前缀）；目录出现 ≠ 激活——目录是注入名单，激活是
+ * 模型主动加载正文的动作（§14.2.9-4 的最小版）。只追加事实，不改既有表。
+ */
+const SKILL_ACTIVATIONS_V57_SQL = `
+CREATE TABLE IF NOT EXISTS skill_activations (
+  id TEXT PRIMARY KEY,
+  agent_name TEXT NOT NULL,
+  skill_name TEXT NOT NULL,
+  exchange_id TEXT NOT NULL,
+  agent_step_id TEXT,
+  agent_turn_id TEXT,
+  activated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_skill_act_agent_skill_time
+  ON skill_activations(agent_name, skill_name, activated_at);
+CREATE INDEX IF NOT EXISTS idx_skill_act_step ON skill_activations(agent_step_id);
+`;
+
+function migrateSkillActivationsV57(db: DeepaaDatabase): void {
+  if (!hasTable(db, "skill_activations")) {
+    db.exec(SKILL_ACTIVATIONS_V57_SQL);
   }
 }
 
@@ -2328,6 +2355,7 @@ ${HARNESS_SNAPSHOTS_V27_SQL}
 ${AGENT_LOCAL_IMPORT_V32_SQL}
 ${AGENT_LOCAL_IMPORT_SEEN_V34_SQL}
 ${AGENT_TOOL_EXECUTIONS_V56_SQL}
+${SKILL_ACTIVATIONS_V57_SQL}
 `;
 
 /**
@@ -2523,6 +2551,9 @@ export function migrateDeepaaDatabase(db: DeepaaDatabase): void {
       }
       if (current < 56) {
         migrateAgentToolExecutionsV56(db);
+      }
+      if (current < 57) {
+        migrateSkillActivationsV57(db);
       }
     }
     db.prepare(

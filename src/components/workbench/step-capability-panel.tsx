@@ -93,8 +93,17 @@ export function StepCapabilityPanel({state, variant, onOpenCapability}: {
         </div>
         <div className="schip">
           <div className="n">{summary.skillCount} <i className="badge-tag warn">Skills</i></div>
-          <div className="l">{summary.skillsParseStatus === "not_supported" ? "解析未支持" : "目录条目"}</div>
+          <div className="l">
+            {summary.skillsParseStatus === "not_supported" ? "解析未支持" : "目录条目"}
+            {summary.activatedSkillCount > 0 ? ` · 本步激活 ${summary.activatedSkillCount}` : ""}
+          </div>
         </div>
+        {summary.pluginSourceCount > 0 ? (
+          <div className="schip">
+            <div className="n">{summary.pluginSourceCount} <i className="badge-tag">插件来源</i></div>
+            <div className="l">注入名单涉及（推断,不与工具数相加）</div>
+          </div>
+        ) : null}
         {summary.mcpServerCount > 0 ? (
           <div className="schip">
             <div className="n">{summary.mcpServerCount} <i className="badge-tag">MCP</i></div>
@@ -135,7 +144,9 @@ export function StepCapabilityPanel({state, variant, onOpenCapability}: {
         limit={COMPACT_GROUP_LIMIT}
         totalCount={summary.skillCount}
         emptyText={summary.skillsParseStatus === "not_supported" ? "该 Agent 的 Skills 注入格式解析未支持。" : "本步无 Skills 注入名单。"}
-        renderCount={item => item.pluginName ? `目录 · 插件 ${item.pluginName}（推断）` : "目录"}
+        renderCount={item => item.activatedThisStep
+          ? `本步激活${item.pluginName ? ` · 插件 ${item.pluginName}（推断）` : ""}`
+          : item.pluginName ? `目录 · 插件 ${item.pluginName}（推断）` : "目录"}
         onOpenCapability={onOpenCapability ? name => onOpenCapability("skill", name) : undefined}
       />
       {(data.tools?.hasMore || data.observed?.hasMore || data.skills?.hasMore) ? (

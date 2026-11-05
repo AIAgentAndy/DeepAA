@@ -47,6 +47,16 @@ interface StepCoreRow {
   harness_snapshot_hash: string | null;
 }
 
+/** 激活名匹配：裸名或带插件前缀（plugin:name）。 */
+function matchesActivation(activationNames: Set<string>, skill: {name: string; pluginName?: string}): boolean {
+  if (activationNames.has(skill.name)) return true;
+  if (skill.pluginName && activationNames.has(`${skill.pluginName}:${skill.name}`)) return true;
+  for (const activation of activationNames) {
+    if (activation.endsWith(`:${skill.name}`)) return true;
+  }
+  return false;
+}
+
 function shortHash(hash: string): string {
   return hash.slice(0, 8);
 }
@@ -136,12 +146,19 @@ export function loadAgentStepHarness(
     if (snapshot) {
       const storedTools = parseSnapshotTools(snapshot.tools_json);
       declaredNames = new Set(storedTools.map(tool => tool.name));
+      // P2/v57：本步 Skill 激活集合（激活名可带插件前缀，如 browser-use:control-browser）。
+      const activationNames = new Set(
+        (db.prepare(
+          `SELECT skill_name FROM skill_activations WHERE agent_step_id = ?`,
+        ).all(stepId) as Array<{skill_name: string}>).map(row => row.skill_name),
+      );
       skills = parseSnapshotSkills(snapshot.skills_json).map(skill => ({
         name: skill.name,
         sourceLevel: skill.sourceLevel,
         sourceRoot: skill.sourceRoot,
         pluginName: skill.pluginName,
         estTokens: skill.estTokens,
+        ...(matchesActivation(activationNames, skill) ? {activatedThisStep: true} : {}),
       }));
       rules = parseSnapshotRules(snapshot.rules_json).map(rule => ({
         kind: rule.kind,

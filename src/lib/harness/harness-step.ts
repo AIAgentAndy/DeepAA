@@ -56,6 +56,8 @@ export interface HarnessSkillItem {
   sourceRoot?: string;
   pluginName?: string;
   estTokens: number;
+  /** P2/v57：本步模型显式调用 Skill 加载工具激活了该技能（目录出现≠激活）。 */
+  activatedThisStep?: boolean;
 }
 
 export interface HarnessRuleItem {
