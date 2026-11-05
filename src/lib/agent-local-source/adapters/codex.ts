@@ -41,6 +41,7 @@ import {
   persistRolloutFrontier,
   restoreRolloutState,
 } from "../codex-rollout-state";
+import {readImportedRequestInput} from "../wire-prefix";
 import {openSeenProbeDatabase, probeSeenExchangeIds} from "../seen-probe";
 import type {
   AgentLocalSourceAdapter,
@@ -122,6 +123,8 @@ interface RecordDetail {
    * 即判重建失败（文件被截短/轮转），绝不产出截断的上下文回放。
    */
   itemCount: number;
+  /** C-1:该记录 token_count 行的绝对结束字节(下一记录的增量解析起点)。 */
+  anchorOffset?: number;
 }
 
 /** 解析进度缓存：rollout append-only，offset 只前进；半行跨轮缓冲。 */
@@ -302,6 +305,7 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
               contextEnd: record.contextEnd,
               outputIndices: record.outputIndices,
               itemCount: record.itemCount,
+              ...(record.anchorOffset > 0 ? {anchorOffset: record.anchorOffset} : {}),
             }])),
             pendingUsageRecord: undefined,
             itemCount: restored.itemCount, pendingOutputIndices: [], pendingOutputTimings: [],
@@ -384,7 +388,7 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
               contextEnd: cache.recordDetails.get(record.id)?.contextEnd ?? 0,
               itemCount: cache.recordDetails.get(record.id)?.itemCount ?? 0,
               outputIndices: [...(cache.recordDetails.get(record.id)?.outputIndices ?? [])],
-              anchorOffset: 0,
+              anchorOffset: cache.recordDetails.get(record.id)?.anchorOffset ?? 0,
               capturedAt: new Date(record.completedAt ?? record.startedAt).toISOString(),
             })),
           });
@@ -468,6 +472,56 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
    * 主源）；未命中（逐出/首次）→ 从 0 全量重建。条数仍不足（文件被截短/轮转）
    * → undefined，绝不产出截断的上下文回放。
    */
+  /**
+   * C-1 增量前文拼接:prev = 同文件前一记录(其 exchange 已导入且非降级体),
+   * prefix = 上一轮 wire input(blob 有界直读),delta = [prev.anchor, offset)
+   * 尾部段解析;守卫 prefix+delta===itemCount。dataDir 由 readExchangeDetail
+   * 闭包不可得——经 adapter 工厂记录(与 composeBudgetBytes 同层的 dataDirRef,
+   * 由 readPendingBatch 首次调用时捕获)。
+   */
+  let capturedDataDir: string | undefined;
+  const resolveSessionItemsViaPrefix = (
+    cache: RolloutFileCache,
+    requestId: string | undefined,
+    detail: RecordDetail,
+  ): SessionItem[] | undefined => {
+    if (capturedDataDir === undefined || requestId === undefined) return undefined;
+    try {
+      // 前一记录:recordDetails 保持插入序,取当前 id 的前一个 key。
+      const keys = [...cache.recordDetails.keys()];
+      const index = keys.indexOf(requestId);
+      if (index <= 0) return undefined;
+      const prevId = keys[index - 1]!;
+      const prevDetail = cache.recordDetails.get(prevId);
+      if (!prevDetail?.anchorOffset) return undefined;
+      const prefix = readImportedRequestInput(capturedDataDir, `import-codex-${prevId}`);
+      if (prefix === undefined) return undefined;
+      // 尾部增量段:从 prev anchor 到当前解析前沿(只读该小段,不触文件头)。
+      const entry: ContentCacheEntry = {items: [], offset: prevDetail.anchorOffset, tail: Buffer.alloc(0), turnId: undefined};
+      while (entry.offset < cache.offset) {
+        let raw: Buffer;
+        try {
+          raw = readFileSyncBounded(cache.path, entry.offset);
+        } catch {
+          return undefined;
+        }
+        if (raw.length === 0) break;
+        entry.offset += raw.length;
+        consumeContentChunk(entry, raw);
+      }
+      // 守卫:prefix + delta === 全量计数(逐条与全量重建一致才可用)。
+      if (prefix.input.length + entry.items.length !== detail.itemCount) return undefined;
+      const prefixItems = prefix.input.flatMap(wire => {
+        const item = wireItemToSessionItem(wire);
+        return item !== undefined ? [item] : [];
+      });
+      if (prefixItems.length !== prefix.input.length) return undefined;
+      return [...prefixItems, ...entry.items];
+    } catch {
+      return undefined;
+    }
+  };
+
   const resolveSessionItems = (cache: RolloutFileCache, minCount: number): SessionItem[] | undefined => {
     const hit = contentLru.get(cache.fileKey);
     if (hit !== undefined && hit.items.length >= minCount) return hit.items;
@@ -526,6 +580,7 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
       // 仅「seen 反联 + LIMIT」改为主键索引分块探针（公共 seen-probe 模块）——取代
       // 调度器旧路径的「整表 seen 加载 + 全量候选 JS Set 过滤」（实测随历史线性放大）。
       if (query.allowedModels.size === 0) return {records: [], mode: "chunked"};
+      capturedDataDir = query.dataDir;
       scanAndIndex(query.floorEpochMs, query.dataDir);
       const ordered = candidatesForQuery(query.floorEpochMs, query.allowedModels);
       const records: PendingImportCandidate[] = [];
@@ -566,10 +621,14 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
       if (!cache) return Promise.resolve(undefined);
       const detail = ref.requestId !== undefined ? cache.recordDetails.get(ref.requestId) : undefined;
       if (!detail) return Promise.resolve(undefined);
-      // 正文按需解析（2026-10-10 A 修复）：items 不再常驻，LRU 命中且条数覆盖目标
-      // 记录即用，否则从磁盘重析；重建失败（文件被清理/截短）→ 详情缺失（用量入账
-      // 不受影响，与 dsh/zcode 的「短命正文、趁热导入」语义一致）。
-      const items = resolveSessionItems(cache, detail.itemCount);
+      // C-1 增量前文（2026-11-05,R6 根治）：LRU 未命中时优先「上一轮导入 wire 的
+      // input + rollout 尾部增量段」拼接全量等价 items——避免从文件头全量重建
+      // （124MB 文件 ~1s/条、峰值 150-300MB）。条数守卫 prefix+delta===itemCount
+      // 保证与全量重建逐条一致;任一失败回退既有路径（B 门兜底）。
+      let items = resolveSessionItemsViaPrefix(cache, ref.requestId, detail);
+      if (items === undefined) {
+        items = resolveSessionItems(cache, detail.itemCount);
+      }
       if (items === undefined) return Promise.resolve(undefined);
       const meta = cache.sessionMeta;
       // 审计 R6 已知限制（2026-11-05）:LRU 拒绝驻留后,超预算会话批内每条详情都会
@@ -1188,6 +1247,62 @@ function appendUsageRecord(cache: RolloutFileCache, ordinalText: string, usageRa
   cache.pendingOutputIndices = [];
   cache.pendingOutputTimings = [];
   cache.requestAnchorMs = completedAt;
+}
+
+/**
+ * C-1 逆映射:wire JSON item → SessionItem(itemWirePayload 的逆)。
+ * direction 从 content[].type 恢复(output_text→output);itemId/turnId/ordinal
+ * 在 wire 上不存在,但 itemWirePayload/aggregateResponse/B 门均不消费它们——
+ * 对合成回放关心的全部字段无损。
+ */
+function wireItemToSessionItem(wire: Record<string, unknown>): SessionItem | undefined {
+  const type = wire.type;
+  const ordinal = 0;
+  if (type === "message") {
+    const content = Array.isArray(wire.content) ? wire.content as Array<Record<string, unknown>> : [];
+    const isOutput = content.some(part => part?.type === "output_text");
+    const texts = content.map(part => typeof part?.text === "string" ? part.text : "").filter(Boolean);
+    return {
+      ordinal,
+      direction: isOutput ? "output" : "input",
+      kind: "message",
+      ...(typeof wire.role === "string" ? {role: wire.role} : {}),
+      text: texts.join("\n"),
+    };
+  }
+  if (type === "reasoning") {
+    const summary = Array.isArray(wire.summary) ? wire.summary as Array<Record<string, unknown>> : [];
+    return {
+      ordinal,
+      direction: "output",
+      kind: "reasoning",
+      reasoningText: summary.map(part => typeof part?.text === "string" ? part.text : "").filter(Boolean).join("\n"),
+    };
+  }
+  if (type === "function_call") {
+    let toolInput: unknown;
+    if (typeof wire.arguments === "string") {
+      try { toolInput = JSON.parse(wire.arguments); } catch { toolInput = {raw: wire.arguments}; }
+    }
+    return {
+      ordinal,
+      direction: "output",
+      kind: "custom_tool_call",
+      ...(typeof wire.call_id === "string" ? {callId: wire.call_id} : {}),
+      ...(typeof wire.name === "string" ? {toolName: wire.name} : {}),
+      toolInput,
+    };
+  }
+  if (type === "function_call_output") {
+    return {
+      ordinal,
+      direction: "input",
+      kind: "custom_tool_call_output",
+      ...(typeof wire.call_id === "string" ? {callId: wire.call_id} : {}),
+      ...(typeof wire.output === "string" ? {toolOutput: wire.output} : {}),
+    };
+  }
+  return undefined;
 }
 
 /** wire item 的近似字节(与 estimateContentEntryBytes 同口径,双字节高估)。 */
