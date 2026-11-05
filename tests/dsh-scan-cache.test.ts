@@ -430,29 +430,46 @@ describe("dsh 解析失败预算与退避（2026-10-10 无界重解压修复）"
     );
   });
 
-  test("I3（2026-11-03）：v4 会话文件 discover 可见（unsupported_format notice），不参与解析", async () => {
-    // 实测本机 ~/.dsh/sessions：115 个 v3 + 60 个 v4，v4 此前因文件名硬编码完全
-    // 静默不可见。discover 只 stat 探测、绝不解压。
-    const cliDir = mkdtempSync(join(tmpdir(), "deepaa-dsh-v4-"));
-    const workspaceDir = join(cliDir, "sessions", "ws-v4", "sess-v4-a");
-    mkdirSync(workspaceDir, {recursive: true});
-    writeFileSync(join(workspaceDir, "session.v4.jsonl.zstd"), Buffer.from("v4-fixture"));
-    const v3Dir = join(cliDir, "sessions", "ws-v4", "sess-v3-a");
-    mkdirSync(v3Dir, {recursive: true});
-    writeFileSync(join(v3Dir, "session.v3.jsonl.zstd"), zstdCompressSync(Buffer.from(sessionJsonl({
-      sessionId: "sess-v3-live",
-      steps: [{turn: 1, step: 1}],
-    }))));
+  test("节点 D（2026-11-05）：v4 已支持解析导入；v5 才是 unsupported notice", async () => {
+    // 真实样本取证（2026-11-05）：v4 与 v3 事件信封/词汇同构（type/seq/time/data；
+    // step/start.turn|step、request/context.provider|model、tool/call.callId|name|arguments
+    // 均一致；header 仅新增可选字段）。节点 D 解锁 v4，v5+ 保持诚实拒绝。
+    const cliDir = mkdtempSync(join(tmpdir(), "deepaa-dsh-v4b-"));
+    // v4 会话：真实结构（header version=4 + permission + step/request/tool/result）。
+    // 事件序与现有 v3 helper 同构:request/context 先于 step/start(provider/model
+    // 为会话级累积变量,首个 step 依赖此前出现的 request/context)。
+    const v4Lines = [
+      JSON.stringify({type: "session", version: 4, id: "session-v4-live", createdAt: 1792035201000, cwd: "/tmp/demo", delegationDepth: 0}),
+      JSON.stringify({type: "request/context", seq: 1, time: 1792035201001, data: {provider: "deepseek", model: "deepseek-chat"}}),
+      JSON.stringify({type: "user/message", seq: 2, time: 1792035201002, data: {content: [{type: "text", text: "v4 user prompt"}], source: {kind: "user"}}}),
+      JSON.stringify({type: "step/start", seq: 3, time: 1792035201003, data: {turn: 1, step: 1}}),
+      JSON.stringify({type: "assistant/message", seq: 4, time: 1792035201004, data: {turn: 1, step: 1, message: {role: "assistant", content: [{type: "text", text: "v4 reply"}]}}}),
+      JSON.stringify({type: "tool/call", seq: 5, time: 1792035201005, data: {turn: 1, step: 1, callId: "call_v4_1", name: "bash", arguments: "{}"}}),
+      JSON.stringify({type: "tool/result", seq: 6, time: 1792035201006, data: {turn: 1, step: 1, message: {role: "tool", source: {kind: "tool", callId: "call_v4_1"}, toolCallId: "call_v4_1", content: [{type: "text", text: "ok"}]}}}),
+      JSON.stringify({type: "step/end", seq: 7, time: 1792035201007, data: {turn: 1, step: 1}}),
+    ].join("\n") + "\n";
+    const v4Dir = join(cliDir, "sessions", "ws-x", "session-v4-live");
+    mkdirSync(v4Dir, {recursive: true});
+    writeFileSync(join(v4Dir, "session.v4.jsonl.zstd"), zstdCompressSync(Buffer.from(v4Lines)));
+    // v5 文件(未来版本):只 stat 可见,不解析。
+    const v5Dir = join(cliDir, "sessions", "ws-x", "session-v5-future");
+    mkdirSync(v5Dir, {recursive: true});
+    writeFileSync(join(v5Dir, "session.v5.jsonl.zstd"), Buffer.from("future"));
 
     const adapter = createDshLocalSourceAdapter({cliDir});
     const status = await adapter.discover();
     assert.equal(status.availability.state, "available");
-    assert.ok(status.notices && status.notices.length === 1, `notice 缺失: ${JSON.stringify(status.notices)}`);
-    assert.equal(status.notices[0].kind, "unsupported_format");
-    assert.match(status.notices[0].detail, /1 个会话为 session\.v4 格式/u);
+    // v4 已支持 → 不再出现 v4 notice;只有 v5 前瞻提示。
+    assert.ok(status.notices && status.notices.length === 1, `notice: ${JSON.stringify(status.notices)}`);
+    assert.match(status.notices[0].detail, /1 个会话为 session\.v5 格式，当前支持 v3\/v4/u);
 
-    // v4 不参与解析：候选里只有 v3 会话的步骤，v4 文件零读取。
+    // v4 会话进入候选并完成解析(直连 provider=deepseek)。
     const candidates = adapter.readPendingCandidates(1, new Set(["deepseek-chat"]));
-    assert.ok(candidates.every(candidate => !candidate.id.includes("v4")));
+    const v4Candidate = candidates.find(candidate => candidate.sessionId === "session-v4-live");
+    assert.ok(v4Candidate, `v4 候选缺失: ${JSON.stringify(candidates.map(c => c.id))}`);
+    // 正文重建可读(请求回放含用户输入;ref 按 turn/step 定位,detail 为 async)。
+    const detail = await adapter.readExchangeDetail({sessionId: "session-v4-live", turnId: "1", stepNumber: 1});
+    assert.ok(detail, "v4 正文重建失败");
+    assert.ok(JSON.stringify(detail).includes("v4 user prompt"), "v4 请求正文缺失");
   });
 });

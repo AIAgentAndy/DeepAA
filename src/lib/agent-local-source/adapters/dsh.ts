@@ -1,7 +1,7 @@
 /**
  * dsh（DeepSeek Harness）本地数据源适配器（2026-09-17 双链路扩展）。
  *
- * 数据源：~/.dsh/sessions/<workspace>/<session-uuid>/session.v3.jsonl.zstd
+ * 数据源：~/.dsh/sessions/<workspace>/<session-uuid>/session.v{3,4}.jsonl.zstd
  * （生成式事件目录 KNOWN_SESSION_EVENT_TYPES，带版本化兼容契约；全程只读，
  * 绝不写/lock/checkpoint——与 zcode 适配器同一红线）。
  *
@@ -340,7 +340,15 @@ export function createDshLocalSourceAdapter(
       const type = textOf(event.type);
       if (!type) continue;
       if (type === "session") {
-        if (event.version !== 3) return undefined;
+        // P3/节点 D（2026-11-05,真实样本 + 参考源码双向取证）:v4 与 v3 事件信封
+        // (type/seq/time/data)与消费词汇(step/start.turn|step、request/context、
+        // tool/call.callId|name|arguments)一致;**tool/result.message 形态不同**——
+        // v3 为 user+wrapper 块(tool-result 嵌套 content),v4 拆除 wrapper 提升为
+        // role:tool 直块(参考迁移 liftToolResult)——现有读取器只依赖
+        // message.source.callId(两代一致)+ text/content 双路提取(两形态容忍),
+        // 因此 v3/v4 均正确解析。header 的 cwd/isSeeded/agentPreset 不消费。>4 拒绝。
+        const formatVersion = numberOf(event.version) ?? 0;
+        if (formatVersion !== 3 && formatVersion !== 4) return undefined;
         session.sessionId = textOf(event.id);
         session.createdAt = numberOf(event.createdAt) ?? 0;
         // 父子层级（2026-09-17 实测：主会话 + depth1 子 + depth2 孙，parentSession
@@ -444,15 +452,25 @@ export function createDshLocalSourceAdapter(
       for (const entry of sessionEntries) {
         if (scanned >= MAX_SESSION_FILES_PER_SCAN) break;
         if (!entry.isDirectory()) continue;
-        const path = join(sessionsDir, workspace.name, entry.name, "session.v3.jsonl.zstd");
-        try {
-          const fileStat = statSync(path);
-          if (fileStat.mtimeMs < mtimeFloor) continue;
-          scanned += 1;
-          files.push({path, mtimeMs: fileStat.mtimeMs, size: fileStat.size});
-        } catch {
-          continue;
+        // 节点 D:同会话目录 v4(新代)优先,v3 兜底;两者并存时取 mtime 最新一代。
+        let path: string | undefined;
+        let fileStat: {mtimeMs: number; size: number} | undefined;
+        for (const fileName of ["session.v4.jsonl.zstd", "session.v3.jsonl.zstd"]) {
+          try {
+            const candidate = join(sessionsDir, workspace.name, entry.name, fileName);
+            const stat = statSync(candidate);
+            if (!fileStat || stat.mtimeMs > fileStat.mtimeMs) {
+              path = candidate;
+              fileStat = {mtimeMs: stat.mtimeMs, size: stat.size};
+            }
+          } catch {
+            // 该代文件不存在,试下一代。
+          }
         }
+        if (!path || !fileStat) continue;
+        if (fileStat.mtimeMs < mtimeFloor) continue;
+        scanned += 1;
+        files.push({path, mtimeMs: fileStat.mtimeMs, size: fileStat.size});
       }
     }
     return files;
@@ -815,16 +833,15 @@ export function createDshLocalSourceAdapter(
     async discover(): Promise<LocalSourceStatus> {
       try {
         readdirSync(sessionsDir);
-        // I3（2026-11-03，F9 格式可见性）：有界探测 session.v4 文件计数——适配器
-        // 只支持 v3（文件名硬编码 + version!==3 双重拦截），v4 此前完全静默不可见
-        // （实测本机 60 个 v4 会话未导入）。只 stat、不解析、不读内容。
-        const v4Count = countUnsupportedSessionFiles(sessionsDir, "session.v4.jsonl.zstd");
+        // 节点 D(2026-11-05):v3/v4 已支持;有界探测未来版本(v5+)保持可见性。
+        // 只 stat、不解析、不读内容。
+        const v5Count = countUnsupportedSessionFiles(sessionsDir, "session.v5.jsonl.zstd");
         return {
           availability: {state: "available"},
           dataDir: sessionsDir,
-          ...(v4Count.count > 0 ? {notices: [{
+          ...(v5Count.count > 0 ? {notices: [{
             kind: "unsupported_format" as const,
-            detail: `${v4Count.count} 个会话为 session.v4 格式，当前仅支持 v3，暂未导入` + (v4Count.limited ? "（枚举达上限，实际更多）" : ""),
+            detail: `${v5Count.count} 个会话为 session.v5 格式，当前支持 v3/v4，暂未导入` + (v5Count.limited ? "（枚举达上限，实际更多）" : ""),
           }]} : {}),
         };
       } catch {
