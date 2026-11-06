@@ -13850,7 +13850,30 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
   color: var(--ink-400);
 }
 
-.sqlite-workbench .caps-lookup-more {
+.sqlite-workbench .caps-lookup-tool-detail {
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+}
+
+.caps-lookup-tool-detail b {
+  font-size: 11px;
+  color: var(--ink-400);
+}
+
+.caps-lookup-tool-detail p {
+  font-size: 12px;
+  margin: 4px 0 0;
+  line-height: 1.5;
+}
+
+.agent-caps-tool-desc {
+  font-size: 11px;
+  color: var(--ink-400);
+}
+
+.caps-lookup-more {
   background: none;
   border: none;
   padding: 6px;

@@ -53,6 +53,9 @@ export interface CapabilityDefinitionRevision {
   firstSeenAt: string;
   lastSeenAt: string;
   schemaTokensEst: number;
+  /** 工具详情卡(2026-11-06):描述与参数名(最新快照中的值;存量无)。 */
+  description?: string;
+  paramNames?: string;
   /** 同一快照哈希（同名同规模的连续段收敛为同一演变行）。 */
   snapshotHash: string;
 }

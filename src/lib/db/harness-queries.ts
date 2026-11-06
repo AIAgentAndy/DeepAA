@@ -175,6 +175,8 @@ export function loadAgentStepHarness(
           name: tool.name,
           kind,
           mcpServer,
+          ...(tool.description ? {description: tool.description} : {}),
+          ...(tool.paramNames ? {paramNames: tool.paramNames} : {}),
           defTokensEst: tool.schemaTokensEst ?? 0,
           callsThisStep: stepCalls,
           callsThisTurn: callsThisTurn.get(tool.name) ?? 0,

@@ -22,6 +22,9 @@ export interface HarnessToolItem {
   name: string;
   kind: ToolKind;
   mcpServer?: string;
+  /** 工具详情卡:描述与参数名(快照 wire 观测;存量无)。 */
+  description?: string;
+  paramNames?: string;
   /** 定义规模估算（升级前数据为 0）。 */
   defTokensEst: number;
   callsThisStep: number;

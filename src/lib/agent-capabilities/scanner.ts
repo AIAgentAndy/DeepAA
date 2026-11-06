@@ -27,6 +27,8 @@ export interface CapabilityLedgerItem {
   name: string;
   detail?: string;
   sourcePath?: string;
+  /** 工具详情卡:描述文本(wire 快照提取;≤500 截断)。 */
+  description?: string;
 }
 
 export type LedgerAvailability =
@@ -95,7 +97,7 @@ export function scanLocalCapabilities(options?: {
         ).all() as Array<{agent_name: string; tools_json: string}>;
         const toolsByAgent = new Map<string, Map<string, {item: CapabilityLedgerItem; lastSeen: number}>>();
         for (const row of rows) {
-          let tools: Array<{name?: string; kind?: string; mcpServer?: string; schemaTokensEst?: number}>;
+          let tools: Array<{name?: string; kind?: string; mcpServer?: string; schemaTokensEst?: number; description?: string; paramNames?: string}>;
           try {
             tools = JSON.parse(row.tools_json);
           } catch { continue; }
@@ -112,6 +114,8 @@ export function scanLocalCapabilities(options?: {
                 kind: "tool",
                 name: tool.name,
                 ...(tool.mcpServer ? {detail: `MCP · ${tool.mcpServer}`} : tool.kind === "mcp" ? {detail: "MCP"} : {detail: "内置/普通"}),
+                ...((tool as {description?: string}).description
+                  ? {description: (tool as {description: string}).description} : {}),
               },
               lastSeen: 1,
             });

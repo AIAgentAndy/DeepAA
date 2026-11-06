@@ -2,7 +2,8 @@
  * Harness 证据层：内容寻址快照存储（v27，docs/Harness能力建设一期.md §4.2-4.3）。
  *
  * 快照身份 = 名称级指纹（工具 name/kind/mcpServer + skill name + rule kind/path 的排序列表），
- * 同一清单只存一行；定义内容（描述/schema 文本）变化不换快照，走 step_diffs 的 hash 级 diff。
+ * 同一清单只存一行；定义内容（描述/schema 文本）变化不换快照——但 tools_json 本体
+ * 以最新覆盖（2026-11-06 工具详情卡：带 description 的新观测覆盖无描述旧值）。
  * 各 JSON 有界 64 KiB，超限截断并置 complete=0。写入发生在派生 job 既有事务内，
  * 失败随 job 重试，不影响 raw 登记与 source 游标。
  */
@@ -19,6 +20,10 @@ export interface SnapshotTool {
   name: string;
   kind: "tool" | "mcp";
   mcpServer?: string;
+  /** 工具详情卡(2026-11-06):描述文本(wire 提取,≤500 截断;存量无)。 */
+  description?: string;
+  /** 工具详情卡:参数名列表(≤200 截断)。 */
+  paramNames?: string;
   schemaChars: number;
   schemaTokensEst: number;
 }
@@ -80,6 +85,8 @@ export function toolsFromNormalized(toolSchemas: NormalizedToolSchema[]): Snapsh
     name: schema.name,
     kind: schema.kind,
     mcpServer: schema.mcpServer,
+    ...(schema.description ? {description: schema.description} : {}),
+    ...(schema.paramNames ? {paramNames: schema.paramNames} : {}),
     schemaChars: schema.schemaChars,
     schemaTokensEst: schema.schemaTokensEst,
   }));
@@ -237,7 +244,12 @@ export function upsertHarnessSnapshotForStep(
     ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 1)
     ON CONFLICT(snapshot_hash) DO UPDATE SET
       last_seen_at = MAX(harness_snapshots.last_seen_at, excluded.last_seen_at),
-      step_ref_count = step_ref_count + 1`,
+      step_ref_count = step_ref_count + 1,
+      /* 工具详情卡(2026-11-06):冲突时以最新 tools_json 覆盖——同名称级身份下,
+         带描述的新版本覆盖无描述的旧版本,存量快照在下次被观测时自动填充。 */
+      tools_json = excluded.tools_json,
+      mcp_tool_count = excluded.mcp_tool_count,
+      mcp_server_count = excluded.mcp_server_count`,
   ).run(
     identity.snapshotHash,
     identity.agentName,

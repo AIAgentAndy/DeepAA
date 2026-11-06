@@ -144,6 +144,19 @@ export function CapabilityLookupDialog({target, onClose, onNavigate}: {
       {result && result.definitions && result.definitions.length > 0 ? (
         <>
           <h4>定义演变（{result.definitions.length} 个快照形态 · 名字级）</h4>
+          {(() => {
+            const latest = result.definitions?.[result.definitions.length - 1];
+            if (!latest?.description) return null;
+            return (
+              <div className="caps-lookup-tool-detail">
+                <b>工具说明</b>
+                <p>{latest.description}</p>
+                {latest.paramNames ? (
+                  <p className="caps-lookup-muted">参数:{latest.paramNames}</p>
+                ) : null}
+              </div>
+            );
+          })()}
           <div className="caps-lookup-rows">
             {result.definitions.map(def => (
               <div key={def.snapshotHash} className="caps-lookup-row" role="presentation">

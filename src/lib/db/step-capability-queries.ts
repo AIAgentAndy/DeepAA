@@ -131,6 +131,11 @@ function collectItems(
       callsThisTurn: tool.callsThisTurn,
       ...(tool.callsUnknown ? {callsUnknown: true} : {}),
       defTokensEst: tool.defTokensEst,
+      // 工具详情卡:快照有 description 时透传(快照 tools_json → harness DTO)。
+      ...((tool as {description?: string}).description
+        ? {description: (tool as {description: string}).description} : {}),
+      ...((tool as {paramNames?: string}).paramNames
+        ? {paramNames: (tool as {paramNames: string}).paramNames} : {}),
     }));
   }
   if (kind === "observed") {

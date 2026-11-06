@@ -87,6 +87,9 @@ export interface StepCapabilityItem {
   estTokens?: number;
   /** skill 专属：本步激活（模型显式调用 Skill 工具）。 */
   activatedThisStep?: boolean;
+  /** 工具详情卡:描述(≤500 截断)与参数名——来自快照 wire 观测。 */
+  description?: string;
+  paramNames?: string;
 }
 
 /** items 分类页：keyset（name 游标），candidateCount 为该分类全集数。 */

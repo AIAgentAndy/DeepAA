@@ -135,6 +135,10 @@ export interface NormalizedToolSchema {
   /** MCP 工具按 `mcp__` 前缀判定；无名 typed 内置工具赋伪名 `@{type}`。 */
   kind: "tool" | "mcp";
   mcpServer?: string;
+  /** 工具详情卡(2026-11-06):描述文本(≤500字符截断,有界)。 */
+  description?: string;
+  /** 工具详情卡:参数名列表(逗号拼接,≤200字符)。 */
+  paramNames?: string;
   descriptionHash?: string;
   inputSchemaHash?: string;
   providerType?: string;
@@ -592,10 +596,20 @@ function normalizeToolSchemas(exchange: RawCapturedExchange, raw: unknown, proto
     const name = rawName || (typeof tool.type === "string" && tool.type ? `@${tool.type}` : "@unnamed");
     const classification = classifyToolName(name);
     const schemaText = JSON.stringify(tool);
+    // 工具详情卡:提取 description(≤500 截断)与参数名(从 schema.properties 键)。
+    const rawDescription = typeof functionDef.description === "string" ? functionDef.description.trim() : "";
+    const description = rawDescription ? rawDescription.slice(0, 500) : undefined;
+    let paramNames: string | undefined;
+    if (isRecord(schema) && isRecord(schema.properties)) {
+      const names = Object.keys(schema.properties).filter(Boolean);
+      if (names.length > 0) paramNames = names.join(", ").slice(0, 200);
+    }
     return {
       name,
       kind: classification.kind,
       mcpServer: classification.mcpServer,
+      ...(description ? {description} : {}),
+      ...(paramNames ? {paramNames} : {}),
       descriptionHash: functionDef.description ? stableHash(functionDef.description) : undefined,
       inputSchemaHash: schema ? stableHash(schema) : undefined,
       providerType: typeof tool.type === "string" ? tool.type : undefined,
