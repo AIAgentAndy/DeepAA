@@ -73,7 +73,21 @@ export function CapabilityLookupDialog({target, onClose, onNavigate}: {
       title={`${target.name}`}
       description={`能力反查 · ${target.agentName} · ${target.kind === "tool" ? "工具" : "Skill"}（名字级身份）`}
       onClose={onClose}
-      footer={<button type="button" className="ghost-btn" onClick={onClose}>关闭</button>}
+      footer={
+        <>
+          <button
+            type="button"
+            className="comp-link"
+            onClick={() => {
+              onClose();
+              window.open(`/agent-capabilities?agent=${encodeURIComponent(target.agentName)}&view=usage&tool=${encodeURIComponent(target.name)}`, "_self");
+            }}
+          >
+            在 Agent 能力页查看工具详情 →
+          </button>
+          <button type="button" className="ghost-btn" onClick={onClose}>关闭</button>
+        </>
+      }
     >
       {loading && !result ? <p className="caps-lookup-muted">正在读取反查数据…</p> : null}
       {error ? (

@@ -13579,6 +13579,19 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
   background: rgba(127, 127, 127, 0.08);
 }
 
+.agent-caps-usage-row.agent-caps-usage-clickable {
+  cursor: pointer;
+  text-align: left;
+  border: none;
+  background: none;
+  font: inherit;
+  width: 100%;
+}
+
+.agent-caps-usage-row.agent-caps-usage-clickable:hover {
+  background: var(--pine-50);
+}
+
 .agent-caps-usage-row.cand {
   background: rgba(180, 83, 9, 0.08);
 }
@@ -13673,6 +13686,8 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  background: var(--surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
 .agent-caps-card.missing {
@@ -13707,7 +13722,7 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
 }
 
 .agent-caps-scan .warn {
-  color: var(--amber-700, #b45309);
+  color: var(--warning);
   font-weight: 600;
 }
 
@@ -13828,7 +13843,7 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
 }
 
 .sqlite-workbench .caps-lookup-row[data-status="error"] .caps-lookup-status {
-  color: var(--amber-700, #b45309);
+  color: var(--warning);
 }
 
 .sqlite-workbench .caps-lookup-status {
@@ -13849,7 +13864,7 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
   border-radius: 10px;
   padding: 10px 12px;
   margin: 0 0 12px;
-  background: var(--bg-raised, rgba(127, 127, 127, 0.06));
+  background: var(--surface-2);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -13921,7 +13936,7 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
 }
 
 .sqlite-workbench .trow .src-observed {
-  color: var(--amber-700, #b45309);
+  color: var(--warning);
   font-weight: 650;
 }
 

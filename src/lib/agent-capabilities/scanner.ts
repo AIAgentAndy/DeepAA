@@ -13,14 +13,14 @@
  * 不进入任何导出/分享产物。
  */
 
-import {readdirSync, readFileSync, statSync} from "node:fs";
+import {existsSync, readdirSync, readFileSync, statSync} from "node:fs";
 import {join} from "node:path";
 import {homedir} from "node:os";
 import {AGENT_REGISTRY, agentLabel} from "@/lib/agent-registry";
 
 type AgentId = (typeof AGENT_REGISTRY)[number]["id"];
 
-export type LedgerItemKind = "skill" | "mcp_server" | "plugin" | "profile";
+export type LedgerItemKind = "skill" | "mcp_server" | "plugin" | "profile" | "tool";
 
 export interface CapabilityLedgerItem {
   kind: LedgerItemKind;
@@ -40,6 +40,8 @@ export interface AgentCapabilityLedger {
   skills: CapabilityLedgerItem[];
   mcpServers: CapabilityLedgerItem[];
   plugins: CapabilityLedgerItem[];
+  /** 核心价值①(2026-11-06):工具清单——wire 快照观测(有描述/定义规模)。 */
+  tools: CapabilityLedgerItem[];
   /** 第三组（plugins 槽位）的展示名（dsh=Profiles），数据驱动避免 UI 层 agent 分派。 */
   pluginsLabel?: string;
   /** skills 空清单时的解释文案（opencode=内联注入形态无文件台账）。 */
@@ -61,7 +63,11 @@ const SCAN_CACHE_TTL_MS = 60_000;
 const scanCache = new Map<string, {ledgers: AgentCapabilityLedger[]; expiresAt: number}>();
 
 /** 入口：五 Agent 台账（60s 缓存）；homeDir 供测试注入。 */
-export function scanLocalCapabilities(options?: {homeDir?: string; noCache?: boolean}): AgentCapabilityLedger[] {
+export function scanLocalCapabilities(options?: {
+  homeDir?: string;
+  noCache?: boolean;
+  dataDir?: string;
+}): AgentCapabilityLedger[] {
   const home = options?.homeDir ?? homedir();
   const cacheKey = `home:${home}`;
   if (!options?.noCache) {
@@ -71,6 +77,63 @@ export function scanLocalCapabilities(options?: {homeDir?: string; noCache?: boo
     }
   }
   const ledgers = [scanCodex(home), ...scanOthers(home)];
+  // 核心价值①(2026-11-06):从 wire 快照提取工具清单——五 Agent 已捕获的
+  // harness_snapshots.tools_json 含 name+schemaTokensEst(名字级),按 Agent 聚合
+  // 去重后作为台账工具通道(「本地安装/网关观测」两个维度的一侧)。
+  try {
+    const dataDir = options?.dataDir ?? process.env.DEEPAA_DATA_DIR ?? join(home, ".deepaa");
+    const dbPath = join(dataDir, "deepaa.sqlite");
+    if (existsSync(dbPath)) {
+      const {DeepaaDatabase: Db} = require("@/lib/db/sqlite-driver") as typeof import("@/lib/db/sqlite-driver");
+      const db = new Db(dbPath, {readonly: true, timeout: 3_000});
+      try {
+        db.pragma("busy_timeout = 3000");
+        const rows = db.prepare(
+          `SELECT agent_name, tools_json FROM harness_snapshots
+           WHERE agent_name IS NOT NULL AND tool_count > 0
+           ORDER BY last_seen_at DESC LIMIT 500`,
+        ).all() as Array<{agent_name: string; tools_json: string}>;
+        const toolsByAgent = new Map<string, Map<string, {item: CapabilityLedgerItem; lastSeen: number}>>();
+        for (const row of rows) {
+          let tools: Array<{name?: string; kind?: string; mcpServer?: string; schemaTokensEst?: number}>;
+          try {
+            tools = JSON.parse(row.tools_json);
+          } catch { continue; }
+          const agentTools = toolsByAgent.get(row.agent_name) ?? new Map();
+          for (const tool of tools) {
+            if (!tool?.name) continue;
+            const existing = agentTools.get(tool.name);
+            if (existing) {
+              existing.lastSeen += 1;
+              continue;
+            }
+            agentTools.set(tool.name, {
+              item: {
+                kind: "tool",
+                name: tool.name,
+                ...(tool.mcpServer ? {detail: `MCP · ${tool.mcpServer}`} : tool.kind === "mcp" ? {detail: "MCP"} : {detail: "内置/普通"}),
+              },
+              lastSeen: 1,
+            });
+          }
+          toolsByAgent.set(row.agent_name, agentTools);
+        }
+        for (const ledger of ledgers) {
+          const agentTools = toolsByAgent.get(ledger.agentId);
+          if (!agentTools) continue;
+          const items = [...agentTools.values()]
+            .sort((a, b) => b.lastSeen - a.lastSeen || a.item.name.localeCompare(b.item.name))
+            .slice(0, 500)
+            .map(v => v.item);
+          ledger.tools = items;
+        }
+      } finally {
+        db.close();
+      }
+    }
+  } catch {
+    // 快照工具提取失败不影响台账(本地配置扫描已有)。
+  }
   scanCache.set(cacheKey, {ledgers, expiresAt: Date.now() + SCAN_CACHE_TTL_MS});
   return ledgers;
 }
@@ -154,6 +217,7 @@ function scanCodex(home: string): AgentCapabilityLedger {
     skills,
     mcpServers,
     plugins: [],
+    tools: [],
     scan,
   };
 }
@@ -166,18 +230,46 @@ function scanClaudeCode(home: string): AgentCapabilityLedger {
   const scan = freshScan(new Date().toISOString());
   const dataDir = join(home, ".claude");
   const skills = scanSkillsDir(join(dataDir, "skills"), scan);
-  // MCP：settings.json 的 mcpServers 键（≤1 MiB）。
+  // MCP：settings.json + ~/.claude.json 双源（审计 P1-4——用户级 MCP 在后者顶层,
+  // 本机实测 myFileSystem/chrome-devtools;项目级在 projects 键下）。
   const mcpServers: CapabilityLedgerItem[] = [];
+  const mcpNames = new Set<string>();
   const settingsRaw = readBounded(join(dataDir, "settings.json"), MAX_CONFIG_BYTES);
   if (settingsRaw) {
     scan.bytesRead += Buffer.byteLength(settingsRaw);
     try {
       const settings = JSON.parse(settingsRaw) as {mcpServers?: Record<string, unknown>};
       for (const name of Object.keys(settings.mcpServers ?? {})) {
+        if (mcpNames.has(name)) continue;
+        mcpNames.add(name);
         mcpServers.push({kind: "mcp_server", name, sourcePath: join(dataDir, "settings.json")});
       }
     } catch {
       // 配置解析失败：保留空清单，availability 仍 available（目录存在）。
+    }
+  }
+  const claudeJsonRaw = readBounded(join(home, ".claude.json"), MAX_CONFIG_BYTES);
+  if (claudeJsonRaw) {
+    scan.bytesRead += Buffer.byteLength(claudeJsonRaw);
+    try {
+      const claudeJson = JSON.parse(claudeJsonRaw) as {
+        mcpServers?: Record<string, unknown>;
+        projects?: Record<string, {mcpServers?: Record<string, unknown>}>;
+      };
+      for (const name of Object.keys(claudeJson.mcpServers ?? {})) {
+        if (mcpNames.has(name)) continue;
+        mcpNames.add(name);
+        mcpServers.push({kind: "mcp_server", name, sourcePath: join(home, ".claude.json")});
+      }
+      for (const [projectPath, project] of Object.entries(claudeJson.projects ?? {})) {
+        for (const name of Object.keys(project.mcpServers ?? {})) {
+          if (mcpNames.has(name)) continue;
+          mcpNames.add(name);
+          mcpServers.push({kind: "mcp_server", name, detail: `项目级(${projectPath.split("/").pop()})`, sourcePath: join(home, ".claude.json")});
+        }
+      }
+    } catch {
+      // 同上,损坏不阻断。
     }
   }
   // 插件：installed_plugins.json（v2 格式 plugins 键，≤256 KiB manifest 预算）。
@@ -204,6 +296,7 @@ function scanClaudeCode(home: string): AgentCapabilityLedger {
     skills,
     mcpServers,
     plugins,
+    tools: [],
     scan,
   };
 }
@@ -227,11 +320,23 @@ function scanZcode(home: string): AgentCapabilityLedger {
         const pluginPath = join(cacheDir, market, plugin);
         plugins.push({kind: "plugin", name: `${market}/${plugin}`, sourcePath: pluginPath});
         scan.processedCount += 1;
-        // 插件技能：plugin 下任意 skills 目录的子目录（广度 ≤1 层已知布局）。
-        const pluginSkills = listBounded(join(pluginPath, "skills"));
-        for (const skillName of pluginSkills.names) {
-          skills.push({kind: "skill", name: `${plugin}:${skillName}`, sourcePath: join(pluginPath, "skills", skillName)});
-          scan.processedCount += 1;
+        // 插件技能：审计 P0-2 修复——实际布局 cache/<market>/<plugin>/<version>/skills
+        // (本机实测 17 插件全带版本层);兼容无版本层旧布局。
+        const versionDirs = listBounded(pluginPath);
+        for (const ver of versionDirs.names) {
+          const verSkillsDir = join(pluginPath, ver, "skills");
+          if (!dirExists(verSkillsDir)) continue;
+          for (const skillName of listBounded(verSkillsDir).names) {
+            skills.push({kind: "skill", name: `${plugin}:${skillName}`, sourcePath: join(verSkillsDir, skillName)});
+            scan.processedCount += 1;
+          }
+        }
+        const legacySkillsDir = join(pluginPath, "skills");
+        if (dirExists(legacySkillsDir)) {
+          for (const skillName of listBounded(legacySkillsDir).names) {
+            skills.push({kind: "skill", name: `${plugin}:${skillName}`, sourcePath: join(legacySkillsDir, skillName)});
+            scan.processedCount += 1;
+          }
         }
       }
     }
@@ -243,6 +348,7 @@ function scanZcode(home: string): AgentCapabilityLedger {
     skills,
     mcpServers: [],
     plugins,
+    tools: [],
     scan,
   };
 }
@@ -259,9 +365,11 @@ function scanOpencode(home: string): AgentCapabilityLedger {
   })();
   // skills：配置目录下的 skill/ 目录（存在才扫；OpenCode 技能也可经 `skill` 工具
   // 描述内联注入——该形态无本机文件台账，页面如实显示 0 并注明）。
-  const skills = dirExists(join(dataDir, "skill"))
-    ? scanSkillsDir(join(dataDir, "skill"), scan)
-    : [];
+  // 审计 P0-3 修复:实际目录名是 skills(复数,本机实测 10 个技能);兼容 skill。
+  const opencodeSkillsDir = dirExists(join(dataDir, "skills"))
+    ? join(dataDir, "skills")
+    : dirExists(join(dataDir, "skill")) ? join(dataDir, "skill") : undefined;
+  const skills = opencodeSkillsDir ? scanSkillsDir(opencodeSkillsDir, scan) : [];
   return {
     agentId: "opencode",
     label: labelOf("opencode"),
@@ -269,6 +377,7 @@ function scanOpencode(home: string): AgentCapabilityLedger {
     skills,
     mcpServers: [],
     plugins: [],
+    tools: [],
     skillsEmptyNote: "无本地 skill 目录（OpenCode 技能可能经 skill 工具描述内联注入，无文件台账）",
     scan,
   };
@@ -289,6 +398,7 @@ function scanDsh(home: string): AgentCapabilityLedger {
     skills: [],
     mcpServers: [],
     plugins: profiles,
+    tools: [],
     pluginsLabel: "Profiles",
     scan,
   };

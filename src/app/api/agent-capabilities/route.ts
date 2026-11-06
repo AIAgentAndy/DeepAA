@@ -1,4 +1,5 @@
 import {jsonResponse} from "@/lib/app-state";
+import {resolveDeepaaDataDir} from "@/lib/data-paths";
 import {scanLocalCapabilities} from "@/lib/agent-capabilities/scanner";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +13,7 @@ export const runtime = "nodejs";
  */
 export async function GET(): Promise<Response> {
   try {
-    const ledgers = scanLocalCapabilities();
+    const ledgers = scanLocalCapabilities({dataDir: resolveDeepaaDataDir()});
     return jsonResponse({
       agents: ledgers,
       candidateCount: ledgers.length,

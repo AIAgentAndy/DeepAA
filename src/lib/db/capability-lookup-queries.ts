@@ -201,7 +201,7 @@ export function lookupCapability(
        ${input.cursor ? "AND t.created_at < ?" : ""}
      ORDER BY t.created_at DESC LIMIT ? + 1`,
   ).all(agentName, name, ...(input.cursor ? [input.cursor] : []), limit + 1) as Array<{
-    step_id: string; exchange_id: string; session_id: string; thread_id: string;
+    tc_id: string; step_id: string; exchange_id: string; session_id: string; thread_id: string;
     turn_id: string; status: string; call_created_at: string; tool_use_id: string | null;
     agent_name: string; target_id: string; captured_at: string;
     exec_status: string | null; exec_approval: string | null; exec_duration: number | null;
@@ -331,7 +331,9 @@ export function lookupCapability(
       candidateCount: totalsRow.calls,
       processedCount: callPage.length,
       hasMore: callsHasMore,
-      ...(callsHasMore && callPage.length > 0 ? {nextCursor: callPage[callPage.length - 1]!.call_created_at} : {}),
+      ...(callsHasMore && callPage.length > 0 ? {
+        nextCursor: `${callPage[callPage.length - 1]!.call_created_at}|${callPage[callPage.length - 1]!.tc_id}`,
+      } : {}),
       limited: callsHasMore,
     },
     declaredIn: {

@@ -8,6 +8,7 @@
 
 import {useCallback, useEffect, useRef, useState} from "react";
 import {agentLabel} from "@/lib/agent-registry";
+import {CapabilityLookupDialog} from "@/components/workbench/capability-lookup-dialog";
 import type {AgentCapabilityLedger, CapabilityLedgerItem} from "@/lib/agent-capabilities/scanner";
 import type {MechanismProfiles} from "@/lib/agent-capabilities/mechanism-profiles";
 
@@ -102,7 +103,7 @@ function AgentCapabilityCard({ledger, expanded, onToggle}: {
       <header>
         <b>{ledger.label}</b>
         <span className="agent-caps-state">
-          {missing ? "未安装/未找到" : `${ledger.skills.length} skills · ${ledger.mcpServers.length} MCP · ${ledger.plugins.length} ${ledger.pluginsLabel ?? "插件"}`}
+          {missing ? "未安装/未找到" : `${ledger.tools.length} 工具 · ${ledger.skills.length} skills · ${ledger.mcpServers.length} MCP · ${ledger.plugins.length} ${ledger.pluginsLabel ?? "插件"}`}
         </span>
       </header>
       <p className="agent-caps-dir mono">{ledger.availability.dataDir}</p>
@@ -115,6 +116,7 @@ function AgentCapabilityCard({ledger, expanded, onToggle}: {
           <div className="agent-caps-groups">
             <LedgerGroup title="Skills" items={ledger.skills} emptyText={ledger.skillsEmptyNote ?? "无 Skills 目录"} />
             <LedgerGroup title="MCP Servers" items={ledger.mcpServers} emptyText="未配置 MCP 服务" />
+            <LedgerGroup title="工具（wire 观测）" items={ledger.tools} emptyText="暂无已捕获的工具清单（经网关/导入的会话将自动出现）" />
             <LedgerGroup title={ledger.pluginsLabel ?? "插件"} items={ledger.plugins} emptyText="无" />
             <button type="button" className="comp-link" onClick={onToggle}>收起</button>
           </div>
@@ -212,6 +214,7 @@ function MechanismView({profiles}: {profiles?: MechanismProfiles}) {
  */
 function UsageView() {
   const [agentId, setAgentId] = useState("zcode");
+  const [lookupTarget, setLookupTarget] = useState<{agentName: string; kind: "tool" | "skill"; name: string}>();
   const [days, setDays] = useState<7 | 30>(7);
   const [data, setData] = useState<CapabilityUsageResponse>();
   const [error, setError] = useState("");
@@ -243,7 +246,7 @@ function UsageView() {
   return (
     <div className="agent-caps-usage">
       <div className="agent-caps-viewtoggle" role="tablist">
-        {["codex", "claude", "zcode", "dsh", "opencode"].map(id => (
+        {[["codex", "codex"], ["claude-code", "Claude Code"], ["zcode", "ZCode"], ["dsh", "dsh"], ["opencode", "opencode"]].map(([id, label]) => (
           <button type="button" key={id} role="tab" aria-selected={agentId === id}
             className={agentId === id ? "on" : ""} onClick={() => setAgentId(id)}>
             {agentLabel(id)}
@@ -271,7 +274,8 @@ function UsageView() {
                 <span className="num">步级覆盖率</span><span className="num">执行侧</span><span>候选</span>
               </div>
               {data.items.map(item => (
-                <div key={item.name} className={`agent-caps-usage-row${item.lowUseCandidate ? " cand" : ""}`}>
+                <button type="button" key={item.name} className={`agent-caps-usage-row agent-caps-usage-clickable${item.lowUseCandidate ? " cand" : ""}`}
+                  onClick={() => setLookupTarget({agentName: agentId, kind: "tool", name: item.name})}>
                   <span className="mono">{item.name}</span>
                   <span className="num">{item.declaredSteps}</span>
                   <span className="num">{item.invokedSteps} / {item.invokedCalls}</span>
@@ -282,12 +286,17 @@ function UsageView() {
                       : "—"}
                   </span>
                   <span>{item.lowUseCandidate ? "低调用（观察）" : ""}</span>
-                </div>
+                </button>
               ))}
             </div>
           ) : <p className="agent-caps-note">窗口内无该 Agent 的声明/调用记录（0 条不代表该工具没价值）。</p>}
         </>
       ) : null}
+      <CapabilityLookupDialog
+        target={lookupTarget}
+        onClose={() => setLookupTarget(undefined)}
+        onNavigate={() => {/* 使用分析无 Step 深链场景,占位 */}}
+      />
     </div>
   );
 }
