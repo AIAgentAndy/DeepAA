@@ -20,6 +20,10 @@ import type {DeepaaDatabase} from "@/lib/db/sqlite-driver";
 
 export interface CapabilityUsageRow {
   name: string;
+  /** 工具(默认)或 Skill(P1-6 配套:使用分析加入 Skills 维度)。 */
+  kind?: "tool" | "skill";
+  /** Skill 专属:激活步数(模型显式调用 Skill 工具)。 */
+  activatedSteps?: number;
   declaredSteps: number;
   invokedSteps: number;
   invokedCalls: number;
@@ -55,8 +59,12 @@ export const USAGE_MAX_ROWS = 200;
 
 export function capabilityUsageForAgent(
   db: DeepaaDatabase,
-  input: {agentName: string; windowDays: number},
+  input: {agentName: string; windowDays: number; dimension?: "tools" | "skills"},
 ): CapabilityUsageResult {
+  const dimension = input.dimension ?? "tools";
+  if (dimension === "skills") {
+    return capabilitySkillsUsage(db, input);
+  }
   const {agentName, windowDays} = input;
   const windowStart = new Date(Date.now() - windowDays * 24 * 3_600_000).toISOString();
 
@@ -187,5 +195,106 @@ export function capabilityUsageForAgent(
     processedCount: page.length,
     limited,
     thresholds: {minDeclaredSteps: USAGE_MIN_DECLARED_STEPS, maxCoverage: USAGE_MAX_COVERAGE},
+  };
+}
+
+
+/** Skills 维度使用分析(P1-6 配套):声明出现步(skills_json)× 激活步(skill_activations)。 */
+function capabilitySkillsUsage(
+  db: DeepaaDatabase,
+  input: {agentName: string; windowDays: number},
+): CapabilityUsageResult {
+  const {agentName, windowDays} = input;
+  const windowStart = new Date(Date.now() - windowDays * 24 * 3_600_000).toISOString();
+
+  // 声明:窗口内该 Agent 快照 skills_json 含该 Skill 名的不同 step 数。
+  const declaredRows = db.prepare(
+    `SELECT json_extract(j.value, '$.name') AS name, COUNT(DISTINCT s.id) AS steps
+     FROM agent_steps s
+     JOIN harness_snapshots h ON h.snapshot_hash = s.harness_snapshot_hash
+     JOIN raw_exchange_refs r ON r.exchange_id = s.exchange_id, json_each(h.skills_json) j
+     WHERE h.agent_name = ? AND r.captured_at >= ? AND json_valid(h.skills_json)
+     GROUP BY json_extract(j.value, '$.name')`,
+  ).all(agentName, windowStart) as Array<{name: string; steps: number}>;
+
+  // 激活:窗口内该 Agent 的 skill_activations(按名字或前缀匹配)。
+  const activationRows = db.prepare(
+    `SELECT skill_name AS name, COUNT(*) AS total, COUNT(DISTINCT agent_step_id) AS steps,
+            MAX(activated_at) AS last_at
+     FROM skill_activations
+     WHERE agent_name = ? AND activated_at >= ?
+     GROUP BY skill_name`,
+  ).all(agentName, windowStart) as Array<{name: string; total: number; steps: number; last_at: string}>;
+
+  // 激活名可能带插件前缀(plugin:skill),声明名是裸名——endswith 匹配。
+  const byName = new Map<string, CapabilityUsageRow>();
+  for (const row of declaredRows) {
+    byName.set(row.name, {
+      name: row.name,
+      kind: "skill",
+      declaredSteps: row.steps,
+      invokedSteps: 0,
+      invokedCalls: 0,
+      lowUseCandidate: false,
+    });
+  }
+  for (const act of activationRows) {
+    // 尝试精确匹配裸名,否则 endswith(:name) 匹配。
+    const bareName = act.name.includes(":") ? act.name.split(":").pop()! : act.name;
+    const target = byName.get(bareName) ?? byName.get(act.name);
+    if (target) {
+      target.activatedSteps = (target.activatedSteps ?? 0) + act.steps;
+      target.invokedSteps = act.steps;
+      target.invokedCalls = act.total;
+      if (act.last_at) target.lastActivityAt = act.last_at;
+    } else {
+      byName.set(act.name, {
+        name: act.name,
+        kind: "skill",
+        declaredSteps: 0,
+        activatedSteps: act.steps,
+        invokedSteps: act.steps,
+        invokedCalls: act.total,
+        ...(act.last_at ? {lastActivityAt: act.last_at} : {}),
+        lowUseCandidate: false,
+      });
+    }
+  }
+  const items = [...byName.values()].map(row => {
+    const coverage = row.declaredSteps > 0
+      ? (row.activatedSteps ?? 0) / row.declaredSteps
+      : undefined;
+    return {
+      ...row,
+      ...(coverage !== undefined ? {coverage} : {}),
+      // Skill 低调用候选:声明步多但从未激活。
+      lowUseCandidate: row.declaredSteps >= USAGE_MIN_DECLARED_STEPS
+        && (row.activatedSteps ?? 0) === 0,
+    };
+  });
+  items.sort((a, b) =>
+    (Number(b.lowUseCandidate) - Number(a.lowUseCandidate))
+    || (b.declaredSteps - a.declaredSteps)
+    || a.name.localeCompare(b.name));
+  const limited = items.length > USAGE_MAX_ROWS;
+  const page = limited ? items.slice(0, USAGE_MAX_ROWS) : items;
+  const borrowedStepCount = (db.prepare(
+    `SELECT COUNT(*) AS c FROM derivation_diagnostics d
+     JOIN raw_exchange_refs r ON r.exchange_id = d.exchange_id
+     WHERE d.code = 'harness_inventory_borrowed' AND r.agent_name = ? AND r.captured_at >= ?`,
+  ).get(agentName, windowStart) as {c: number}).c;
+
+  return {
+    agentName,
+    windowDays,
+    windowStart,
+    items: page,
+    borrowedStepCount,
+    candidateCount: items.length,
+    processedCount: page.length,
+    limited,
+    thresholds: USAGE_MIN_DECLARED_STEPS > 0
+      ? {minDeclaredSteps: USAGE_MIN_DECLARED_STEPS, maxCoverage: USAGE_MAX_COVERAGE}
+      : {minDeclaredSteps: 0, maxCoverage: 0},
   };
 }

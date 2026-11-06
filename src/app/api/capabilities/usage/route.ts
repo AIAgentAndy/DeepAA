@@ -16,11 +16,13 @@ export async function GET(request: Request): Promise<Response> {
     const agent = params.get("agent")?.trim() || "";
     const daysParam = Number(params.get("days") ?? 7);
     const days = daysParam === 7 || daysParam === 30 ? daysParam : 7;
+    const dimensionParam = params.get("dimension");
+    const dimension = dimensionParam === "skills" ? "skills" as const : "tools" as const;
     if (!agent) {
       return Response.json({error: "MISSING_PARAMS", message: "agent 必填"}, {status: 400});
     }
     const db = getDeepaaDatabase();
-    const result = capabilityUsageForAgent(db, {agentName: agent, windowDays: days});
+    const result = capabilityUsageForAgent(db, {agentName: agent, windowDays: days, dimension});
     return jsonResponse(result);
   } catch (error) {
     return Response.json({error: "USAGE_FAILED", message: (error as Error).message}, {status: 500});

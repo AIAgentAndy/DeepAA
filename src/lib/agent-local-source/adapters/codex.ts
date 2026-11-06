@@ -648,10 +648,21 @@ export function createCodexLocalSourceAdapter(options: {cliDir?: string; content
       const keepTail = 32;
       const contextCount = Math.min(detail.contextEnd, items.length);
       const tailStart = Math.max(keepHead, contextCount - keepTail);
+      // P1-6(2026-11-06 审计):降级时额外保留含 skills_instructions 段的 item——
+      // 审计实证 skills 段在超长会话不在头 8 条(实测 idx 55-6947),降级丢失后
+      // skillCount=0 触发假借补(本地日志其实含有,是 deepaa 自己的有界投影丢的)。
+      // 这些 item 通常 ~2-8KB,保留最多 2 条对 8MiB 预算影响可忽略。
+      let skillsKept = 0;
       for (let index = 0; index < contextCount; index += 1) {
         const wire = itemWirePayload(items[index]!);
         const wireBytes = estimateWireItemBytes(wire);
-        const keep = index < keepHead || index >= tailStart;
+        const isSkillsItem = !degraded
+          ? false
+          : typeof wire.description !== "string"
+            && JSON.stringify(wire).includes("skills_instructions")
+            && skillsKept < 2;
+        if (isSkillsItem) skillsKept += 1;
+        const keep = index < keepHead || index >= tailStart || isSkillsItem;
         if (!degraded && composedBytes + wireBytes > composeBudgetBytes && index >= keepHead) {
           degraded = true;
         }

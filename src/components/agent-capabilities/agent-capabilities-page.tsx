@@ -216,6 +216,7 @@ function UsageView() {
   const [agentId, setAgentId] = useState("zcode");
   const [lookupTarget, setLookupTarget] = useState<{agentName: string; kind: "tool" | "skill"; name: string}>();
   const [days, setDays] = useState<7 | 30>(7);
+  const [dimension, setDimension] = useState<"tools" | "skills">("tools");
   const [data, setData] = useState<CapabilityUsageResponse>();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -226,7 +227,7 @@ function UsageView() {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`/api/capabilities/usage?agent=${encodeURIComponent(agentId)}&days=${days}`, {cache: "no-store"});
+      const response = await fetch(`/api/capabilities/usage?agent=${encodeURIComponent(agentId)}&days=${days}&dimension=${dimension}`, {cache: "no-store"});
       if (seq !== seqRef.current) return;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json() as CapabilityUsageResponse;
@@ -252,6 +253,8 @@ function UsageView() {
             {agentLabel(id)}
           </button>
         ))}
+        <button type="button" role="tab" aria-selected={dimension === "tools"} className={dimension === "tools" ? "on" : ""} onClick={() => setDimension("tools")}>工具</button>
+        <button type="button" role="tab" aria-selected={dimension === "skills"} className={dimension === "skills" ? "on" : ""} onClick={() => setDimension("skills")}>Skills</button>
         <button type="button" role="tab" aria-selected={days === 7} className={days === 7 ? "on" : ""} onClick={() => setDays(7)}>近 7 天</button>
         <button type="button" role="tab" aria-selected={days === 30} className={days === 30 ? "on" : ""} onClick={() => setDays(30)}>近 30 天</button>
       </div>
@@ -261,7 +264,7 @@ function UsageView() {
       {data ? (
         <>
           <p className="agent-caps-summary">
-            窗口近 {data.windowDays} 天 · 工具 {data.items.length} 种 · 低调用候选 {candidates.length} 个
+            窗口近 {data.windowDays} 天 · {dimension === "skills" ? "Skill" : "工具"} {data.items.length} 种 · 低调用候选 {candidates.length} 个
             （标准：声明 ≥{data.thresholds.minDeclaredSteps} 步且步级调用覆盖率 {'<'}{Math.round(data.thresholds.maxCoverage * 100)}%）
             {data.borrowedStepCount > 0 ? ` · ${data.borrowedStepCount} 步清单为借补参考（计入声明分母，覆盖率仅供参考）` : ""}
             {data.limited ? ` · 达 ${data.processedCount} 行上限（共 ${data.candidateCount}）` : ""}。
@@ -270,22 +273,22 @@ function UsageView() {
           {data.items.length > 0 ? (
             <div className="agent-caps-usage-table">
               <div className="agent-caps-usage-row head">
-                <span>工具</span><span className="num">声明步</span><span className="num">调用步/次</span>
+                <span>工具</span><span className="num">声明步</span><span className="num">{dimension === "skills" ? "激活步/次" : "调用步/次"}</span>
                 <span className="num">步级覆盖率</span><span className="num">执行侧</span><span>候选</span>
               </div>
               {data.items.map(item => (
                 <button type="button" key={item.name} className={`agent-caps-usage-row agent-caps-usage-clickable${item.lowUseCandidate ? " cand" : ""}`}
-                  onClick={() => setLookupTarget({agentName: agentId, kind: "tool", name: item.name})}>
+                  onClick={() => setLookupTarget({agentName: agentId, kind: dimension === "skills" ? "skill" as const : "tool" as const, name: item.name})}>
                   <span className="mono">{item.name}</span>
                   <span className="num">{item.declaredSteps}</span>
-                  <span className="num">{item.invokedSteps} / {item.invokedCalls}</span>
+                  <span className="num">{dimension === "skills" ? `${item.activatedSteps ?? 0} / ${item.invokedCalls}` : `${item.invokedSteps} / ${item.invokedCalls}`}</span>
                   <span className="num">{item.coverage !== undefined ? `${Math.round(item.coverage * 100)}%` : "—"}</span>
                   <span className="num">
                     {item.executedCount !== undefined
                       ? `${item.executedCount} 次${item.avgDurationMs !== undefined ? ` · 均 ${(item.avgDurationMs / 1000).toFixed(1)}s` : ""}${item.errorCount ? ` · 错 ${item.errorCount}` : ""}${item.cancelledCount ? ` · 取消 ${item.cancelledCount}` : ""}`
                       : "—"}
                   </span>
-                  <span>{item.lowUseCandidate ? "低调用（观察）" : ""}</span>
+                  <span>{item.lowUseCandidate ? dimension === "skills" ? "未激活（观察）" : "低调用（观察）" : ""}</span>
                 </button>
               ))}
             </div>
@@ -316,6 +319,8 @@ interface CapabilityUsageResponse {
     errorCount?: number;
     cancelledCount?: number;
     lowUseCandidate: boolean;
+    kind?: string;
+    activatedSteps?: number;
   }>;
   borrowedStepCount: number;
   candidateCount: number;
