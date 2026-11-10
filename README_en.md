@@ -150,12 +150,12 @@ For detailed agent setup, billing rules, failover, data management, runtime conf
 
 ## Community and Feedback
 
-[Report issues or share suggestions](https://github.com/AIAgentAndy/DeepAA/issues), or scan the QR code to join the QQ group:
+[Report issues or share suggestions](https://github.com/AIAgentAndy/DeepAA/issues), or scan the QR code to follow our WeChat Official Account and send us a message:
 
 <p align="center">
-  <img src="docs/screenshots/qrcode-qq.png" width="200" alt="DeepAA QQ group QR code">
+  <img src="docs/screenshots/mp.jpg" width="200" alt="DeepAA WeChat Official Account QR code">
 </p>
-<p align="center"><sub>Scan to join the DeepAA QQ group</sub></p>
+<p align="center"><sub>Scan to follow the DeepAA WeChat Official Account</sub></p>
 
 ## ⭐ Star This Project
 

@@ -150,12 +150,12 @@ deepaa service install # 注册系统服务——开机自启 + 崩溃自动恢�
 
 ## 交流与反馈
 
-[提交问题与建议](https://github.com/AIAgentAndy/DeepAA/issues)，或扫码加入 QQ 交流群：
+[提交问题与建议](https://github.com/AIAgentAndy/DeepAA/issues)，或扫码关注微信公众号，发消息与我们互动沟通：
 
 <p align="center">
-  <img src="docs/screenshots/qrcode-qq.png" width="200" alt="DeepAA QQ 交流群二维码">
+  <img src="docs/screenshots/mp.jpg" width="200" alt="DeepAA 微信公众号二维码">
 </p>
-<p align="center"><sub>扫码加入 DeepAA QQ 交流群</sub></p>
+<p align="center"><sub>扫码关注 DeepAA 微信公众号</sub></p>
 
 ## ⭐ 点个 Star 支持一下
 
