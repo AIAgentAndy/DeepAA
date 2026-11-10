@@ -1,11 +1,12 @@
 "use client";
 
 /**
- * P1-6（2026-11-03）：「Agent 能力」页面（最小版）。
- * 总览：五 Agent 台账卡（skills / MCP / 插件 / profiles 计数 + 扫描可观测字段）；
- * 台账：按 Agent 展开分组清单。读取失败显式重试；missing 诚实呈现（未安装 ≠ 0 条）。
+ * UI 重构（2026-11-10）：「Agent 能力」页参照 Codex 桌面端三区布局。
+ * 顶部 = Agent 列表(横向 tab); 左侧 = 分类导航(Skills/MCP/工具/插件/规则/系统提示词);
+ * 右侧 = 选中分类的条目网格(按来源分组)。保留机制剖析与使用分析。
  */
 
+import Image from "next/image";
 import {useCallback, useEffect, useRef, useState} from "react";
 import {agentLabel} from "@/lib/agent-registry";
 import {CapabilityLookupDialog} from "@/components/workbench/capability-lookup-dialog";
@@ -19,14 +20,36 @@ interface LedgerResponse {
   limited: boolean;
 }
 
+const AGENT_ORDER = ["codex", "claude", "zcode", "dsh", "opencode"] as const;
+const AGENT_LOGO: Record<string, string> = {
+  codex: "/agent-logos/codex.png",
+  claude: "/agent-logos/claude.ico",
+  zcode: "/agent-logos/zcode.png",
+  dsh: "/agent-logos/dsh.ico",
+  opencode: "/agent-logos/opencode.svg",
+};
+
+type CategoryKey = "skills" | "mcp" | "tools" | "plugins" | "rules" | "prompts" | "mechanisms" | "usage";
+
+const CATEGORIES: Array<{key: CategoryKey; label: string; icon: string}> = [
+  {key: "skills", label: "Skills", icon: "◆"},
+  {key: "mcp", label: "MCP 服务", icon: "⬡"},
+  {key: "tools", label: "工具", icon: "⚙"},
+  {key: "plugins", label: "插件", icon: "▣"},
+  {key: "rules", label: "内置规则", icon: "☰"},
+  {key: "prompts", label: "系统提示词", icon: "✎"},
+  {key: "mechanisms", label: "机制剖析", icon: "🔬"},
+  {key: "usage", label: "使用分析", icon: "📊"},
+];
+
 export function AgentCapabilitiesPage({mechanismProfiles}: {
   mechanismProfiles?: MechanismProfiles;
 }) {
   const [data, setData] = useState<LedgerResponse>();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const [expanded, setExpanded] = useState<string>();
-  const [view, setView] = useState<"ledger" | "mechanisms" | "usage">("ledger");
+  const [agentId, setAgentId] = useState<string>("codex");
+  const [category, setCategory] = useState<CategoryKey>("skills");
   const seqRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -50,118 +73,208 @@ export function AgentCapabilitiesPage({mechanismProfiles}: {
 
   useEffect(() => { void load(); }, [load]);
 
-  return (
-    <div className="agent-caps-page">
-      <header className="agent-caps-header">
-        <div>
-          <h2>Agent 能力</h2>
-          <p className="muted">本机五个 Agent 实例的能力台账（只读扫描 · 60s 缓存）。会话运行证据见会话追踪「响应 / 能力清单」页签；工具名可反查调用与传递记录。</p>
-        </div>
-        <div className="agent-caps-header-actions">
-          <div className="agent-caps-viewtoggle" role="tablist">
-            <button type="button" role="tab" aria-selected={view === "ledger"} className={view === "ledger" ? "on" : ""} onClick={() => setView("ledger")}>台账</button>
-            <button type="button" role="tab" aria-selected={view === "mechanisms"} className={view === "mechanisms" ? "on" : ""} onClick={() => setView("mechanisms")}>机制剖析</button>
-            <button type="button" role="tab" aria-selected={view === "usage"} className={view === "usage" ? "on" : ""} onClick={() => setView("usage")}>使用分析</button>
-          </div>
-          {view === "ledger" ? (
-            <button type="button" className="ghost-btn" onClick={() => void load()} disabled={loading}>
-              {loading ? "扫描中…" : "重新扫描"}
-            </button>
-          ) : null}
-        </div>
-      </header>
+  const agent = data?.agents.find(a => a.agentId === agentId);
 
-      {error ? <p className="agent-caps-note">台账读取失败（{error}）· <button type="button" className="comp-link" onClick={() => void load()}>重试</button></p> : null}
+  return (
+    <div className="agent-caps-page-v2">
+      {/* 顶部 Agent 列表 */}
+      <nav className="acaps-agent-bar" role="tablist" aria-label="Agent 选择">
+        {AGENT_ORDER.map(id => {
+          const ledger = data?.agents.find(a => a.agentId === id);
+          const count = ledger
+            ? ledger.skills.length + ledger.tools.length + ledger.mcpServers.length + ledger.plugins.length
+            : 0;
+          return (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={agentId === id}
+              className={`acaps-agent-chip${agentId === id ? " on" : ""}`}
+              onClick={() => setAgentId(id)}
+            >
+              <Image
+                src={AGENT_LOGO[id] ?? "/agent-logos/codex.png"}
+                alt=""
+                width={22}
+                height={22}
+                className="acaps-agent-logo"
+              />
+              <span className="acaps-agent-name">{agentLabel(id)}</span>
+              {count > 0 ? <span className="acaps-agent-count">{count}</span> : null}
+            </button>
+          );
+        })}
+        <span className="acaps-agent-bar-fill" />
+        <button type="button" className="ghost-btn acaps-refresh" onClick={() => void load()} disabled={loading}>
+          {loading ? "扫描中…" : "重新扫描"}
+        </button>
+      </nav>
+
+      {error ? <p className="agent-caps-note">读取失败（{error}）· <button type="button" className="comp-link" onClick={() => void load()}>重试</button></p> : null}
       {data?.limited ? <p className="agent-caps-note">部分 Agent 目录项达扫描上限（500），清单可能不完整。</p> : null}
 
-      {view === "mechanisms" ? <MechanismView profiles={mechanismProfiles} /> : null}
-      {view === "usage" ? <UsageView /> : null}
+      {/* 主体三区 */}
+      <div className="acaps-body">
+        {/* 左侧分类导航 */}
+        <aside className="acaps-sidebar">
+          <p className="acaps-sidebar-label">能力分类</p>
+          {CATEGORIES.map(cat => {
+            const count = getCategoryCount(agent, cat.key);
+            return (
+              <button
+                key={cat.key}
+                type="button"
+                className={`acaps-sidebar-item${category === cat.key ? " on" : ""}`}
+                onClick={() => setCategory(cat.key)}
+              >
+                <span className="acaps-sidebar-icon" aria-hidden="true">{cat.icon}</span>
+                {cat.label}
+                {count > 0 ? <span className="acaps-sidebar-count">{count}</span> : null}
+              </button>
+            );
+          })}
+          {agent?.availability.state === "available" ? (
+            <div className="acaps-sidebar-meta">
+              <p className="mono">{agent.availability.dataDir}</p>
+              <p>目录项 {agent.scan.candidateCount} · 读取 {(agent.scan.bytesRead / 1024).toFixed(1)} KiB</p>
+            </div>
+          ) : null}
+        </aside>
 
-      <div className={`agent-caps-grid${view === "mechanisms" ? " hidden" : ""}`}>
-        {(data?.agents ?? []).map(agent => (
-          <AgentCapabilityCard
-            key={agent.agentId}
-            ledger={agent}
-            expanded={expanded === agent.agentId}
-            onToggle={() => setExpanded(current => current === agent.agentId ? undefined : agent.agentId)}
-          />
-        ))}
-        {loading && !data ? <p className="agent-caps-note">正在读取本机台账…</p> : null}
+        {/* 右侧内容 */}
+        <main className="acaps-main">
+          {loading && !data ? <p className="agent-caps-note">正在读取本机台账…</p> : null}
+          {category === "mechanisms" ? <MechanismPanel profiles={mechanismProfiles} agentId={agentId} /> : null}
+          {category === "usage" ? <UsagePanel agentId={agentId} /> : null}
+          {category === "skills" ? <CategoryPanel title="Skills" groups={groupSkills(agent)} emptyText="无 Skills 目录" /> : null}
+          {category === "mcp" ? <CategoryPanel title="MCP 服务" groups={groupMcp(agent)} emptyText="未配置 MCP 服务" /> : null}
+          {category === "tools" ? <CategoryPanel title="工具（wire 观测）" groups={groupTools(agent)} emptyText="暂无已捕获的工具清单" /> : null}
+          {category === "plugins" ? <CategoryPanel title={agent?.pluginsLabel ?? "插件"} groups={groupPlugins(agent)} emptyText="无" /> : null}
+          {category === "rules" ? <CategoryPanel title="内置规则" groups={groupRules(agent)} emptyText="未发现规则文件" /> : null}
+          {category === "prompts" ? <CategoryPanel title="系统提示词" groups={groupPrompts(agent)} emptyText="未发现系统提示词文件" /> : null}
+        </main>
       </div>
     </div>
   );
 }
 
-function AgentCapabilityCard({ledger, expanded, onToggle}: {
-  ledger: AgentCapabilityLedger;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  const missing = ledger.availability.state === "missing";
-  return (
-    <section className={`agent-caps-card${missing ? " missing" : ""}`}>
-      <header>
-        <b>{ledger.label}</b>
-        <span className="agent-caps-state">
-          {missing ? "未安装/未找到" : `${ledger.tools.length} 工具 · ${ledger.skills.length} skills · ${ledger.mcpServers.length} MCP · ${ledger.plugins.length} ${ledger.pluginsLabel ?? "插件"}`}
-        </span>
-      </header>
-      <p className="agent-caps-dir mono">{ledger.availability.dataDir}</p>
-      <div className="agent-caps-scan">
-        <span>目录项 {ledger.scan.candidateCount} · 处理 {ledger.scan.processedCount} · 读取 {(ledger.scan.bytesRead / 1024).toFixed(1)} KiB</span>
-        {ledger.scan.limited ? <span className="warn">达上限·受限</span> : <span>完整</span>}
-      </div>
-      {!missing ? (
-        expanded ? (
-          <div className="agent-caps-groups">
-            <LedgerGroup title="Skills" items={ledger.skills} emptyText={ledger.skillsEmptyNote ?? "无 Skills 目录"} />
-            <LedgerGroup title="MCP Servers" items={ledger.mcpServers} emptyText="未配置 MCP 服务" />
-            <LedgerGroup title="工具（wire 观测）" items={ledger.tools} emptyText="暂无已捕获的工具清单（经网关/导入的会话将自动出现）" />
-            <LedgerGroup title={ledger.pluginsLabel ?? "插件"} items={ledger.plugins} emptyText="无" />
-            <button type="button" className="comp-link" onClick={onToggle}>收起</button>
-          </div>
-        ) : (
-          <button type="button" className="comp-link" onClick={onToggle}>展开台账（{ledger.skills.length + ledger.mcpServers.length + ledger.plugins.length} 项）</button>
-        )
-      ) : (
-        <p className="agent-caps-note">本地目录未找到，0 条不代表该 Agent 没有能力配置。</p>
-      )}
-    </section>
-  );
+function getCategoryCount(agent: AgentCapabilityLedger | undefined, key: CategoryKey): number {
+  if (!agent) return 0;
+  switch (key) {
+    case "skills": return agent.skills.length;
+    case "mcp": return agent.mcpServers.length;
+    case "tools": return agent.tools.length;
+    case "plugins": return agent.plugins.length;
+    case "rules": return agent.rules.length;
+    case "prompts": return agent.systemPrompts.length;
+    default: return 0;
+  }
 }
 
-function LedgerGroup({title, items, emptyText}: {
+interface ItemGroup { label: string; items: CapabilityLedgerItem[] }
+
+function groupSkills(agent?: AgentCapabilityLedger): ItemGroup[] {
+  if (!agent) return [];
+  const system = agent.skills.filter(s => !s.name.includes(":"));
+  const byPlugin = new Map<string, CapabilityLedgerItem[]>();
+  for (const s of agent.skills) {
+    const idx = s.name.indexOf(":");
+    if (idx > 0) {
+      const plugin = s.name.slice(0, idx);
+      const bucket = byPlugin.get(plugin) ?? [];
+      bucket.push(s);
+      byPlugin.set(plugin, bucket);
+    }
+  }
+  const groups: ItemGroup[] = [];
+  if (system.length > 0) groups.push({label: "系统 / 个人", items: system});
+  for (const [plugin, items] of byPlugin) {
+    groups.push({label: `插件 · ${plugin}`, items});
+  }
+  return groups;
+}
+
+function groupMcp(agent?: AgentCapabilityLedger): ItemGroup[] {
+  if (!agent?.mcpServers.length) return [];
+  const user = agent.mcpServers.filter(m => !m.detail?.startsWith("项目级"));
+  const project = agent.mcpServers.filter(m => m.detail?.startsWith("项目级"));
+  const groups: ItemGroup[] = [];
+  if (user.length) groups.push({label: "用户级", items: user});
+  if (project.length) groups.push({label: "项目级", items: project});
+  return groups;
+}
+
+function groupTools(agent?: AgentCapabilityLedger): ItemGroup[] {
+  if (!agent?.tools.length) return [];
+  const builtin = agent.tools.filter(t => t.detail === "内置/普通");
+  const mcp = agent.tools.filter(t => t.detail?.startsWith("MCP"));
+  const groups: ItemGroup[] = [];
+  if (builtin.length) groups.push({label: "内置 / 普通", items: builtin});
+  if (mcp.length) groups.push({label: "MCP 工具", items: mcp});
+  return groups;
+}
+
+function groupPlugins(agent?: AgentCapabilityLedger): ItemGroup[] {
+  if (!agent?.plugins.length) return [];
+  const groups = new Map<string, CapabilityLedgerItem[]>();
+  for (const p of agent.plugins) {
+    const market = p.name.includes("/") ? p.name.split("/")[0] : "其它";
+    const bucket = groups.get(market) ?? [];
+    bucket.push(p);
+    groups.set(market, bucket);
+  }
+  return [...groups.entries()].map(([market, items]) => ({label: `市场 · ${market}`, items}));
+}
+
+function groupRules(agent?: AgentCapabilityLedger): ItemGroup[] {
+  return agent?.rules.length ? [{label: "规则文件", items: agent.rules}] : [];
+}
+
+function groupPrompts(agent?: AgentCapabilityLedger): ItemGroup[] {
+  return agent?.systemPrompts.length ? [{label: "系统提示词", items: agent.systemPrompts}] : [];
+}
+
+/** 右侧通用分类面板:按来源分组,两列卡片网格。 */
+function CategoryPanel({title, groups, emptyText}: {
   title: string;
-  items: CapabilityLedgerItem[];
+  groups: ItemGroup[];
   emptyText: string;
 }) {
   return (
-    <div className="agent-caps-group">
-      <h4>{title} <small className="cnt">{items.length}</small></h4>
-      {items.length > 0 ? (
-        <ul>
-          {items.map(item => (
-            <li key={`${item.kind}:${item.name}`} title={item.sourcePath}>
-              <span className="mono">{item.name}</span>
-            </li>
-          ))}
-        </ul>
-      ) : <p className="agent-caps-note">{emptyText}</p>}
+    <div className="acaps-category">
+      <h3 className="acaps-category-title">{title} <span>{groups.reduce((sum, g) => sum + g.items.length, 0)} 项</span></h3>
+      {groups.length === 0 ? (
+        <p className="agent-caps-note">{emptyText}</p>
+      ) : groups.map(group => (
+        <section key={group.label} className="acaps-group-section">
+          <h4 className="acaps-group-label">{group.label} <small>{group.items.length}</small></h4>
+          <div className="acaps-card-grid">
+            {group.items.map(item => (
+              <div key={`${item.kind}:${item.name}`} className="acaps-card" title={item.sourcePath}>
+                <div className="acaps-card-icon" data-kind={item.kind}>
+                  {item.kind === "skill" ? "◆" : item.kind === "mcp_server" ? "⬡" : item.kind === "plugin" ? "▣" : item.kind === "rule" ? "☰" : item.kind === "system_prompt" ? "✎" : "⚙"}
+                </div>
+                <div className="acaps-card-body">
+                  <b className="acaps-card-name">{item.name}</b>
+                  {item.description ? <p className="acaps-card-desc">{item.description.slice(0, 100)}</p> : null}
+                  {item.detail && !item.description ? <p className="acaps-card-desc">{item.detail}</p> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ))}
     </div>
   );
 }
 
-/**
- * P1-7 机制剖析视图：八主题 × Agent 的版本化剖面（config/agents/harness 冻结基线，
- * 人工修订；每条带来源标注）。剖面缺失时诚实降级。
- */
-function MechanismView({profiles}: {profiles?: MechanismProfiles}) {
-  const [agentId, setAgentId] = useState<string>("codex");
+/** 机制剖析面板(嵌入左侧选中时)。 */
+function MechanismPanel({profiles, agentId}: {profiles?: MechanismProfiles; agentId: string}) {
   if (!profiles) {
     return <p className="agent-caps-note">机制剖面暂不可用（config/agents/harness/mechanism-profiles.json 缺失或损坏）。</p>;
   }
-  const agentIds = Object.keys(profiles.agents);
-  const activeId = profiles.agents[agentId] ? agentId : agentIds[0] ?? "codex";
+  const activeId = profiles.agents[agentId] ? agentId : Object.keys(profiles.agents)[0] ?? "codex";
   const profile = profiles.agents[activeId];
   const byTopic = new Map<string, typeof profile.mechanisms>();
   for (const entry of profile?.mechanisms ?? []) {
@@ -170,54 +283,41 @@ function MechanismView({profiles}: {profiles?: MechanismProfiles}) {
     else byTopic.set(entry.topic, [entry]);
   }
   return (
-    <div className="agent-caps-mech">
-      <div className="agent-caps-viewtoggle" role="tablist">
-        {agentIds.map(id => (
-          <button type="button" key={id} role="tab" aria-selected={activeId === id}
-            className={activeId === id ? "on" : ""} onClick={() => setAgentId(id)}>
-            {agentLabel(id)}
-          </button>
-        ))}
-      </div>
+    <div className="acaps-category">
+      <h3 className="acaps-category-title">机制剖析 <span>{profile?.mechanisms.length ?? 0} 条 · 基线 {profiles.updatedAt}</span></h3>
       {profile ? (
         <>
-          <p className="agent-caps-summary">{profile.summary}</p>
-          <div className="agent-caps-topics">
+          <p className="acaps-summary">{profile.summary}</p>
+          <div className="acaps-topics">
             {profiles.topics.map(topic => {
               const entries = byTopic.get(topic.key) ?? [];
               if (entries.length === 0) return null;
               return (
-                <section key={topic.key} className="agent-caps-topic">
+                <section key={topic.key} className="acaps-topic-card">
                   <h4>{topic.label}</h4>
                   {entries.map(entry => (
-                    <div key={entry.title} className="agent-caps-entry">
+                    <div key={entry.title} className="acaps-entry">
                       <b>{entry.title}</b>
                       <p>{entry.detail}</p>
-                      <span className="agent-caps-source">来源：{entry.source}</span>
+                      <span className="acaps-source">来源：{entry.source}</span>
                     </div>
                   ))}
                 </section>
               );
             })}
           </div>
-          <p className="agent-caps-note">剖面基线 {profiles.updatedAt} · schemaVersion {profiles.schemaVersion} · 人工修订，非运行时源码分析。</p>
         </>
       ) : <p className="agent-caps-note">该 Agent 暂无剖面。</p>}
     </div>
   );
 }
 
-/**
- * P2-b 使用分析视图：利用率首版（§11 最小版）——声明/调用覆盖率、执行侧聚合、
- * 低调用候选（观察结论，绝不说「从未使用/没价值」）；借补参考清单计入声明分母
- * 时注明。数据来自 /api/capabilities/usage（只读 SQLite 聚合）。
- */
-function UsageView() {
-  const [agentId, setAgentId] = useState("zcode");
+/** 使用分析面板。 */
+function UsagePanel({agentId}: {agentId: string}) {
   const [lookupTarget, setLookupTarget] = useState<{agentName: string; kind: "tool" | "skill"; name: string}>();
   const [days, setDays] = useState<7 | 30>(7);
   const [dimension, setDimension] = useState<"tools" | "skills">("tools");
-  const [data, setData] = useState<CapabilityUsageResponse>();
+  const [data, setData] = useState<UsageData>();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const seqRef = useRef(0);
@@ -230,7 +330,7 @@ function UsageView() {
       const response = await fetch(`/api/capabilities/usage?agent=${encodeURIComponent(agentId)}&days=${days}&dimension=${dimension}`, {cache: "no-store"});
       if (seq !== seqRef.current) return;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const payload = await response.json() as CapabilityUsageResponse;
+      const payload = await response.json() as UsageData;
       if (seq !== seqRef.current) return;
       setData(payload);
     } catch (err) {
@@ -239,92 +339,65 @@ function UsageView() {
     } finally {
       if (seq === seqRef.current) setLoading(false);
     }
-  }, [agentId, days]);
+  }, [agentId, days, dimension]);
 
   useEffect(() => { void load(); }, [load]);
 
-  const candidates = (data?.items ?? []).filter(item => item.lowUseCandidate);
   return (
-    <div className="agent-caps-usage">
-      <div className="agent-caps-viewtoggle" role="tablist">
-        {[["codex", "codex"], ["claude-code", "Claude Code"], ["zcode", "ZCode"], ["dsh", "dsh"], ["opencode", "opencode"]].map(([id, label]) => (
-          <button type="button" key={id} role="tab" aria-selected={agentId === id}
-            className={agentId === id ? "on" : ""} onClick={() => setAgentId(id)}>
-            {agentLabel(id)}
-          </button>
-        ))}
-        <button type="button" role="tab" aria-selected={dimension === "tools"} className={dimension === "tools" ? "on" : ""} onClick={() => setDimension("tools")}>工具</button>
-        <button type="button" role="tab" aria-selected={dimension === "skills"} className={dimension === "skills" ? "on" : ""} onClick={() => setDimension("skills")}>Skills</button>
-        <button type="button" role="tab" aria-selected={days === 7} className={days === 7 ? "on" : ""} onClick={() => setDays(7)}>近 7 天</button>
-        <button type="button" role="tab" aria-selected={days === 30} className={days === 30 ? "on" : ""} onClick={() => setDays(30)}>近 30 天</button>
-      </div>
-
-      {error ? <p className="agent-caps-note">使用数据读取失败（{error}）· <button type="button" className="comp-link" onClick={() => void load()}>重试</button></p> : null}
-      {loading && !data ? <p className="agent-caps-note">正在聚合使用数据…</p> : null}
+    <div className="acaps-category">
+      <h3 className="acaps-category-title">
+        使用分析
+        <span className="acaps-usage-filters">
+          <button type="button" className={dimension === "tools" ? "on" : ""} onClick={() => setDimension("tools")}>工具</button>
+          <button type="button" className={dimension === "skills" ? "on" : ""} onClick={() => setDimension("skills")}>Skills</button>
+          <button type="button" className={days === 7 ? "on" : ""} onClick={() => setDays(7)}>近 7 天</button>
+          <button type="button" className={days === 30 ? "on" : ""} onClick={() => setDays(30)}>近 30 天</button>
+        </span>
+      </h3>
+      {error ? <p className="agent-caps-note">读取失败（{error}）</p> : null}
+      {loading && !data ? <p className="agent-caps-note">聚合中…</p> : null}
       {data ? (
-        <>
-          <p className="agent-caps-summary">
-            窗口近 {data.windowDays} 天 · {dimension === "skills" ? "Skill" : "工具"} {data.items.length} 种 · 低调用候选 {candidates.length} 个
-            （标准：声明 ≥{data.thresholds.minDeclaredSteps} 步且步级调用覆盖率 {'<'}{Math.round(data.thresholds.maxCoverage * 100)}%）
-            {data.borrowedStepCount > 0 ? ` · ${data.borrowedStepCount} 步清单为借补参考（计入声明分母，覆盖率仅供参考）` : ""}
-            {data.limited ? ` · 达 ${data.processedCount} 行上限（共 ${data.candidateCount}）` : ""}。
-            覆盖率是观察结论，不构成「没价值」判断；无声明分母的工具（仅调用）覆盖率不适用。
-          </p>
-          {data.items.length > 0 ? (
-            <div className="agent-caps-usage-table">
-              <div className="agent-caps-usage-row head">
-                <span>工具</span><span className="num">声明步</span><span className="num">{dimension === "skills" ? "激活步/次" : "调用步/次"}</span>
-                <span className="num">步级覆盖率</span><span className="num">执行侧</span><span>候选</span>
-              </div>
-              {data.items.map(item => (
-                <button type="button" key={item.name} className={`agent-caps-usage-row agent-caps-usage-clickable${item.lowUseCandidate ? " cand" : ""}`}
-                  onClick={() => setLookupTarget({agentName: agentId, kind: dimension === "skills" ? "skill" as const : "tool" as const, name: item.name})}>
-                  <span className="mono">{item.name}</span>
-                  <span className="num">{item.declaredSteps}</span>
-                  <span className="num">{dimension === "skills" ? `${item.activatedSteps ?? 0} / ${item.invokedCalls}` : `${item.invokedSteps} / ${item.invokedCalls}`}</span>
-                  <span className="num">{item.coverage !== undefined ? `${Math.round(item.coverage * 100)}%` : "—"}</span>
-                  <span className="num">
-                    {item.executedCount !== undefined
-                      ? `${item.executedCount} 次${item.avgDurationMs !== undefined ? ` · 均 ${(item.avgDurationMs / 1000).toFixed(1)}s` : ""}${item.errorCount ? ` · 错 ${item.errorCount}` : ""}${item.cancelledCount ? ` · 取消 ${item.cancelledCount}` : ""}`
-                      : "—"}
-                  </span>
-                  <span>{item.lowUseCandidate ? dimension === "skills" ? "未激活（观察）" : "低调用（观察）" : ""}</span>
-                </button>
-              ))}
+        data.items.length > 0 ? (
+          <div className="acaps-usage-table">
+            <div className="acaps-usage-row head">
+              <span>{dimension === "skills" ? "Skill" : "工具"}</span>
+              <span className="num">声明步</span>
+              <span className="num">{dimension === "skills" ? "激活步/次" : "调用步/次"}</span>
+              <span className="num">覆盖率</span>
+              <span className="num">执行侧</span>
+              <span>候选</span>
             </div>
-          ) : <p className="agent-caps-note">窗口内无该 Agent 的声明/调用记录（0 条不代表该工具没价值）。</p>}
-        </>
+            {data.items.map(item => (
+              <button type="button" key={item.name}
+                className={`acaps-usage-row${item.lowUseCandidate ? " cand" : ""}`}
+                onClick={() => setLookupTarget({agentName: agentId, kind: dimension === "skills" ? "skill" : "tool", name: item.name})}>
+                <span className="mono">{item.name}</span>
+                <span className="num">{item.declaredSteps}</span>
+                <span className="num">{dimension === "skills" ? `${item.activatedSteps ?? 0} / ${item.invokedCalls}` : `${item.invokedSteps} / ${item.invokedCalls}`}</span>
+                <span className="num">{item.coverage !== undefined ? `${Math.round(item.coverage * 100)}%` : "—"}</span>
+                <span className="num">
+                  {item.executedCount !== undefined
+                    ? `${item.executedCount} 次${item.avgDurationMs !== undefined ? ` · 均 ${(item.avgDurationMs / 1000).toFixed(1)}s` : ""}`
+                    : "—"}
+                </span>
+                <span>{item.lowUseCandidate ? (dimension === "skills" ? "未激活" : "低调用") : ""}</span>
+              </button>
+            ))}
+          </div>
+        ) : <p className="agent-caps-note">窗口内无记录。</p>
       ) : null}
-      <CapabilityLookupDialog
-        target={lookupTarget}
-        onClose={() => setLookupTarget(undefined)}
-        onNavigate={() => {/* 使用分析无 Step 深链场景,占位 */}}
-      />
+      <CapabilityLookupDialog target={lookupTarget} onClose={() => setLookupTarget(undefined)} onNavigate={() => {}} />
     </div>
   );
 }
 
-interface CapabilityUsageResponse {
-  agentName: string;
-  windowDays: number;
-  windowStart: string;
+interface UsageData {
   items: Array<{
-    name: string;
-    declaredSteps: number;
-    invokedSteps: number;
-    invokedCalls: number;
-    coverage?: number;
-    avgDurationMs?: number;
-    executedCount?: number;
-    errorCount?: number;
-    cancelledCount?: number;
-    lowUseCandidate: boolean;
-    kind?: string;
-    activatedSteps?: number;
+    name: string; declaredSteps: number; invokedSteps: number; invokedCalls: number;
+    coverage?: number; avgDurationMs?: number; executedCount?: number;
+    lowUseCandidate: boolean; kind?: string; activatedSteps?: number;
   }>;
-  borrowedStepCount: number;
-  candidateCount: number;
-  processedCount: number;
-  limited: boolean;
+  borrowedStepCount: number; candidateCount: number; processedCount: number; limited: boolean;
   thresholds: {minDeclaredSteps: number; maxCoverage: number};
+  windowDays: number;
 }

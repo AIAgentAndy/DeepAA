@@ -20,7 +20,7 @@ import {AGENT_REGISTRY, agentLabel} from "@/lib/agent-registry";
 
 type AgentId = (typeof AGENT_REGISTRY)[number]["id"];
 
-export type LedgerItemKind = "skill" | "mcp_server" | "plugin" | "profile" | "tool";
+export type LedgerItemKind = "skill" | "mcp_server" | "plugin" | "profile" | "tool" | "rule" | "system_prompt";
 
 export interface CapabilityLedgerItem {
   kind: LedgerItemKind;
@@ -44,6 +44,9 @@ export interface AgentCapabilityLedger {
   plugins: CapabilityLedgerItem[];
   /** 核心价值①(2026-11-06):工具清单——wire 快照观测(有描述/定义规模)。 */
   tools: CapabilityLedgerItem[];
+  /** UI 重构(2026-11-10):规则(AGENTS.md/CLAUDE.md/permissions)与系统提示词。 */
+  rules: CapabilityLedgerItem[];
+  systemPrompts: CapabilityLedgerItem[];
   /** 第三组（plugins 槽位）的展示名（dsh=Profiles），数据驱动避免 UI 层 agent 分派。 */
   pluginsLabel?: string;
   /** skills 空清单时的解释文案（opencode=内联注入形态无文件台账）。 */
@@ -138,8 +141,68 @@ export function scanLocalCapabilities(options?: {
   } catch {
     // 快照工具提取失败不影响台账(本地配置扫描已有)。
   }
+  // UI 重构(2026-11-10):集中填充规则与系统提示词(表驱动,无 agent 名条件分派)。
+  const RULE_SOURCES: Record<string, Array<{label: string; path: string}>> = {
+    codex: [
+      {label: "全局 AGENTS.md", path: join(home, "AGENTS.md")},
+      {label: "config.toml", path: join(home, ".codex", "config.toml")},
+    ],
+    claude: [
+      {label: "全局 AGENTS.md", path: join(home, "AGENTS.md")},
+      {label: "全局 CLAUDE.md", path: join(home, ".claude", "CLAUDE.md")},
+      {label: "settings.json(env)", path: join(home, ".claude", "settings.json")},
+    ],
+    zcode: [
+      {label: "全局 AGENTS.md", path: join(home, "AGENTS.md")},
+      {label: "provider_config.json", path: join(home, ".zcode", "v2", "provider_config.json")},
+    ],
+    dsh: [{label: "全局 AGENTS.md", path: join(home, "AGENTS.md")}],
+    opencode: [{label: "全局 AGENTS.md", path: join(home, "AGENTS.md")}],
+  };
+  const PROMPT_SOURCES: Record<string, Array<{name: string; path: string}>> = {
+    codex: [{name: "会话基础指令", path: join(home, ".codex", "instructions.md")}],
+    claude: [{name: "全局 CLAUDE.md(注入)", path: join(home, ".claude", "CLAUDE.md")}],
+  };
+  for (const ledger of ledgers) {
+    if (ledger.rules.length === 0) {
+      ledger.rules = scanRuleFiles(home, RULE_SOURCES[ledger.agentId] ?? []);
+      ledger.systemPrompts = scanSystemPrompts(home, ledger.agentId, PROMPT_SOURCES[ledger.agentId] ?? []);
+    }
+  }
   scanCache.set(cacheKey, {ledgers, expiresAt: Date.now() + SCAN_CACHE_TTL_MS});
   return ledgers;
+}
+
+/**
+ * UI 重构(2026-11-10):扫描 Agent 的规则文件(AGENTS.md/CLAUDE.md/.cursorrules 等)。
+ * 有界读取前 1KiB 判断存在性,不读全文。
+ */
+function scanRuleFiles(home: string, paths: Array<{label: string; path: string}>): CapabilityLedgerItem[] {
+  const items: CapabilityLedgerItem[] = [];
+  for (const {label, path} of paths) {
+    try {
+      const stat = statSync(path);
+      if (!stat.isFile() || stat.size > MAX_CONFIG_BYTES) continue;
+      items.push({kind: "rule", name: label, detail: `${(stat.size / 1024).toFixed(1)} KiB`, sourcePath: path});
+    } catch {
+      // 文件不存在属正常。
+    }
+  }
+  return items;
+}
+
+function scanSystemPrompts(home: string, _agent: string, candidates: Array<{name: string; path: string}>): CapabilityLedgerItem[] {
+  const items: CapabilityLedgerItem[] = [];
+  for (const {name, path} of candidates) {
+    try {
+      const stat = statSync(path);
+      if (!stat.isFile()) continue;
+      items.push({kind: "system_prompt", name, detail: `${(stat.size / 1024).toFixed(1)} KiB`, sourcePath: path});
+    } catch {
+      // 不存在属正常。
+    }
+  }
+  return items;
 }
 
 function freshScan(now: string): AgentCapabilityLedger["scan"] {
@@ -222,6 +285,8 @@ function scanCodex(home: string): AgentCapabilityLedger {
     mcpServers,
     plugins: [],
     tools: [],
+    rules: [],
+    systemPrompts: [],
     scan,
   };
 }
@@ -301,6 +366,8 @@ function scanClaudeCode(home: string): AgentCapabilityLedger {
     mcpServers,
     plugins,
     tools: [],
+    rules: [],
+    systemPrompts: [],
     scan,
   };
 }
@@ -353,6 +420,8 @@ function scanZcode(home: string): AgentCapabilityLedger {
     mcpServers: [],
     plugins,
     tools: [],
+    rules: [],
+    systemPrompts: [],
     scan,
   };
 }
@@ -382,6 +451,8 @@ function scanOpencode(home: string): AgentCapabilityLedger {
     mcpServers: [],
     plugins: [],
     tools: [],
+    rules: [],
+    systemPrompts: [],
     skillsEmptyNote: "无本地 skill 目录（OpenCode 技能可能经 skill 工具描述内联注入，无文件台账）",
     scan,
   };
@@ -403,6 +474,8 @@ function scanDsh(home: string): AgentCapabilityLedger {
     mcpServers: [],
     plugins: profiles,
     tools: [],
+    rules: [],
+    systemPrompts: [],
     pluginsLabel: "Profiles",
     scan,
   };

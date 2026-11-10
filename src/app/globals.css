@@ -13648,6 +13648,364 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
   color: var(--ink-400);
 }
 
+/* ============================================================
+   Agent 能力页 v2（2026-11-10 三区布局,参照 Codex 桌面端）
+   ============================================================ */
+
+.agent-caps-page-v2 {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 14px 0 0;
+  min-height: calc(100vh - 180px);
+}
+
+/* 顶部 Agent 栏 */
+.acaps-agent-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px 14px;
+  border-bottom: 1px solid var(--line-2);
+  flex-wrap: wrap;
+}
+
+.acaps-agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--ink-300);
+  transition: background 0.15s, color 0.15s;
+}
+
+.acaps-agent-chip:hover {
+  background: var(--surface-2);
+}
+
+.acaps-agent-chip.on {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.acaps-agent-logo {
+  border-radius: 5px;
+  flex-shrink: 0;
+}
+
+.acaps-agent-name {
+  white-space: nowrap;
+}
+
+.acaps-agent-count {
+  font-size: 10px;
+  color: var(--ink-400);
+  background: var(--surface-3);
+  border-radius: 8px;
+  padding: 1px 6px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.acaps-agent-bar-fill { flex: 1; }
+
+.acaps-refresh { font-size: 12px; padding: 4px 10px; }
+
+/* 主体三区 */
+.acaps-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 左侧分类导航 */
+.acaps-sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  padding: 14px 10px 14px 16px;
+  border-right: 1px solid var(--line-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.acaps-sidebar-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-400);
+  padding: 0 8px 8px;
+}
+
+.acaps-sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--ink-300);
+  text-align: left;
+  width: 100%;
+  transition: background 0.12s, color 0.12s;
+}
+
+.acaps-sidebar-item:hover { background: var(--surface-2); }
+
+.acaps-sidebar-item.on {
+  background: var(--surface-3);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.acaps-sidebar-icon {
+  width: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--ink-400);
+  flex-shrink: 0;
+}
+
+.acaps-sidebar-item.on .acaps-sidebar-icon { color: var(--pine-600); }
+
+.acaps-sidebar-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--ink-400);
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 1px 5px;
+}
+
+.acaps-sidebar-meta {
+  margin-top: auto;
+  padding: 12px 8px 0;
+  border-top: 1px solid var(--line-2);
+}
+
+.acaps-sidebar-meta p {
+  font-size: 10px;
+  color: var(--ink-400);
+  margin: 2px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 右侧内容区 */
+.acaps-main {
+  flex: 1;
+  padding: 16px 20px;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.acaps-category-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.acaps-category-title span {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-400);
+}
+
+/* 使用分析筛选 */
+.acaps-usage-filters {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 8px;
+}
+
+.acaps-usage-filters button {
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: none;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--ink-400);
+}
+
+.acaps-usage-filters button.on {
+  background: var(--surface-3);
+  color: var(--ink);
+  font-weight: 600;
+  border-color: var(--line-strong);
+}
+
+/* 分组区 */
+.acaps-group-section { margin-bottom: 18px; }
+
+.acaps-group-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-400);
+  margin: 0 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line-2);
+}
+
+.acaps-group-label small {
+  margin-left: 6px;
+  font-weight: 400;
+  color: var(--ink-400);
+}
+
+/* 两列卡片网格(参照 Codex) */
+.acaps-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 10px;
+}
+
+.acaps-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  background: var(--surface);
+  cursor: default;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.acaps-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.acaps-card-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+  background: var(--surface-3);
+  color: var(--ink-300);
+}
+
+.acaps-card-icon[data-kind="skill"] { background: var(--pine-50); color: var(--pine-600); }
+.acaps-card-icon[data-kind="mcp_server"] { background: rgba(59, 130, 246, 0.1); color: #3b82f6; }
+.acaps-card-icon[data-kind="tool"] { background: var(--surface-3); color: var(--ink-300); }
+.acaps-card-icon[data-kind="plugin"] { background: rgba(168, 85, 247, 0.1); color: #a855f7; }
+.acaps-card-icon[data-kind="rule"] { background: rgba(245, 158, 11, 0.1); color: #f59e0b; }
+.acaps-card-icon[data-kind="system_prompt"] { background: rgba(239, 68, 68, 0.08); color: #ef4444; }
+
+.acaps-card-body { flex: 1; min-width: 0; }
+
+.acaps-card-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acaps-card-desc {
+  font-size: 12px;
+  color: var(--ink-400);
+  margin: 3px 0 0;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 使用分析表(复用旧结构,适配新容器) */
+.acaps-usage-table {
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.acaps-usage-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 2fr) 70px 110px 70px minmax(160px, 2fr) 100px;
+  gap: 10px;
+  padding: 8px 14px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line-2);
+  align-items: baseline;
+  border-left: none; border-right: none; border-top: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.acaps-usage-row:last-child { border-bottom: none; }
+
+.acaps-usage-row.head {
+  font-weight: 700;
+  color: var(--ink-400);
+  background: var(--surface-2);
+  cursor: default;
+}
+
+.acaps-usage-row:not(.head):hover { background: var(--surface-2); }
+
+.acaps-usage-row.cand { background: rgba(245, 158, 11, 0.06); }
+
+.acaps-usage-row .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-300);
+}
+
+/* 机制剖析(适配新容器) */
+.acaps-topics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 12px;
+}
+
+.acaps-topic-card {
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+}
+
+.acaps-topic-card h4 { margin: 0; font-size: 12px; color: var(--ink-400); }
+
+.acaps-entry b { font-size: 13px; }
+.acaps-entry p { font-size: 12px; margin: 3px 0; color: var(--ink-300); line-height: 1.5; }
+.acaps-source { font-size: 10px; color: var(--ink-400); }
+
+.acaps-summary {
+  font-size: 13px;
+  color: var(--ink-300);
+  margin: 0 0 14px;
+  line-height: 1.5;
+}
+
 .agent-caps-page {
   display: flex;
   flex-direction: column;
