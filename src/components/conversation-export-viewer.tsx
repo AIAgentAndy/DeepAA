@@ -1695,8 +1695,13 @@ function ConversationItemView({
       ? "当前 step 新增"
       : item.stepDiff === "inherited" ? "继承上下文" : "";
   const diffClass = diffLabel ? ` step-${item.stepDiff}` : "";
-  const hasText = item.text.trim().length > 0;
-  const preview = summarizeText(item.text)
+  // P2-问题3(2026-11-11 双路审核修复):tool_use 文本生产级友好化——
+  // 原始 JSON 形态(如 {"command":...})转为语义标题+参数摘要。
+  const displayText = item.category === "tool_use"
+    ? formatToolUseText(item.toolName, item.text)
+    : item.text;
+  const hasText = displayText.trim().length > 0;
+  const preview = summarizeText(displayText)
     || (item.mediaDescriptors.length > 0
       ? `${item.mediaDescriptors.length} 张图片`
       : "");
@@ -1732,7 +1737,7 @@ function ConversationItemView({
       {open ? <div className="conv-detail-body">
         <div className="role-row">
           <span className="conv-side-label">{item.side}</span>
-          {item.text ? (
+          {displayText ? (
             <span className="conv-item-actions">
               <button type="button" className="fullscreen-action" onClick={() => setFullscreen(true)}>
                 <Maximize2 size={13} aria-hidden="true" />
@@ -1746,8 +1751,8 @@ function ConversationItemView({
         </div>
         {item.text ? (
           item.category === "assistant" || item.category === "reasoning"
-            ? <MarkdownView text={item.text} />
-            : <div className="txt">{item.text}</div>
+            ? <MarkdownView text={displayText} />
+            : <div className="txt">{displayText}</div>
         ) : null}
         {item.mediaDescriptors.length > 0 ? (
           <div className="conv-media-list" aria-label="图片附件">
@@ -1906,4 +1911,60 @@ function OversizedExchangePrompt({
       </div>
     </section>
   );
+}
+
+
+/**
+ * P2-问题3:tool_use 文本生产级友好化(渲染层,保证可达)。
+ * 原始形态如 `Bash({"command":"ls"})` → `执行命令 · Bash: ls`。
+ */
+function formatToolUseText(toolName: string | undefined, raw: string): string {
+  if (!toolName) return raw;
+  // 尝试从 `ToolName({...json...})` 形态提取参数
+  const match = /^(.+?)\((.*)\)$/s.exec(raw.trim());
+  if (!match) return raw;
+  const name = match[1];
+  if (name !== toolName) return raw;
+  let input: unknown;
+  try { input = JSON.parse(match[2]); } catch { return raw; }
+  if (!input || typeof input !== "object" || Array.isArray(input)) return raw;
+  const record = input as Record<string, unknown>;
+  const kindLabel = name === "Skill" || name === "skill" ? "Skill 调用"
+    : name === "TodoWrite" || name === "todo_write" ? "待办清单更新"
+    : name === "Bash" || name === "bash" || name === "exec" ? "执行命令"
+    : name === "Read" || name === "read" ? "读取文件"
+    : name === "Write" || name === "write" ? "写入文件"
+    : name === "Edit" || name === "edit" ? "编辑文件"
+    : name === "WebSearch" ? "网页搜索"
+    : name === "WebFetch" ? "获取网页"
+    : name === "Agent" ? "子 Agent"
+    : name.startsWith("mcp__") ? "MCP 工具" : "工具调用";
+  const parts = [`${kindLabel} · ${name}`];
+  if (name === "TodoWrite" || name === "todo_write") {
+    const todos = Array.isArray(record.todos) ? record.todos as Array<Record<string, unknown>> : [];
+    const done = todos.filter(t => t.status === "completed").length;
+    parts.push(`(${todos.length} 项 · ${done} 已完成)`);
+    for (const todo of todos.slice(0, 3)) {
+      const content = typeof todo.content === "string" ? todo.content.slice(0, 60) : "?";
+      const status = todo.status === "completed" ? "✓" : todo.status === "in_progress" ? "▶" : "○";
+      parts.push(`\n  ${status} ${content}`);
+    }
+    if (todos.length > 3) parts.push(`\n  …另有 ${todos.length - 3} 项`);
+  } else if (typeof record.command === "string") {
+    parts.push(`: ${record.command.slice(0, 100)}`);
+  } else if (typeof record.cmd === "string") {
+    parts.push(`: ${record.cmd.slice(0, 100)}`);
+  } else if (typeof record.file_path === "string" || typeof record.path === "string") {
+    parts.push(`: ${String(record.file_path ?? record.path)}`);
+  } else if (typeof record.query === "string") {
+    parts.push(`: ${record.query.slice(0, 80)}`);
+  } else if (typeof record.skill === "string") {
+    parts.push(`: ${record.skill}`);
+  } else if (typeof record.url === "string") {
+    parts.push(`: ${record.url.slice(0, 80)}`);
+  } else {
+    const keys = Object.keys(record).slice(0, 5);
+    if (keys.length > 0) parts.push(`(${keys.join(", ")})`);
+  }
+  return parts.join(" ");
 }

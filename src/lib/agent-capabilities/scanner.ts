@@ -147,15 +147,26 @@ export function scanLocalCapabilities(options?: {
   const projectSkillsList: Array<{project: string; items: CapabilityLedgerItem[]}> = [];
   try {
     const workspaceRoot = join(home, "Documents", "UGit");
-    for (const entry of readdirSync(workspaceRoot, {withFileTypes: true})) {
-      if (projectSkillsList.length >= 20) break;
-      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-      const projSkillsDir = join(workspaceRoot, entry.name, ".agents", "skills");
-      if (!dirExists(projSkillsDir)) continue;
-      const pScan: AgentCapabilityLedger["scan"] = {candidateCount: 0, processedCount: 0, bytesRead: 0, limited: false, scannedAt: new Date().toISOString()};
-      const items = scanSkillsWithDesc(projSkillsDir, pScan);
-      if (items.length > 0) projectSkillsList.push({project: entry.name, items});
-    }
+    // 修复(2026-11-11 双路审核):真实项目在两层深度(如 AIAgentAndy/EffiRoom、
+    // otherProject/helios),旧代码只扫一层 → 项目级恒 0。改为两层(每层有界)。
+    const scanProjectDir = (dir: string, depth: number): void => {
+      if (projectSkillsList.length >= 20 || depth > 2) return;
+      let entries;
+      try { entries = readdirSync(dir, {withFileTypes: true}); } catch { return; }
+      for (const entry of entries) {
+        if (projectSkillsList.length >= 20) break;
+        if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+        const projPath = join(dir, entry.name);
+        const projSkillsDir = join(projPath, ".agents", "skills");
+        if (dirExists(projSkillsDir)) {
+          const pScan: AgentCapabilityLedger["scan"] = {candidateCount: 0, processedCount: 0, bytesRead: 0, limited: false, scannedAt: new Date().toISOString()};
+          const items = scanSkillsWithDesc(projSkillsDir, pScan);
+          if (items.length > 0) projectSkillsList.push({project: entry.name, items});
+        }
+        if (depth < 2) scanProjectDir(projPath, depth + 1);
+      }
+    };
+    scanProjectDir(workspaceRoot, 0);
   } catch { /* 工作区不存在属正常。 */ }
 
   // UI 重构(2026-11-10):集中填充规则与系统提示词(表驱动,无 agent 名条件分派)。
@@ -187,6 +198,7 @@ export function scanLocalCapabilities(options?: {
     for (const g of globalAgentSkills) {
       if (!existingNames.has(g.name)) {
         extraSkills.push({...g, detail: "用户全局"});
+        existingNames.add(g.name);
       }
     }
     for (const proj of projectSkillsList) {
@@ -234,10 +246,17 @@ function readSkillDescription(skillDir: string): {description?: string} {
       const descMatch = /^description:\s*(.+)$/m.exec(fm);
       if (descMatch) {
         let desc = descMatch[1].trim();
-        if (desc === ">" || desc === "|" || desc === "") {
+        // 修复(2026-11-11 双路审核):多行折叠(>/|/>-/|-)时,split("\n") 首元素
+        // 是空行(不以缩进开头),旧逻辑立即 break → 多行格式 100% 提取失败。
+        // 修复:跳过空行;折叠指示符放宽为 /^[>|][+-]?$/。
+        if (/^[>|][+-]?$/.test(desc)) {
           const lines: string[] = [];
           const after = fm.slice(fm.indexOf("description:") + descMatch[0].length);
           for (const line of after.split("\n")) {
+            if (line === "") {
+              if (lines.length === 0) continue; // 跳过折叠指示符后的前导空行
+              break; // 已有内容后的空行 = 多行块结束
+            }
             if (line.startsWith("  ") || line.startsWith("\t")) lines.push(line.trim());
             else break;
           }

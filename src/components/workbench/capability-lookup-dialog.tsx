@@ -137,7 +137,7 @@ export function CapabilityLookupDialog({target, onClose, onNavigate}: {
                 </button>
               ))}
             </div>
-          ) : <p className="caps-lookup-muted">未观察到声明（可能仅作为调用出现，或为借补参考清单外的工具）。</p>}
+          ) : <p className="caps-lookup-muted">未观察到声明（可能仅作为调用出现）。</p>}
         </div>
       ) : null}
 

@@ -97,7 +97,6 @@ import {
 import { workbenchSelectionQuery } from "@/lib/shared-selection";
 import { formatLocalClock, formatLocalDateTime, formatRelativeLocalTime } from "@/lib/local-time";
 import { CapabilityLookupDialog, type CapabilityLookupTarget } from "@/components/workbench/capability-lookup-dialog";
-import { StepCapabilityPanel } from "@/components/workbench/step-capability-panel";
 import {useGlobalTimeZone} from "@/lib/timezone-preference";
 import {
   appendWorkbenchRangeParams,

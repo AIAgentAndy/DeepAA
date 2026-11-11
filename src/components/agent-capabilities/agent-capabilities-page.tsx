@@ -181,9 +181,13 @@ interface ItemGroup { label: string; items: CapabilityLedgerItem[] }
 
 function groupSkills(agent?: AgentCapabilityLedger): ItemGroup[] {
   if (!agent) return [];
-  const system = agent.skills.filter(s => !s.name.includes(":"));
+  // 修复(2026-11-11 双路审核):按 detail 来源字段分组(用户全局/项目/插件/系统)。
+  const user = agent.skills.filter(s => s.detail === "用户全局");
+  const project = agent.skills.filter(s => (s.detail ?? "").startsWith("项目 · "));
+  const rest = agent.skills.filter(s => s.detail !== "用户全局" && !(s.detail ?? "").startsWith("项目 · "));
+  const system = rest.filter(s => !s.name.includes(":"));
   const byPlugin = new Map<string, CapabilityLedgerItem[]>();
-  for (const s of agent.skills) {
+  for (const s of rest) {
     const idx = s.name.indexOf(":");
     if (idx > 0) {
       const plugin = s.name.slice(0, idx);
@@ -193,10 +197,12 @@ function groupSkills(agent?: AgentCapabilityLedger): ItemGroup[] {
     }
   }
   const groups: ItemGroup[] = [];
+  if (user.length > 0) groups.push({label: "用户全局", items: user});
   if (system.length > 0) groups.push({label: "系统 / 个人", items: system});
   for (const [plugin, items] of byPlugin) {
     groups.push({label: `插件 · ${plugin}`, items});
   }
+  if (project.length > 0) groups.push({label: "项目", items: project});
   return groups;
 }
 
@@ -262,7 +268,7 @@ function CategoryPanel({title, groups, emptyText}: {
                 </div>
                 <div className="acaps-card-body">
                   <b className="acaps-card-name">{item.name}</b>
-                  {item.description ? <p className="acaps-card-desc">{item.description.slice(0, 100)}</p> : null}
+                  {item.description ? <p className="acaps-card-desc">{item.description.slice(0, 80)}</p> : null}
                   {item.detail && !item.description ? <p className="acaps-card-desc">{item.detail}</p> : null}
                 </div>
               </div>
