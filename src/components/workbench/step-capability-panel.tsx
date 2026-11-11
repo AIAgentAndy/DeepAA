@@ -62,7 +62,7 @@ export function StepCapabilityPanel({state, variant, onOpenCapability}: {
       </div>
       {coverageNote ? <div className="derived-status-banner building" role="status">{coverageNote}</div> : null}
       {summary.legacyData ? (
-        <div className="derived-status-banner building" role="status">升级前数据：清单为旧口径（Tier A 回填），Skills/Rules/构成不可得。</div>
+        <div className="derived-status-banner building" role="status">部分数据来自历史观测。</div>
       ) : null}
       {summary.noSnapshot ? (
         <div className="derived-status-banner building" role="status">本步无清单快照（升级前 Step 或未捕获声明）：0 声明不代表没传，仅调用证据如下。</div>
@@ -89,7 +89,7 @@ export function StepCapabilityPanel({state, variant, onOpenCapability}: {
         ) : null}
         <div className="schip">
           <div className="n">{summary.declaredToolCount} <i className="badge-tag">声明</i></div>
-          <div className="l">{summary.reference ? "参考清单（借补）" : summary.inputComplete === false ? "清单受限" : "请求声明工具"}</div>
+          <div className="l">{summary.inputComplete === false ? "清单受限" : "请求声明工具"}</div>
         </div>
         <div className="schip">
           <div className="n">{summary.skillCount} <i className="badge-tag warn">Skills</i></div>
@@ -195,9 +195,6 @@ function CapabilityItemGroup({title, items, limit, totalCount, emptyText, render
 function buildCoverageNote(summary: NonNullable<StepCapabilitiesState & {phase: "ready"}>["data"]["summary"]): string | undefined {
   if (!summary) return undefined;
   const notes: string[] = [];
-  if (summary.reference) {
-    notes.push(`清单为参考（借补自同 Agent 近期快照${summary.reference.donorSnapshotHash ? ` ${summary.reference.donorSnapshotHash.slice(0, 8)}` : ""}），不作为当次确定传递`);
-  }
   if (summary.callsLimited?.step || summary.callsLimited?.turn) {
     notes.push(`调用统计受限（${summary.callsLimited.step ? "本步" : ""}${summary.callsLimited.step && summary.callsLimited.turn ? " / " : ""}${summary.callsLimited.turn ? "本 Turn" : ""}达处理上限），未处理工具显示未知`);
   }

@@ -141,6 +141,23 @@ export function scanLocalCapabilities(options?: {
   } catch {
     // 快照工具提取失败不影响台账(本地配置扫描已有)。
   }
+  // P0-4.3(2026-11-11):全局 ~/.agents/skills/(跨 Agent 共享)+ 项目级 .agents/skills/。
+  const globalScan: AgentCapabilityLedger["scan"] = {candidateCount: 0, processedCount: 0, bytesRead: 0, limited: false, scannedAt: new Date().toISOString()};
+  const globalAgentSkills = scanSkillsWithDesc(join(home, ".agents", "skills"), globalScan);
+  const projectSkillsList: Array<{project: string; items: CapabilityLedgerItem[]}> = [];
+  try {
+    const workspaceRoot = join(home, "Documents", "UGit");
+    for (const entry of readdirSync(workspaceRoot, {withFileTypes: true})) {
+      if (projectSkillsList.length >= 20) break;
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      const projSkillsDir = join(workspaceRoot, entry.name, ".agents", "skills");
+      if (!dirExists(projSkillsDir)) continue;
+      const pScan: AgentCapabilityLedger["scan"] = {candidateCount: 0, processedCount: 0, bytesRead: 0, limited: false, scannedAt: new Date().toISOString()};
+      const items = scanSkillsWithDesc(projSkillsDir, pScan);
+      if (items.length > 0) projectSkillsList.push({project: entry.name, items});
+    }
+  } catch { /* 工作区不存在属正常。 */ }
+
   // UI 重构(2026-11-10):集中填充规则与系统提示词(表驱动,无 agent 名条件分派)。
   const RULE_SOURCES: Record<string, Array<{label: string; path: string}>> = {
     codex: [
@@ -164,6 +181,24 @@ export function scanLocalCapabilities(options?: {
     claude: [{name: "全局 CLAUDE.md(注入)", path: join(home, ".claude", "CLAUDE.md")}],
   };
   for (const ledger of ledgers) {
+    // P0-4.3:合并全局+项目级 skills(去重后追加,detail 标来源)。
+    const existingNames = new Set(ledger.skills.map(s => s.name));
+    const extraSkills: CapabilityLedgerItem[] = [];
+    for (const g of globalAgentSkills) {
+      if (!existingNames.has(g.name)) {
+        extraSkills.push({...g, detail: "用户全局"});
+      }
+    }
+    for (const proj of projectSkillsList) {
+      for (const item of proj.items) {
+        if (!existingNames.has(item.name)) {
+          extraSkills.push({...item, detail: `项目 · ${proj.project}`});
+          existingNames.add(item.name);
+        }
+      }
+    }
+    ledger.skills = [...ledger.skills, ...extraSkills];
+
     if (ledger.rules.length === 0) {
       ledger.rules = scanRuleFiles(home, RULE_SOURCES[ledger.agentId] ?? []);
       ledger.systemPrompts = scanSystemPrompts(home, ledger.agentId, PROMPT_SOURCES[ledger.agentId] ?? []);
@@ -171,6 +206,75 @@ export function scanLocalCapabilities(options?: {
   }
   scanCache.set(cacheKey, {ledgers, expiresAt: Date.now() + SCAN_CACHE_TTL_MS});
   return ledgers;
+}
+
+import {openSync, readSync, closeSync} from "node:fs";
+
+/**
+ * P0-4.4(2026-11-11):有界读取 SKILL.md frontmatter 的 description。
+ * 只读前 2KiB,逐行匹配 YAML name:/description:(支持单行和多行 > 折叠)。
+ */
+const SKILL_META_MAX_BYTES = 2 * 1024;
+
+function readSkillDescription(skillDir: string): {description?: string} {
+  const skillFile = join(skillDir, "SKILL.md");
+  try {
+    const stat = statSync(skillFile);
+    if (!stat.isFile()) return {};
+    const fd = openSync(skillFile, "r");
+    try {
+      const length = Math.min(stat.size, SKILL_META_MAX_BYTES);
+      const buffer = Buffer.alloc(length);
+      const read = readSync(fd, buffer, 0, length, 0);
+      const text = buffer.subarray(0, read).toString("utf8");
+      const fmStart = text.indexOf("---");
+      if (fmStart < 0) return {};
+      const fmEnd = text.indexOf("---", fmStart + 3);
+      const fm = fmEnd > fmStart ? text.slice(fmStart + 3, fmEnd) : "";
+      const descMatch = /^description:\s*(.+)$/m.exec(fm);
+      if (descMatch) {
+        let desc = descMatch[1].trim();
+        if (desc === ">" || desc === "|" || desc === "") {
+          const lines: string[] = [];
+          const after = fm.slice(fm.indexOf("description:") + descMatch[0].length);
+          for (const line of after.split("\n")) {
+            if (line.startsWith("  ") || line.startsWith("\t")) lines.push(line.trim());
+            else break;
+          }
+          desc = lines.join(" ");
+        }
+        desc = desc.replace(/^["']|["']$/g, "").trim();
+        return desc ? {description: desc.slice(0, 500)} : {};
+      }
+      return {};
+    } finally {
+      try { closeSync(fd); } catch { /* ignore */ }
+    }
+  } catch {
+    return {};
+  }
+}
+
+/** P0-4.3:扩展 scanSkillsDir 为带 description 版本。 */
+function scanSkillsWithDesc(skillsDir: string, scan: AgentCapabilityLedger["scan"]): CapabilityLedgerItem[] {
+  const {names, limited} = listBounded(skillsDir);
+  scan.candidateCount += names.length;
+  scan.limited = scan.limited || limited;
+  const items: CapabilityLedgerItem[] = [];
+  for (const name of names) {
+    const dir = join(skillsDir, name);
+    try {
+      const skillFile = join(dir, "SKILL.md");
+      const stat = statSync(skillFile);
+      if (!stat.isFile()) continue;
+      scan.processedCount += 1;
+      const {description} = readSkillDescription(dir);
+      items.push({kind: "skill", name, sourcePath: skillFile, ...(description ? {description} : {})});
+    } catch {
+      // 无 SKILL.md 的目录不是技能。
+    }
+  }
+  return items;
 }
 
 /**
@@ -261,7 +365,7 @@ function scanSkillsDir(skillsDir: string, scan: AgentCapabilityLedger["scan"]): 
 function scanCodex(home: string): AgentCapabilityLedger {
   const scan = freshScan(new Date().toISOString());
   const dataDir = join(home, ".codex");
-  const skills: CapabilityLedgerItem[] = scanSkillsDir(join(dataDir, "skills"), scan);
+  const skills: CapabilityLedgerItem[] = scanSkillsWithDesc(join(dataDir, "skills"), scan);
   // MCP servers：config.toml 的 [mcp_servers.<name>] 段头（有界读 ≤1 MiB，正则提取）。
   const mcpServers: CapabilityLedgerItem[] = [];
   const config = readBounded(join(dataDir, "config.toml"), MAX_CONFIG_BYTES);
@@ -298,7 +402,7 @@ function scanOthers(home: string): AgentCapabilityLedger[] {
 function scanClaudeCode(home: string): AgentCapabilityLedger {
   const scan = freshScan(new Date().toISOString());
   const dataDir = join(home, ".claude");
-  const skills = scanSkillsDir(join(dataDir, "skills"), scan);
+  const skills = scanSkillsWithDesc(join(dataDir, "skills"), scan);
   // MCP：settings.json + ~/.claude.json 双源（审计 P1-4——用户级 MCP 在后者顶层,
   // 本机实测 myFileSystem/chrome-devtools;项目级在 projects 键下）。
   const mcpServers: CapabilityLedgerItem[] = [];
@@ -398,14 +502,14 @@ function scanZcode(home: string): AgentCapabilityLedger {
           const verSkillsDir = join(pluginPath, ver, "skills");
           if (!dirExists(verSkillsDir)) continue;
           for (const skillName of listBounded(verSkillsDir).names) {
-            skills.push({kind: "skill", name: `${plugin}:${skillName}`, sourcePath: join(verSkillsDir, skillName)});
+            const {description: sd} = readSkillDescription(join(verSkillsDir, skillName)); skills.push({kind: "skill", name: `${plugin}:${skillName}`, sourcePath: join(verSkillsDir, skillName), ...(sd ? {description: sd} : {})});
             scan.processedCount += 1;
           }
         }
         const legacySkillsDir = join(pluginPath, "skills");
         if (dirExists(legacySkillsDir)) {
           for (const skillName of listBounded(legacySkillsDir).names) {
-            skills.push({kind: "skill", name: `${plugin}:${skillName}`, sourcePath: join(legacySkillsDir, skillName)});
+            const {description: sd} = readSkillDescription(join(legacySkillsDir, skillName)); skills.push({kind: "skill", name: `${plugin}:${skillName}`, sourcePath: join(legacySkillsDir, skillName), ...(sd ? {description: sd} : {})});
             scan.processedCount += 1;
           }
         }
@@ -442,7 +546,7 @@ function scanOpencode(home: string): AgentCapabilityLedger {
   const opencodeSkillsDir = dirExists(join(dataDir, "skills"))
     ? join(dataDir, "skills")
     : dirExists(join(dataDir, "skill")) ? join(dataDir, "skill") : undefined;
-  const skills = opencodeSkillsDir ? scanSkillsDir(opencodeSkillsDir, scan) : [];
+  const skills = opencodeSkillsDir ? scanSkillsWithDesc(opencodeSkillsDir, scan) : [];
   return {
     agentId: "opencode",
     label: labelOf("opencode"),

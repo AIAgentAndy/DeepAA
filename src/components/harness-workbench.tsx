@@ -96,7 +96,6 @@ import {
 } from "@/lib/workbench-display";
 import { workbenchSelectionQuery } from "@/lib/shared-selection";
 import { formatLocalClock, formatLocalDateTime, formatRelativeLocalTime } from "@/lib/local-time";
-import { useStepCapabilities } from "@/components/workbench/use-step-capabilities";
 import { CapabilityLookupDialog, type CapabilityLookupTarget } from "@/components/workbench/capability-lookup-dialog";
 import { StepCapabilityPanel } from "@/components/workbench/step-capability-panel";
 import {useGlobalTimeZone} from "@/lib/timezone-preference";
@@ -542,7 +541,6 @@ export function HarnessWorkbench({ tree, initialQuery, initialRange, retentionDa
     ? selectedStepDetail
     : selectedStepSummary;
   // P1-3（2026-11-03）：「响应」页签的本次传递能力面板（capability-summary/items 契约）。
-  const stepCapabilities = useStepCapabilities(selectedStep?.id);
   const selectedSession = selectedGroup?.sessions.find(
     session => session.id === selection?.session,
   );
@@ -2486,15 +2484,7 @@ export function HarnessWorkbench({ tree, initialQuery, initialRange, retentionDa
             {activeTab === "请求" ? (
               selectedStep ? (
                 <>
-                  {/* 审计修订（2026-11-04）：请求页签同屏展示输入清单（§1.2「请求页签可看同一输入清单」）。 */}
-                  <StepCapabilityPanel
-                    state={stepCapabilities}
-                    variant="request"
-                    onOpenCapability={(kind, name) => setCapabilityLookup({
-                      agentName: stepHarness?.snapshot?.agentName || selection?.agent || "",
-                      kind, name,
-                    })}
-                  />
+
                   <WorkbenchRawInspectorTab
                     key={`${selectedStep.exchangeId}:request`}
                     side="request"
@@ -2516,16 +2506,7 @@ export function HarnessWorkbench({ tree, initialQuery, initialRange, retentionDa
             {activeTab === "响应" ? (
               selectedStep ? (
                 <>
-                  {/* P1-3：本次传递的能力及使用——清单来自对应请求输入、调用来自本次响应；
-                      面板在 Raw 原文之前，复制/下载 Raw 不包含它。 */}
-                  <StepCapabilityPanel
-                    state={stepCapabilities}
-                    variant="compact"
-                    onOpenCapability={(kind, name) => setCapabilityLookup({
-                      agentName: stepHarness?.snapshot?.agentName || selection?.agent || "",
-                      kind, name,
-                    })}
-                  />
+
                   <WorkbenchRawInspectorTab
                     key={`${selectedStep.exchangeId}:response`}
                     side="response"
@@ -5475,17 +5456,7 @@ function HarnessTab({ step, harness, harnessLoading, harnessError, protocol, isS
         </div>
       ) : null}
 
-      {reference ? (
-        <div className="derived-status-banner building" role="status">
-          参考清单（借补）：本地导入行未捕获当次
-          {reference.borrowed.length > 0 ? ` ${reference.borrowed.join(" / ")}` : ""}
-          {" "}声明，以下清单借自同 Agent 近期快照
-          {reference.donorSnapshotHash
-            ? `（${reference.donorSnapshotHash.slice(0, 8)}${reference.donorLastSeenAt ? ` · ${formatLocalDateTime(reference.donorLastSeenAt)}` : ""}）`
-            : "（来源快照未知，历史数据）"}
-          ，不作为当次确定传递。
-        </div>
-      ) : null}
+
 
       {harness.callsLimited && (harness.callsLimited.step || harness.callsLimited.turn) ? (
         <div className="derived-status-banner building" role="status">
@@ -5503,7 +5474,7 @@ function HarnessTab({ step, harness, harnessLoading, harnessError, protocol, isS
         {snapshot ? <div className="snap-cell"><span className="label">生效范围</span><b>Step {snapshot.coverage.fromStepIndex}–{snapshot.coverage.toStepIndex}</b></div> : null}
         <div className="snap-cell">
           <span className="label">工具清单</span>
-          <b>{inventory.tools.length} 个 · {reference ? "参考" : snapshot ? (snapshot.complete ? "完整" : "受限") : "升级前"}</b>
+          <b>{inventory.tools.length} 个 · {snapshot ? (snapshot.complete ? "完整" : "受限") : "升级前"}</b>
         </div>
         <div className="snap-cell"><span className="label">Agent</span><b>{snapshot?.agentName || "—"}{snapshot?.agentVersion ? ` · v${snapshot.agentVersion}` : ""}</b></div>
         {harness.project ? <div className="snap-cell"><span className="label">项目</span><b>{harness.project}</b></div> : null}
@@ -5512,7 +5483,7 @@ function HarnessTab({ step, harness, harnessLoading, harnessError, protocol, isS
       <div className="stat-chips">
         <div className="schip">
           <div className="n">{inventory.tools.length} <i className="badge-tag">Tools</i></div>
-          <div className="l">{reference ? "参考清单" : "声明清单"} · 本步调用 {stepInvokedCalls}</div>
+          <div className="l">声明清单 · 本步调用 {stepInvokedCalls}</div>
         </div>
         {observedOnlyTools.length > 0 ? (
           <div className="schip">

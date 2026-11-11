@@ -13664,10 +13664,10 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
 .acaps-agent-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: 4px;
   padding: 0 16px 14px;
   border-bottom: 1px solid var(--line-2);
-  flex-wrap: wrap;
 }
 
 .acaps-agent-chip {
@@ -13693,7 +13693,15 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
   border-color: var(--line-strong);
   color: var(--ink);
   font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--acaps-brand, var(--pine-600));
 }
+
+/* 品牌色(对齐仪表盘 AGENT_BRAND_COLORS) */
+.acaps-agent-chip[data-agent="codex"] { --acaps-brand: #007b74; }
+.acaps-agent-chip[data-agent="claude"] { --acaps-brand: #b56a3c; }
+.acaps-agent-chip[data-agent="zcode"] { --acaps-brand: #4d7185; }
+.acaps-agent-chip[data-agent="dsh"] { --acaps-brand: #8f7b49; }
+.acaps-agent-chip[data-agent="opencode"] { --acaps-brand: #46678c; }
 
 .acaps-agent-logo {
   border-radius: 5px;
@@ -13716,7 +13724,30 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
 
 .acaps-agent-bar-fill { flex: 1; }
 
-.acaps-refresh { font-size: 12px; padding: 4px 10px; }
+.acaps-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  padding: 5px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink-300);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+
+.acaps-refresh:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.acaps-refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 
 /* 主体三区 */
 .acaps-body {

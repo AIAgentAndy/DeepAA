@@ -79,6 +79,7 @@ export function AgentCapabilitiesPage({mechanismProfiles}: {
     <div className="agent-caps-page-v2">
       {/* 顶部 Agent 列表 */}
       <nav className="acaps-agent-bar" role="tablist" aria-label="Agent 选择">
+        <span className="acaps-agent-bar-fill" />
         {AGENT_ORDER.map(id => {
           const ledger = data?.agents.find(a => a.agentId === id);
           const count = ledger
@@ -91,13 +92,14 @@ export function AgentCapabilitiesPage({mechanismProfiles}: {
               role="tab"
               aria-selected={agentId === id}
               className={`acaps-agent-chip${agentId === id ? " on" : ""}`}
+              data-agent={id}
               onClick={() => setAgentId(id)}
             >
               <Image
                 src={AGENT_LOGO[id] ?? "/agent-logos/codex.png"}
                 alt=""
-                width={22}
-                height={22}
+                width={24}
+                height={24}
                 className="acaps-agent-logo"
               />
               <span className="acaps-agent-name">{agentLabel(id)}</span>
@@ -106,8 +108,11 @@ export function AgentCapabilitiesPage({mechanismProfiles}: {
           );
         })}
         <span className="acaps-agent-bar-fill" />
-        <button type="button" className="ghost-btn acaps-refresh" onClick={() => void load()} disabled={loading}>
-          {loading ? "扫描中…" : "重新扫描"}
+        <button type="button" className="acaps-refresh" onClick={() => void load()} disabled={loading} title="刷新本机能力扫描">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>
+          </svg>
+          {loading ? "扫描中" : "扫描"}
         </button>
       </nav>
 

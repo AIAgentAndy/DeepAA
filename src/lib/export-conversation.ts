@@ -1647,7 +1647,7 @@ export function extractConversationItems(
   }
   // 输出侧：工具调用
   for (const tu of normalized.response.toolUses) {
-    push("tool_use", "output", `${tu.name}(${tu.input ? JSON.stringify(tu.input) : ""})`, { toolName: tu.name, toolUseId: tu.id });
+    push("tool_use", "output", formatToolUseFriendly(tu.name, tu.input), { toolName: tu.name, toolUseId: tu.id });
   }
   // 输出侧：reasoning/thinking
   for (const rb of normalized.response.reasoningBlocks) {
@@ -2918,3 +2918,61 @@ function auxiliaryKindFor(
 }
 
 export { ALL_CATEGORIES };
+
+
+/**
+ * P2-问题3(2026-11-11):工具调用人类可读摘要——按工具名生成友好格式,
+ * 参数做语义化渲染(TodoWrite 显示待办列表/Bash 显示命令/Skill 显示技能名)。
+ */
+function formatToolUseFriendly(name: string, input: unknown): string {
+  const kindLabel = name === "Skill" || name === "skill" ? "Skill 调用"
+    : name === "TodoWrite" || name === "todo_write" ? "待办清单更新"
+    : name === "Bash" || name === "bash" || name === "exec" || name === "shell" ? "执行命令"
+    : name === "Read" || name === "read" ? "读取文件"
+    : name === "Write" || name === "write" ? "写入文件"
+    : name === "Edit" || name === "edit" ? "编辑文件"
+    : name === "WebSearch" || name === "web_search" ? "网页搜索"
+    : name === "WebFetch" || name === "web_fetch" ? "获取网页"
+    : name === "Agent" || name === "agent" ? "子 Agent 调度"
+    : name === "AskUserQuestion" || name === "ask_user_question" ? "向用户提问"
+    : name.startsWith("mcp__") ? "MCP 工具调用"
+    : "工具调用";
+  const parts = [kindLabel];
+  parts.push(`· ${name}`);
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    const record = input as Record<string, unknown>;
+    if (name === "TodoWrite" || name === "todo_write") {
+      const todos = Array.isArray(record.todos) ? record.todos as Array<Record<string, unknown>> : [];
+      const done = todos.filter(t => t.status === "completed").length;
+      parts.push(`(${todos.length} 项 · ${done} 已完成)`);
+      for (const todo of todos.slice(0, 4)) {
+        const content = typeof todo.content === "string" ? todo.content.slice(0, 60) : "?";
+        const status = todo.status === "completed" ? "✓" : todo.status === "in_progress" ? "▶" : "○";
+        parts.push(`\n  ${status} ${content}`);
+      }
+      if (todos.length > 4) parts.push(`\n  …另有 ${todos.length - 4} 项`);
+    } else if (typeof record.command === "string") {
+      parts.push(`: ${record.command.slice(0, 100)}`);
+    } else if (typeof record.cmd === "string") {
+      parts.push(`: ${record.cmd.slice(0, 100)}`);
+    } else if (typeof record.file_path === "string") {
+      parts.push(`: ${record.file_path}`);
+    } else if (typeof record.path === "string") {
+      parts.push(`: ${record.path}`);
+    } else if (typeof record.query === "string") {
+      parts.push(`: ${record.query.slice(0, 80)}`);
+    } else if (typeof record.skill === "string") {
+      parts.push(`: ${record.skill}`);
+    } else if (typeof record.name === "string" && name === "Skill") {
+      parts.push(`: ${record.name}`);
+    } else if (typeof record.url === "string") {
+      parts.push(`: ${record.url.slice(0, 80)}`);
+    } else if (typeof record.prompt === "string") {
+      parts.push(`: ${record.prompt.slice(0, 80)}`);
+    } else {
+      const keys = Object.keys(record).slice(0, 5);
+      if (keys.length > 0) parts.push(`(${keys.join(", ")})`);
+    }
+  }
+  return parts.join(" ");
+}
