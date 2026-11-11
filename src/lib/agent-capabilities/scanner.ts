@@ -35,6 +35,58 @@ export type LedgerAvailability =
   | {state: "available"; dataDir: string}
   | {state: "missing"; dataDir: string};
 
+/**
+ * 跨 Agent Skill 索引(2026-11-11 核心竞争力):按 skill 名聚合各 Agent 的
+ * 存在性 + 内容 hash,支持一致性判断、同步与 diff。
+ */
+export interface CrossAgentSkillEntry {
+  name: string;
+  /** 各 Agent 上的存在性与内容标识。 */
+  agents: Array<{
+    agentId: string;
+    path: string;
+    /** SKILL.md 内容 md5(仅 frontmatter+正文,不含文件元数据)。 */
+    contentHash: string;
+    /** 与其它 Agent 的内容是否一致(以第一个发现的 hash 为基准)。 */
+    consistent: boolean;
+    detail?: string;
+    description?: string;
+  }>;
+  /** 内容是否跨 Agent 一致(所有存在的 hash 相同)。 */
+  allConsistent: boolean;
+}
+
+/** 扫描结果附加跨 Agent Skill 索引。 */
+export interface CrossAgentSkillIndex {
+  skills: CrossAgentSkillEntry[];
+  /** 不一致的 skill 名列表。 */
+  inconsistentNames: string[];
+}
+
+/** Agent 的 skill 同步目标目录(表驱动,无 agent 名条件分派)。 */
+const SKILL_SYNC_TARGETS: Record<string, string> = {
+  codex: "skills",
+  claude: "skills",
+  zcode: "skills",
+  dsh: "skills",
+  opencode: "skills",
+};
+
+const SKILL_SYNC_BASE_DIRS: Record<string, string[]> = {
+  codex: [".codex"],
+  claude: [".claude"],
+  zcode: [".zcode"],
+  dsh: [".dsh"],
+  opencode: [".config", "opencode"],
+};
+
+export function skillSyncTargetDir(home: string, agentId: string): string | undefined {
+  const subDir = SKILL_SYNC_TARGETS[agentId];
+  const base = SKILL_SYNC_BASE_DIRS[agentId];
+  if (!subDir || !base) return undefined;
+  return join(home, ...base, subDir);
+}
+
 export interface AgentCapabilityLedger {
   agentId: AgentId;
   label: string;
@@ -65,7 +117,7 @@ const MAX_CONFIG_BYTES = 1024 * 1024;
 const MAX_MANIFEST_BYTES = 256 * 1024;
 const SCAN_CACHE_TTL_MS = 60_000;
 
-const scanCache = new Map<string, {ledgers: AgentCapabilityLedger[]; expiresAt: number}>();
+const scanCache = new Map<string, {ledgers: AgentCapabilityLedger[]; expiresAt: number; crossAgentIndex: CrossAgentSkillIndex}>();
 
 /** 入口：五 Agent 台账（60s 缓存）；homeDir 供测试注入。 */
 export function scanLocalCapabilities(options?: {
@@ -78,7 +130,7 @@ export function scanLocalCapabilities(options?: {
   if (!options?.noCache) {
     const cached = scanCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
-      return cached.ledgers;
+      return Object.assign(cached.ledgers, {crossAgentIndex: cached.crossAgentIndex}) as AgentCapabilityLedger[] & {crossAgentIndex: CrossAgentSkillIndex};
     }
   }
   const ledgers = [scanCodex(home), ...scanOthers(home)];
@@ -216,7 +268,50 @@ export function scanLocalCapabilities(options?: {
       ledger.systemPrompts = scanSystemPrompts(home, ledger.agentId, PROMPT_SOURCES[ledger.agentId] ?? []);
     }
   }
-  scanCache.set(cacheKey, {ledgers, expiresAt: Date.now() + SCAN_CACHE_TTL_MS});
+  // 跨 Agent Skill 索引:按名字聚合 + md5 一致性检测。
+  const {createHash} = require("node:crypto") as typeof import("node:crypto");
+  const skillByName = new Map<string, CrossAgentSkillEntry>();
+  for (const ledger of ledgers) {
+    for (const skill of ledger.skills) {
+      let entry = skillByName.get(skill.name);
+      if (!entry) {
+        entry = {name: skill.name, agents: [], allConsistent: true};
+        skillByName.set(skill.name, entry);
+      }
+      // 计算 SKILL.md 内容 hash(有界读取 ≤100KiB)。
+      let contentHash = "unknown";
+      if (skill.sourcePath) {
+        try {
+          const stat = statSync(skill.sourcePath);
+          if (stat.isFile() && stat.size <= 100 * 1024) {
+            contentHash = createHash("md5").update(readFileSync(skill.sourcePath)).digest("hex");
+          }
+        } catch { /* 不可读保持 unknown */ }
+      }
+      const consistent = entry.agents.length === 0
+        || entry.agents[0]!.contentHash === contentHash
+        || contentHash === "unknown";
+      entry.agents.push({
+        agentId: ledger.agentId,
+        path: skill.sourcePath ?? "",
+        contentHash,
+        consistent,
+        ...(skill.detail ? {detail: skill.detail} : {}),
+        ...(skill.description ? {description: skill.description} : {}),
+      });
+      if (!consistent) {
+        entry.allConsistent = false;
+        entry.agents.forEach(a => { if (a.contentHash !== contentHash && a.contentHash !== "unknown") a.consistent = false; });
+      }
+    }
+  }
+  const crossAgentIndex: CrossAgentSkillIndex = {
+    skills: [...skillByName.values()].sort((a, b) => a.name.localeCompare(b.name)),
+    inconsistentNames: [...skillByName.values()].filter(e => !e.allConsistent).map(e => e.name),
+  };
+
+  scanCache.set(cacheKey, {ledgers, expiresAt: Date.now() + SCAN_CACHE_TTL_MS, crossAgentIndex});
+  return Object.assign(ledgers, {crossAgentIndex}) as AgentCapabilityLedger[] & {crossAgentIndex: CrossAgentSkillIndex};
   return ledgers;
 }
 

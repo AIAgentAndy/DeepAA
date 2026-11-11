@@ -13919,8 +13919,9 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
 }
 
 .acaps-card:hover {
-  border-color: var(--line-strong);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  border-color: var(--pine-600);
+  background: var(--surface-2);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 .acaps-card-icon {
@@ -14035,6 +14036,48 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
   color: var(--ink-300);
   margin: 0 0 14px;
   line-height: 1.5;
+}
+
+/* 跨 Agent 状态网格 */
+.acaps-cross-grid { display: flex; flex-direction: column; gap: 4px; }
+.acaps-cross-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.acaps-cross-agent { font-size: 12px; font-weight: 600; min-width: 80px; color: var(--ink); }
+.acaps-cross-status { font-size: 11px; padding: 2px 8px; border-radius: 4px; }
+.acaps-cross-status.ok { background: rgba(0, 123, 116, 0.08); color: var(--pine-600); }
+.acaps-cross-status.diff { background: rgba(245, 158, 11, 0.1); color: #d97706; }
+.acaps-cross-status.missing { color: var(--ink-400); }
+.acaps-sync-btn {
+  font-size: 11px; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 4px;
+  background: none; color: var(--pine-600); cursor: pointer;
+}
+.acaps-sync-btn:hover { background: var(--surface-2); }
+.acaps-sync-status { font-size: 12px; margin: 6px 0 0; }
+
+/* Diff 视图 */
+.acaps-diff-view {
+  max-height: 300px; overflow-y: auto; border: 1px solid var(--line-2); border-radius: 8px; padding: 8px;
+  background: var(--surface-2); font-size: 11px; line-height: 1.5;
+}
+.acaps-diff-line { display: flex; gap: 6px; padding: 0 4px; }
+.acaps-diff-line.add { background: rgba(0, 123, 116, 0.06); color: #065f46; }
+.acaps-diff-line.del { background: rgba(239, 68, 68, 0.06); color: #991b1b; }
+.acaps-diff-line.ctx { color: var(--ink-400); }
+.acaps-diff-line .mono { font-family: var(--font-mono, monospace); white-space: pre-wrap; word-break: break-all; }
+.acaps-diff-actions { display: flex; gap: 8px; margin-top: 8px; }
+.acaps-diff-actions button {
+  font-size: 12px; padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 6px;
+  background: var(--surface-2); color: var(--ink); cursor: pointer;
+}
+.acaps-diff-actions button:hover { background: var(--surface-3); }
+
+/* SKILL.md 全文 */
+.acaps-skill-md {
+  max-height: 400px; overflow-y: auto; border: 1px solid var(--line-2); border-radius: 8px; padding: 12px;
+  background: var(--surface-2); font-size: 12px;
+}
+.acaps-skill-md pre {
+  margin: 0; white-space: pre-wrap; word-break: break-word; line-height: 1.6;
+  font-family: var(--font-mono, monospace); color: var(--ink-300);
 }
 
 /* 详情抽屉(2026-11-11) */

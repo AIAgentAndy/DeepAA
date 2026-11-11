@@ -31,6 +31,8 @@ const AGENT_LOGO: Record<string, string> = {
 
 type CategoryKey = "skills" | "mcp" | "tools" | "plugins" | "rules" | "prompts" | "mechanisms" | "usage";
 
+type DetailItem = CapabilityLedgerItem & {paramNames?: string};
+
 const CATEGORIES: Array<{key: CategoryKey; label: string; icon: string}> = [
   {key: "skills", label: "Skills", icon: "◆"},
   {key: "mcp", label: "MCP 服务", icon: "⬡"},
@@ -454,25 +456,64 @@ interface UsageData {
 
 
 /**
- * 详情抽屉(2026-11-11):点击工具/Skill/MCP 卡片展开的详情面板,
- * 参照 Codex 的技能详情——完整描述 + 来源路径 + 反查链接。
+ * 详情抽屉(2026-11-11 重构):点击工具/Skill 卡片展开——
+ * Skill 显示 SKILL.md 全文 + 跨 Agent 状态 + 一键同步;
+ * 工具显示描述 + 参数 + 调用链接。
  */
-type DetailItem = CapabilityLedgerItem & {paramNames?: string};
-
 function DetailDrawer({item, agentId, onClose}: {
   item: DetailItem | undefined;
   agentId: string;
   onClose: () => void;
 }) {
   const [lookupTarget, setLookupTarget] = useState<{agentName: string; kind: "tool" | "skill"; name: string}>();
+  const [skillDetail, setSkillDetail] = useState<SkillDetailData>();
+  const [diffData, setDiffData] = useState<DiffData>();
+  const [syncStatus, setSyncStatus] = useState("");
+  const isSkill = item?.kind === "skill";
+
+  useEffect(() => {
+    if (!isSkill || !item) return;
+    setSkillDetail(undefined);
+    fetch(`/api/agent-capabilities/skill-detail?name=${encodeURIComponent(item.name)}`, {cache: "no-store"})
+      .then(r => r.ok ? r.json() : undefined)
+      .then(d => setSkillDetail(d))
+      .catch(() => {});
+  }, [isSkill, item?.name]);
+
+  const doSync = async (targetAgent: string) => {
+    if (!skillDetail || !item) return;
+    setSyncStatus(`同步中 → ${targetAgent}…`);
+    try {
+      const source = skillDetail.agents.find(a => a.agentId === agentId) ?? skillDetail.agents[0];
+      const res = await fetch("/api/agent-capabilities/skill-sync", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({skillName: item.name, sourceAgent: source?.agentId, targetAgent, sourcePath: source?.path, confirm: true}),
+      });
+      const data = await res.json();
+      setSyncStatus(data.ok ? `✅ 已同步到 ${targetAgent}` : `❌ ${data.message ?? data.error}`);
+    } catch (e) { setSyncStatus(`❌ ${(e as Error).message}`); }
+  };
+
+  const openDiff = async (agentA: string, agentB: string) => {
+    if (!item) return;
+    setDiffData(undefined);
+    fetch(`/api/agent-capabilities/skill-diff?name=${encodeURIComponent(item.name)}&agentA=${agentA}&agentB=${agentB}`)
+      .then(r => r.ok ? r.json() : undefined)
+      .then(d => setDiffData(d))
+      .catch(() => {});
+  };
+
   if (!item) return null;
   const kindLabel = item.kind === "skill" ? "Skill"
     : item.kind === "mcp_server" ? "MCP 服务"
     : item.kind === "plugin" ? "插件"
     : item.kind === "rule" ? "规则"
-    : item.kind === "system_prompt" ? "系统提示词"
-    : "工具";
-  const canLookup = item.kind === "tool" || item.kind === "skill";
+    : item.kind === "system_prompt" ? "系统提示词" : "工具";
+  const allAgents = ["codex", "claude", "zcode", "dsh", "opencode"] as const;
+  const presence = new Map(skillDetail?.agents.map(a => [a.agentId, a]) ?? []);
+  if (item.kind === "skill" && item.detail === "用户全局") presence.set("__global", {agentId: "__global", path: item.sourcePath ?? "", contentHash: "", consistent: true});
+
   return (
     <>
       <div className="acaps-detail-backdrop" onClick={onClose} role="presentation" />
@@ -488,27 +529,99 @@ function DetailDrawer({item, agentId, onClose}: {
           <button type="button" className="acaps-detail-close" onClick={onClose} aria-label="关闭">✕</button>
         </header>
         <div className="acaps-detail-body">
+          {/* 描述 */}
           {item.description ? (
             <section>
               <h5>描述</h5>
               <p>{item.description}</p>
             </section>
-          ) : (
-            <p className="agent-caps-note">暂无描述(该条目来自 wire 观测,SKILL.md 描述待下次被观测后填充)。</p>
-          )}
+          ) : <p className="agent-caps-note">暂无描述。</p>}
+
+          {/* 跨 Agent 状态(核心竞争力) */}
+          {isSkill && skillDetail ? (
+            <section>
+              <h5>跨 Agent 状态 {skillDetail.allConsistent ? "· 内容一致 ✅" : "· 内容不一致 ⚠️"}</h5>
+              <div className="acaps-cross-grid">
+                {allAgents.map(agent => {
+                  const found = presence.get(agent);
+                  return (
+                    <div key={agent} className="acaps-cross-row">
+                      <span className="acaps-cross-agent">{agentLabel(agent)}</span>
+                      {found ? (
+                        <span className={`acaps-cross-status ${found.consistent ? "ok" : "diff"}`}>
+                          {found.consistent ? "✅ 一致" : "⚠️ 不同"}
+                        </span>
+                      ) : (
+                        <>
+                          <span className="acaps-cross-status missing">— 无</span>
+                          <button type="button" className="acaps-sync-btn" onClick={() => void doSync(agent)}>同步 →</button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              {syncStatus ? <p className="acaps-sync-status">{syncStatus}</p> : null}
+              {!skillDetail.allConsistent ? (
+                <div className="acaps-diff-actions">
+                  <button type="button" onClick={() => void openDiff("codex", "claude")}>查看 Diff (Codex ↔ Claude)</button>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
+          {/* Diff 视图 */}
+          {diffData ? (
+            <section>
+              <h5>Diff · {diffData.agentA} ↔ {diffData.agentB}</h5>
+              <div className="acaps-diff-view">
+                {diffData.hunks.filter(h => h.type !== "ctx").length === 0 ? (
+                  <p className="agent-caps-note">内容完全一致。</p>
+                ) : diffData.hunks.slice(0, 100).map((h, i) => (
+                  <div key={i} className={`acaps-diff-line ${h.type}`}>
+                    <span className="mono">{h.type === "add" ? `+${h.bLine ?? ""}` : h.type === "del" ? `-${h.aLine ?? ""}` : " "}</span>
+                    <span className="mono">{h.text.slice(0, 80)}</span>
+                  </div>
+                ))}
+              </div>
+              {/* 一键合并 */}
+              <div className="acaps-diff-actions">
+                <button type="button" onClick={() => void doSync(diffData!.agentB)} title={`用 ${diffData.agentA} 的内容覆盖 ${diffData.agentB}`}>
+                  以 {diffData.agentA} → {diffData.agentB} 合并
+                </button>
+                <button type="button" onClick={() => void openDiff(diffData!.agentB, diffData.agentA)}>反向合并</button>
+              </div>
+            </section>
+          ) : null}
+
+          {/* SKILL.md 全文 */}
+          {isSkill && skillDetail?.content ? (
+            <section>
+              <h5>SKILL.md 全文</h5>
+              <div className="acaps-skill-md">
+                <pre>{skillDetail.content}</pre>
+              </div>
+            </section>
+          ) : null}
+
+          {/* 参数(工具) */}
           {item.paramNames ? (
             <section>
               <h5>参数</h5>
               <p className="mono">{item.paramNames}</p>
             </section>
           ) : null}
+
+          {/* 来源路径 */}
           {item.sourcePath ? (
             <section>
               <h5>来源</h5>
               <p className="mono acaps-detail-path">{item.sourcePath}</p>
             </section>
           ) : null}
-          {canLookup ? (
+
+          {/* 反查链接 */}
+          {item.kind === "tool" || item.kind === "skill" ? (
             <button
               type="button"
               className="acaps-detail-lookup"
@@ -522,8 +635,22 @@ function DetailDrawer({item, agentId, onClose}: {
       <CapabilityLookupDialog
         target={lookupTarget}
         onClose={() => setLookupTarget(undefined)}
-        onNavigate={() => { /* Agent 能力页无 Step 深链 */ }}
+        onNavigate={() => {}}
       />
     </>
   );
+}
+
+interface SkillDetailData {
+  name: string;
+  agents: Array<{agentId: string; path: string; contentHash: string; consistent: boolean; description?: string}>;
+  allConsistent: boolean;
+  content?: string;
+}
+
+interface DiffData {
+  name: string;
+  agentA: string;
+  agentB: string;
+  hunks: Array<{type: "ctx" | "add" | "del"; aLine?: number; bLine?: number; text: string}>;
 }

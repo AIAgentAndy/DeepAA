@@ -13,9 +13,10 @@ export const runtime = "nodejs";
  */
 export async function GET(): Promise<Response> {
   try {
-    const ledgers = scanLocalCapabilities({dataDir: resolveDeepaaDataDir()});
+    const ledgers = scanLocalCapabilities({dataDir: resolveDeepaaDataDir()}) as ReturnType<typeof scanLocalCapabilities> & {crossAgentIndex?: unknown};
     return jsonResponse({
       agents: ledgers,
+      ...(ledgers.crossAgentIndex ? {crossAgentSkills: ledgers.crossAgentIndex} : {}),
       candidateCount: ledgers.length,
       processedCount: ledgers.length,
       limited: ledgers.some(ledger => ledger.scan.limited),
