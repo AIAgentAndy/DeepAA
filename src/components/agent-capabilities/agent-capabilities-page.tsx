@@ -50,7 +50,10 @@ export function AgentCapabilitiesPage({mechanismProfiles}: {
   const [loading, setLoading] = useState(true);
   const [agentId, setAgentId] = useState<string>("codex");
   const [category, setCategory] = useState<CategoryKey>("skills");
+  /** URL tool 参数:选中 Agent 后自动打开该工具的详情。 */
+  const [detailTarget, setDetailTarget] = useState<DetailItem | undefined>();
   const seqRef = useRef(0);
+  const urlConsumedRef = useRef(false);
 
   const load = useCallback(async () => {
     const seq = ++seqRef.current;
@@ -73,7 +76,35 @@ export function AgentCapabilitiesPage({mechanismProfiles}: {
 
   useEffect(() => { void load(); }, [load]);
 
+  // URL 参数消费(一次性):/agent-capabilities?agent=zcode&view=usage&tool=Bash
+  useEffect(() => {
+    if (urlConsumedRef.current) return;
+    urlConsumedRef.current = true;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const agentParam = params.get("agent");
+      if (agentParam && (AGENT_ORDER as readonly string[]).includes(agentParam)) {
+        setAgentId(agentParam);
+      }
+      const viewParam = params.get("view");
+      if (viewParam === "usage") setCategory("usage");
+      else if (viewParam === "mechanisms") setCategory("mechanisms");
+      const toolParam = params.get("tool");
+      if (toolParam) setDetailTarget({kind: "tool", name: toolParam});
+    } catch { /* SSR / 静默 */ }
+  }, []);
+
   const agent = data?.agents.find(a => a.agentId === agentId);
+
+  // URL ?tool=Bash → 数据加载后从 agent 数据找到完整条目(带 description)。
+  useEffect(() => {
+    if (!detailTarget || !agent || detailTarget.description) return;
+    const found =
+      agent.tools.find(t => t.name === detailTarget.name)
+      ?? agent.skills.find(s => s.name === detailTarget.name)
+      ?? agent.mcpServers.find(m => m.name === detailTarget.name);
+    if (found) setDetailTarget(found);
+  }, [agent, detailTarget]);
 
   return (
     <div className="agent-caps-page-v2">
@@ -152,14 +183,21 @@ export function AgentCapabilitiesPage({mechanismProfiles}: {
           {loading && !data ? <p className="agent-caps-note">正在读取本机台账…</p> : null}
           {category === "mechanisms" ? <MechanismPanel profiles={mechanismProfiles} agentId={agentId} /> : null}
           {category === "usage" ? <UsagePanel agentId={agentId} /> : null}
-          {category === "skills" ? <CategoryPanel title="Skills" groups={groupSkills(agent)} emptyText="无 Skills 目录" /> : null}
-          {category === "mcp" ? <CategoryPanel title="MCP 服务" groups={groupMcp(agent)} emptyText="未配置 MCP 服务" /> : null}
-          {category === "tools" ? <CategoryPanel title="工具（wire 观测）" groups={groupTools(agent)} emptyText="暂无已捕获的工具清单" /> : null}
-          {category === "plugins" ? <CategoryPanel title={agent?.pluginsLabel ?? "插件"} groups={groupPlugins(agent)} emptyText="无" /> : null}
-          {category === "rules" ? <CategoryPanel title="内置规则" groups={groupRules(agent)} emptyText="未发现规则文件" /> : null}
-          {category === "prompts" ? <CategoryPanel title="系统提示词" groups={groupPrompts(agent)} emptyText="未发现系统提示词文件" /> : null}
+          {category === "skills" ? <CategoryPanel title="Skills" groups={groupSkills(agent)} emptyText="无 Skills 目录" onSelectItem={setDetailTarget} /> : null}
+          {category === "mcp" ? <CategoryPanel title="MCP 服务" groups={groupMcp(agent)} emptyText="未配置 MCP 服务" onSelectItem={setDetailTarget} /> : null}
+          {category === "tools" ? <CategoryPanel title="工具（wire 观测）" groups={groupTools(agent)} emptyText="暂无已捕获的工具清单" onSelectItem={setDetailTarget} /> : null}
+          {category === "plugins" ? <CategoryPanel title={agent?.pluginsLabel ?? "插件"} groups={groupPlugins(agent)} emptyText="无" onSelectItem={setDetailTarget} /> : null}
+          {category === "rules" ? <CategoryPanel title="内置规则" groups={groupRules(agent)} emptyText="未发现规则文件" onSelectItem={setDetailTarget} /> : null}
+          {category === "prompts" ? <CategoryPanel title="系统提示词" groups={groupPrompts(agent)} emptyText="未发现系统提示词文件" onSelectItem={setDetailTarget} /> : null}
         </main>
       </div>
+
+      {/* 工具/Skill 详情抽屉(点击卡片或 URL ?tool= 触发) */}
+      <DetailDrawer
+        item={detailTarget}
+        agentId={agentId}
+        onClose={() => setDetailTarget(undefined)}
+      />
     </div>
   );
 }
@@ -247,10 +285,11 @@ function groupPrompts(agent?: AgentCapabilityLedger): ItemGroup[] {
 }
 
 /** 右侧通用分类面板:按来源分组,两列卡片网格。 */
-function CategoryPanel({title, groups, emptyText}: {
+function CategoryPanel({title, groups, emptyText, onSelectItem}: {
   title: string;
   groups: ItemGroup[];
   emptyText: string;
+  onSelectItem: (item: CapabilityLedgerItem) => void;
 }) {
   return (
     <div className="acaps-category">
@@ -262,7 +301,7 @@ function CategoryPanel({title, groups, emptyText}: {
           <h4 className="acaps-group-label">{group.label} <small>{group.items.length}</small></h4>
           <div className="acaps-card-grid">
             {group.items.map(item => (
-              <div key={`${item.kind}:${item.name}`} className="acaps-card" title={item.sourcePath}>
+              <button type="button" key={`${item.kind}:${item.name}`} className="acaps-card acaps-card-clickable" title={item.sourcePath} onClick={() => onSelectItem(item)}>
                 <div className="acaps-card-icon" data-kind={item.kind}>
                   {item.kind === "skill" ? "◆" : item.kind === "mcp_server" ? "⬡" : item.kind === "plugin" ? "▣" : item.kind === "rule" ? "☰" : item.kind === "system_prompt" ? "✎" : "⚙"}
                 </div>
@@ -271,7 +310,7 @@ function CategoryPanel({title, groups, emptyText}: {
                   {item.description ? <p className="acaps-card-desc">{item.description.slice(0, 80)}</p> : null}
                   {item.detail && !item.description ? <p className="acaps-card-desc">{item.detail}</p> : null}
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </section>
@@ -411,4 +450,80 @@ interface UsageData {
   borrowedStepCount: number; candidateCount: number; processedCount: number; limited: boolean;
   thresholds: {minDeclaredSteps: number; maxCoverage: number};
   windowDays: number;
+}
+
+
+/**
+ * 详情抽屉(2026-11-11):点击工具/Skill/MCP 卡片展开的详情面板,
+ * 参照 Codex 的技能详情——完整描述 + 来源路径 + 反查链接。
+ */
+type DetailItem = CapabilityLedgerItem & {paramNames?: string};
+
+function DetailDrawer({item, agentId, onClose}: {
+  item: DetailItem | undefined;
+  agentId: string;
+  onClose: () => void;
+}) {
+  const [lookupTarget, setLookupTarget] = useState<{agentName: string; kind: "tool" | "skill"; name: string}>();
+  if (!item) return null;
+  const kindLabel = item.kind === "skill" ? "Skill"
+    : item.kind === "mcp_server" ? "MCP 服务"
+    : item.kind === "plugin" ? "插件"
+    : item.kind === "rule" ? "规则"
+    : item.kind === "system_prompt" ? "系统提示词"
+    : "工具";
+  const canLookup = item.kind === "tool" || item.kind === "skill";
+  return (
+    <>
+      <div className="acaps-detail-backdrop" onClick={onClose} role="presentation" />
+      <aside className="acaps-detail" role="dialog" aria-label={`${kindLabel}详情`}>
+        <header className="acaps-detail-head">
+          <div className="acaps-card-icon" data-kind={item.kind}>
+            {item.kind === "skill" ? "◆" : item.kind === "mcp_server" ? "⬡" : item.kind === "plugin" ? "▣" : item.kind === "rule" ? "☰" : item.kind === "system_prompt" ? "✎" : "⚙"}
+          </div>
+          <div className="acaps-detail-title">
+            <b>{item.name}</b>
+            <span>{kindLabel}{item.detail ? ` · ${item.detail}` : ""}</span>
+          </div>
+          <button type="button" className="acaps-detail-close" onClick={onClose} aria-label="关闭">✕</button>
+        </header>
+        <div className="acaps-detail-body">
+          {item.description ? (
+            <section>
+              <h5>描述</h5>
+              <p>{item.description}</p>
+            </section>
+          ) : (
+            <p className="agent-caps-note">暂无描述(该条目来自 wire 观测,SKILL.md 描述待下次被观测后填充)。</p>
+          )}
+          {item.paramNames ? (
+            <section>
+              <h5>参数</h5>
+              <p className="mono">{item.paramNames}</p>
+            </section>
+          ) : null}
+          {item.sourcePath ? (
+            <section>
+              <h5>来源</h5>
+              <p className="mono acaps-detail-path">{item.sourcePath}</p>
+            </section>
+          ) : null}
+          {canLookup ? (
+            <button
+              type="button"
+              className="acaps-detail-lookup"
+              onClick={() => setLookupTarget({agentName: agentId, kind: item.kind === "skill" ? "skill" : "tool", name: item.name})}
+            >
+              查看调用记录与使用分析 →
+            </button>
+          ) : null}
+        </div>
+      </aside>
+      <CapabilityLookupDialog
+        target={lookupTarget}
+        onClose={() => setLookupTarget(undefined)}
+        onNavigate={() => { /* Agent 能力页无 Step 深链 */ }}
+      />
+    </>
+  );
 }
