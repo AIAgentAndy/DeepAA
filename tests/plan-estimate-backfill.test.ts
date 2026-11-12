@@ -1,5 +1,5 @@
 import {DeepaaDatabase} from "@/lib/db/sqlite-driver";
-import {afterEach, describe, expect, test} from "vitest";
+import {afterEach, beforeEach, describe, expect, test, vi} from "vitest";
 import {mkdir, mkdtemp, rm, writeFile} from "node:fs/promises";
 import {join} from "node:path";
 import {tmpdir} from "node:os";
@@ -7,7 +7,16 @@ import {migrateDeepaaDatabase} from "../src/lib/db/schema.js";
 import {runPlanEstimateBackfill, MAX_PLAN_ESTIMATE_BACKFILL_ROWS, PLAN_ESTIMATE_BACKFILL_LOOKBACK_MS} from "../src/lib/plan-estimate/backfill.js";
 
 const tempDirs: string[] = [];
+
+/* 测试数据冻结在 2026-09-27~29,而回填有 30 天回看窗(PLAN_ESTIMATE_BACKFILL_LOOKBACK_MS):
+   随真实时间推进数据会滑出窗口、用例集体腐烂(2026-11-11 实测 12 例失败)。
+   冻结系统时钟到 2026-10-05,数据恒在窗内;Date.now() 在被测代码中仅用于回看窗起点。 */
+beforeEach(() => {
+  vi.useFakeTimers({now: new Date("2026-10-05T12:00:00.000Z")});
+});
+
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(tempDirs.splice(0).map(dir => rm(dir, {recursive: true, force: true})));
 });
 

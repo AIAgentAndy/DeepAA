@@ -26,9 +26,11 @@ export async function GET(request: Request): Promise<Response> {
     for (const a of entry.agents) {
       if (a.path) {
         try {
-          const stat = statSync(a.path);
+          // path 是 skill 目录,正文读其中的 SKILL.md(≤100KiB)。
+          const skillMd = join(a.path, "SKILL.md");
+          const stat = statSync(skillMd);
           if (stat.isFile() && stat.size <= MAX_SKILL_MD_BYTES) {
-            content = readFileSync(a.path, "utf8");
+            content = readFileSync(skillMd, "utf8");
             break;
           }
         } catch { /* try next */ }

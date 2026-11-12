@@ -469,6 +469,7 @@ function DetailDrawer({item, agentId, onClose}: {
   const [skillDetail, setSkillDetail] = useState<SkillDetailData>();
   const [diffData, setDiffData] = useState<DiffData>();
   const [syncStatus, setSyncStatus] = useState("");
+  const [pendingOverwrite, setPendingOverwrite] = useState<{targetAgent: string; source: {agentId: string; path: string}}>();
   const isSkill = item?.kind === "skill";
 
   useEffect(() => {
@@ -480,19 +481,43 @@ function DetailDrawer({item, agentId, onClose}: {
       .catch(() => {});
   }, [isSkill, item?.name]);
 
-  const doSync = async (targetAgent: string) => {
+  const doSync = async (targetAgent: string, overrideSource?: {agentId: string; path: string}, force = false) => {
     if (!skillDetail || !item) return;
     setSyncStatus(`同步中 → ${targetAgent}…`);
     try {
-      const source = skillDetail.agents.find(a => a.agentId === agentId) ?? skillDetail.agents[0];
+      // Fix MEDIUM-1: 合并场景用显式源(diffData.agentA),非合并场景用当前页签 Agent。
+      const source = overrideSource
+        ? {agentId: overrideSource.agentId, path: overrideSource.path}
+        : skillDetail.agents.find(a => a.agentId === agentId) ?? skillDetail.agents[0];
+      if (!source?.path) { setSyncStatus("❌ 找不到源 skill 目录"); return; }
+      // 首次不带 confirm:目标已存在且内容不同 → 服务端 409,弹二次确认后 force 重发。
       const res = await fetch("/api/agent-capabilities/skill-sync", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({skillName: item.name, sourceAgent: source?.agentId, targetAgent, sourcePath: source?.path, confirm: true}),
+        body: JSON.stringify({skillName: item.name, sourceAgent: source.agentId, targetAgent, sourcePath: source.path, confirm: force}),
       });
       const data = await res.json();
-      setSyncStatus(data.ok ? `✅ 已同步到 ${targetAgent}` : `❌ ${data.message ?? data.error}`);
+      if (res.status === 409 && data.error === "CONFIRM_REQUIRED") {
+        setSyncStatus("");
+        setPendingOverwrite({targetAgent, source: {agentId: source.agentId, path: source.path}});
+        return;
+      }
+      if (data.ok) {
+        setSyncStatus(`✅ 已从 ${source.agentId} 同步到 ${targetAgent}`);
+        setDiffData(undefined); // 旧 hunks 与合并按钮不再指向当前内容
+        setPendingOverwrite(undefined);
+        void refreshSkillDetail();
+      }
+      else setSyncStatus(`❌ ${data.message ?? data.error}`);
     } catch (e) { setSyncStatus(`❌ ${(e as Error).message}`); }
+  };
+
+  const refreshSkillDetail = async () => {
+    if (!item) return;
+    fetch(`/api/agent-capabilities/skill-detail?name=${encodeURIComponent(item.name)}`, {cache: "no-store"})
+      .then(r => r.ok ? r.json() : undefined)
+      .then(d => { if (d) setSkillDetail(d); })
+      .catch(() => {});
   };
 
   const openDiff = async (agentA: string, agentB: string) => {
@@ -562,9 +587,33 @@ function DetailDrawer({item, agentId, onClose}: {
                 })}
               </div>
               {syncStatus ? <p className="acaps-sync-status">{syncStatus}</p> : null}
+              {/* 覆盖二次确认:目标已存在且内容不同时弹出 */}
+              {pendingOverwrite ? (
+                <div className="acaps-overwrite-confirm">
+                  <p>目标 Agent <b>{agentLabel(pendingOverwrite.targetAgent)}</b> 已存在同名 Skill 且内容不同,确认用 <b>{agentLabel(pendingOverwrite.source.agentId)}</b> 的内容覆盖?</p>
+                  <div className="acaps-diff-actions">
+                    <button type="button" className="danger" onClick={() => {
+                      const p = pendingOverwrite;
+                      setPendingOverwrite(undefined);
+                      void doSync(p.targetAgent, p.source, true);
+                    }}>确认覆盖</button>
+                    <button type="button" onClick={() => setPendingOverwrite(undefined)}>取消</button>
+                  </div>
+                </div>
+              ) : null}
               {!skillDetail.allConsistent ? (
                 <div className="acaps-diff-actions">
-                  <button type="button" onClick={() => void openDiff("codex", "claude")}>查看 Diff (Codex ↔ Claude)</button>
+                  {(() => {
+                    /* M-1 修复:配对 = 基准 Agent(首个有效 hash)× 首个 hash 不同的 Agent。
+                       只取「前两个在场 Agent」会在 codex/claude 一致、第三方不同时打开空 diff,
+                       且不一致 Agent 无其它入口消解分歧。 */
+                    const withHash = skillDetail.agents.filter(a => a.contentHash !== "unknown");
+                    const baseline = withHash[0];
+                    const divergent = withHash.find(a => baseline && a !== baseline && a.contentHash !== baseline.contentHash);
+                    return baseline && divergent
+                      ? <button type="button" onClick={() => void openDiff(baseline.agentId, divergent.agentId)}>查看 Diff ({agentLabel(baseline.agentId)} ↔ {agentLabel(divergent.agentId)})</button>
+                      : null;
+                  })()}
                 </div>
               ) : null}
             </section>
@@ -586,7 +635,10 @@ function DetailDrawer({item, agentId, onClose}: {
               </div>
               {/* 一键合并 */}
               <div className="acaps-diff-actions">
-                <button type="button" onClick={() => void doSync(diffData!.agentB)} title={`用 ${diffData.agentA} 的内容覆盖 ${diffData.agentB}`}>
+                <button type="button" onClick={() => {
+                  const src = skillDetail?.agents.find(a => a.agentId === diffData!.agentA);
+                  if (src) void doSync(diffData!.agentB, {agentId: src.agentId, path: src.path});
+                }} title={`用 ${diffData.agentA} 的内容覆盖 ${diffData.agentB}`}>
                   以 {diffData.agentA} → {diffData.agentB} 合并
                 </button>
                 <button type="button" onClick={() => void openDiff(diffData!.agentB, diffData.agentA)}>反向合并</button>

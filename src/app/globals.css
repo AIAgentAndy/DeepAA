@@ -14052,6 +14052,11 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
 }
 .acaps-sync-btn:hover { background: var(--surface-2); }
 .acaps-sync-status { font-size: 12px; margin: 6px 0 0; }
+.acaps-overwrite-confirm { margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--border-warning, #d4a017); border-radius: 8px; background: var(--bg-warning-subtle, rgba(212,160,23,.08)); }
+.acaps-overwrite-confirm p { margin: 0 0 8px; font-size: 12.5px; line-height: 1.55; }
+.acaps-overwrite-confirm .acaps-diff-actions { margin: 0; }
+.acaps-diff-actions button.danger { border-color: #b3532c; color: #b3532c; }
+.acaps-diff-actions button.danger:hover { background: rgba(179,83,44,.08); }
 
 /* Diff 视图 */
 .acaps-diff-view {

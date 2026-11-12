@@ -47,7 +47,7 @@ export interface CrossAgentSkillEntry {
     path: string;
     /** SKILL.md 内容 md5(仅 frontmatter+正文,不含文件元数据)。 */
     contentHash: string;
-    /** 与其它 Agent 的内容是否一致(以第一个发现的 hash 为基准)。 */
+    /** 与其它 Agent 的内容是否一致(以首个非 unknown 的有效 hash 为基准)。 */
     consistent: boolean;
     detail?: string;
     description?: string;
@@ -118,6 +118,11 @@ const MAX_MANIFEST_BYTES = 256 * 1024;
 const SCAN_CACHE_TTL_MS = 60_000;
 
 const scanCache = new Map<string, {ledgers: AgentCapabilityLedger[]; expiresAt: number; crossAgentIndex: CrossAgentSkillIndex}>();
+
+/** 同步写盘后使扫描缓存立即失效,详情/索引反映最新内容。 */
+export function invalidateCapabilityScanCache(): void {
+  scanCache.clear();
+}
 
 /** 入口：五 Agent 台账（60s 缓存）；homeDir 供测试注入。 */
 export function scanLocalCapabilities(options?: {
@@ -282,15 +287,18 @@ export function scanLocalCapabilities(options?: {
       let contentHash = "unknown";
       if (skill.sourcePath) {
         try {
-          const stat = statSync(skill.sourcePath);
+          // sourcePath 是 skill 目录,hash 对象是其中的 SKILL.md(≤100KiB)。
+          const skillMd = join(skill.sourcePath, "SKILL.md");
+          const stat = statSync(skillMd);
           if (stat.isFile() && stat.size <= 100 * 1024) {
-            contentHash = createHash("md5").update(readFileSync(skill.sourcePath)).digest("hex");
+            contentHash = createHash("md5").update(readFileSync(skillMd)).digest("hex");
           }
         } catch { /* 不可读保持 unknown */ }
       }
-      const consistent = entry.agents.length === 0
-        || entry.agents[0]!.contentHash === contentHash
-        || contentHash === "unknown";
+      // Fix MEDIUM-2: 以第一个有效 hash(非 unknown)为基准,后续与基准比较,
+      // 不回溯改写历史条目;unknown 视为不参与一致性判断。
+      const baseline = entry.agents.find(a => a.contentHash !== "unknown");
+      const consistent = contentHash === "unknown" || !baseline || baseline.contentHash === contentHash;
       entry.agents.push({
         agentId: ledger.agentId,
         path: skill.sourcePath ?? "",
@@ -299,10 +307,7 @@ export function scanLocalCapabilities(options?: {
         ...(skill.detail ? {detail: skill.detail} : {}),
         ...(skill.description ? {description: skill.description} : {}),
       });
-      if (!consistent) {
-        entry.allConsistent = false;
-        entry.agents.forEach(a => { if (a.contentHash !== contentHash && a.contentHash !== "unknown") a.consistent = false; });
-      }
+      if (!consistent) entry.allConsistent = false;
     }
   }
   const crossAgentIndex: CrossAgentSkillIndex = {
@@ -312,7 +317,6 @@ export function scanLocalCapabilities(options?: {
 
   scanCache.set(cacheKey, {ledgers, expiresAt: Date.now() + SCAN_CACHE_TTL_MS, crossAgentIndex});
   return Object.assign(ledgers, {crossAgentIndex}) as AgentCapabilityLedger[] & {crossAgentIndex: CrossAgentSkillIndex};
-  return ledgers;
 }
 
 import {openSync, readSync, closeSync} from "node:fs";
@@ -383,7 +387,7 @@ function scanSkillsWithDesc(skillsDir: string, scan: AgentCapabilityLedger["scan
       if (!stat.isFile()) continue;
       scan.processedCount += 1;
       const {description} = readSkillDescription(dir);
-      items.push({kind: "skill", name, sourcePath: skillFile, ...(description ? {description} : {})});
+      items.push({kind: "skill", name, sourcePath: dir, ...(description ? {description} : {})}); // Fix HIGH-1: 目录路径(同步 API 契约)
     } catch {
       // 无 SKILL.md 的目录不是技能。
     }
@@ -454,26 +458,6 @@ function readBounded(path: string, maxBytes: number): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-/** skills 目录扫描：每个子目录 stat <name>/SKILL.md，存在即条目（不读正文）。 */
-function scanSkillsDir(skillsDir: string, scan: AgentCapabilityLedger["scan"]): CapabilityLedgerItem[] {
-  const {names, limited} = listBounded(skillsDir);
-  scan.candidateCount += names.length;
-  scan.limited = scan.limited || limited;
-  const items: CapabilityLedgerItem[] = [];
-  for (const name of names) {
-    const skillFile = join(skillsDir, name, "SKILL.md");
-    try {
-      const stat = statSync(skillFile);
-      if (!stat.isFile()) continue;
-      scan.processedCount += 1;
-      items.push({kind: "skill", name, sourcePath: skillFile});
-    } catch {
-      // 无 SKILL.md 的目录不是技能，不计入。
-    }
-  }
-  return items;
 }
 
 function scanCodex(home: string): AgentCapabilityLedger {

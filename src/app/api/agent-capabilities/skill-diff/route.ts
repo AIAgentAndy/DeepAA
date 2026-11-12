@@ -2,6 +2,7 @@ import {jsonResponse} from "@/lib/app-state";
 import {readFileSync, statSync} from "node:fs";
 import {homedir} from "node:os";
 import {resolveDeepaaDataDir} from "@/lib/data-paths";
+import {join} from "node:path";
 import {scanLocalCapabilities} from "@/lib/agent-capabilities/scanner";
 
 export const dynamic = "force-dynamic";
@@ -47,10 +48,12 @@ export async function GET(request: Request): Promise<Response> {
     const pathA = entry.agents.find(a => a.agentId === agentA)?.path;
     const pathB = entry.agents.find(a => a.agentId === agentB)?.path;
     if (!pathA || !pathB) return Response.json({error: "AGENT_NOT_FOUND", message: `${agentA} 或 ${agentB} 无此 skill`}, {status: 404});
-    const readSafe = (path: string): string => {
-      const stat = statSync(path);
+    const readSafe = (dir: string): string => {
+      // path 是 skill 目录,正文读其中的 SKILL.md(≤100KiB)。
+      const skillMd = join(dir, "SKILL.md");
+      const stat = statSync(skillMd);
       if (!stat.isFile() || stat.size > MAX_BYTES) return "(文件不可读或超限)";
-      return readFileSync(path, "utf8");
+      return readFileSync(skillMd, "utf8");
     };
     const textA = readSafe(pathA);
     const textB = readSafe(pathB);
