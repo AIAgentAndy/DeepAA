@@ -14099,6 +14099,18 @@ html[data-theme="dark"] .acaps-detail-body p { color: #9aa6b2; }
 .acaps-tab:hover { background: var(--surface-2); color: var(--ink); }
 .acaps-tab.on { background: var(--surface-3, #f2f2f2); color: var(--ink); font-weight: 600; }
 html[data-theme="dark"] .acaps-tab.on { background: #2b313b; color: #e7ecf3; }
+html[data-theme="dark"] .acaps-tab { color: #93a0ad; }
+html[data-theme="dark"] .acaps-tab small,
+html[data-theme="dark"] .acaps-sidebar-item small,
+html[data-theme="dark"] .acaps-dir-meta,
+html[data-theme="dark"] .agent-caps-note { color: #8d99a6; }
+
+/* 插件详情内技能子表(插件技能归插件栏目,用户确认)。 */
+.acaps-plugin-skills { display: flex; flex-direction: column; gap: 6px; }
+.acaps-plugin-skill-row { text-align: left; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); cursor: pointer; transition: border-color 120ms ease, background 120ms ease; }
+.acaps-plugin-skill-row:hover { border-color: var(--accent); background: var(--surface-2); }
+.acaps-plugin-skill-row b { display: block; font-size: 12.5px; color: var(--ink); }
+.acaps-plugin-skill-row p { margin: 2px 0 0; font-size: 11.5px; color: var(--ink-400); }
 
 /* Diff 对比对象双下拉(2026-11-12 用户确认交互)。 */
 .acaps-diff-picker { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; font-size: 12.5px; }

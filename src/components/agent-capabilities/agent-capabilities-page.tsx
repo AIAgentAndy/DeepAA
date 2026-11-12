@@ -117,7 +117,7 @@ export function AgentCapabilitiesPage({mechanismProfiles}: {
         {AGENT_ORDER.map(id => {
           const ledger = data?.agents.find(a => a.agentId === id);
           const count = ledger
-            ? ledger.skills.length + ledger.tools.length + ledger.mcpServers.length + ledger.plugins.length
+            ? ledger.skills.filter(s => !(s.sourcePath ?? "").includes("/plugins/cache/")).length + ledger.tools.length + ledger.mcpServers.length + ledger.plugins.length
             : 0;
           return (
             <button
@@ -199,6 +199,8 @@ export function AgentCapabilitiesPage({mechanismProfiles}: {
       <DetailDrawer
         item={detailTarget}
         agentId={agentId}
+        agentSkills={agent?.skills ?? []}
+        onSelectItem={setDetailTarget}
         onClose={() => setDetailTarget(undefined)}
       />
     </div>
@@ -208,7 +210,9 @@ export function AgentCapabilitiesPage({mechanismProfiles}: {
 function getCategoryCount(agent: AgentCapabilityLedger | undefined, key: CategoryKey): number {
   if (!agent) return 0;
   switch (key) {
-    case "skills": return agent.skills.length;
+    /* 口径对齐(UI 复审 MEDIUM-1):Skills 分类不含插件市场技能(归「插件」栏目),
+     * 侧栏徽标与面板标题/页签之和同口径。 */
+    case "skills": return agent.skills.filter(s => !(s.sourcePath ?? "").includes("/plugins/cache/")).length;
     case "mcp": return agent.mcpServers.length;
     case "tools": return agent.tools.length;
     case "plugins": return agent.plugins.length;
@@ -220,40 +224,54 @@ function getCategoryCount(agent: AgentCapabilityLedger | undefined, key: Categor
 
 interface ItemGroup { label: string; items: CapabilityLedgerItem[] }
 
+/** 插件市场技能(zcode 缓存目录):不属于 Skills 的目录来源维度,归左侧「插件」栏目呈现。 */
+function isPluginSkill(s: CapabilityLedgerItem): boolean {
+  return (s.sourcePath ?? "").includes("/plugins/cache/");
+}
+
 function groupSkills(agent?: AgentCapabilityLedger): ItemGroup[] {
   if (!agent) return [];
-  // 修复(2026-11-11 双路审核):按 detail 来源字段分组(用户全局/项目/插件/系统)。
-  const user = agent.skills.filter(s => s.detail === "用户全局");
-  const project = agent.skills.filter(s => (s.detail ?? "").startsWith("项目 · "));
-  const rest = agent.skills.filter(s => s.detail !== "用户全局" && !(s.detail ?? "").startsWith("项目 · "));
-  const system = rest.filter(s => !s.name.includes(":"));
-  const byPlugin = new Map<string, CapabilityLedgerItem[]>();
-  for (const s of rest) {
-    const idx = s.name.indexOf(":");
-    if (idx > 0) {
-      const plugin = s.name.slice(0, idx);
-      const bucket = byPlugin.get(plugin) ?? [];
+  /* 2026-11-12 用户拉齐:Skills 页签 = 目录来源维度(全局/系统/各项目名);
+   * 插件技能不在此列(左侧「插件」栏目详情内展示)。
+   * 项目按 detail 逐名分组(项目 · OPlusWeb → 页签 OPlusWeb),按数量降序。 */
+  const scoped = agent.skills.filter(s => !isPluginSkill(s));
+  const user = scoped.filter(s => s.detail === "用户全局");
+  const byProject = new Map<string, CapabilityLedgerItem[]>();
+  for (const s of scoped) {
+    if ((s.detail ?? "").startsWith("项目 · ")) {
+      const name = s.detail!.slice("项目 · ".length);
+      const bucket = byProject.get(name) ?? [];
       bucket.push(s);
-      byPlugin.set(plugin, bucket);
+      byProject.set(name, bucket);
     }
   }
+  const system = scoped.filter(s => s.detail !== "用户全局" && !(s.detail ?? "").startsWith("项目 · "));
   const groups: ItemGroup[] = [];
   if (user.length > 0) groups.push({label: "用户全局", items: user});
   if (system.length > 0) groups.push({label: "系统 / 个人", items: system});
-  for (const [plugin, items] of byPlugin) {
-    groups.push({label: `插件 · ${plugin}`, items});
+  for (const [name, items] of [...byProject.entries()].sort((a, b) => b[1].length - a[1].length)) {
+    groups.push({label: `项目 · ${name}`, items});
   }
-  if (project.length > 0) groups.push({label: "项目", items: project});
   return groups;
 }
 
 function groupMcp(agent?: AgentCapabilityLedger): ItemGroup[] {
   if (!agent?.mcpServers.length) return [];
-  const user = agent.mcpServers.filter(m => !m.detail?.startsWith("项目级"));
-  const project = agent.mcpServers.filter(m => m.detail?.startsWith("项目级"));
+  const user = agent.mcpServers.filter(m => !m.detail?.startsWith("项目 · "));
+  const byProject = new Map<string, typeof agent.mcpServers>();
+  for (const m of agent.mcpServers) {
+    if (m.detail?.startsWith("项目 · ")) {
+      const name = m.detail.slice("项目 · ".length);
+      const bucket = byProject.get(name) ?? [];
+      bucket.push(m);
+      byProject.set(name, bucket);
+    }
+  }
   const groups: ItemGroup[] = [];
   if (user.length) groups.push({label: "用户级", items: user});
-  if (project.length) groups.push({label: "项目级", items: project});
+  for (const [name, items] of [...byProject.entries()].sort((a, b) => b[1].length - a[1].length)) {
+    groups.push({label: `项目 · ${name}`, items});
+  }
   return groups;
 }
 
@@ -292,8 +310,7 @@ function groupPrompts(agent?: AgentCapabilityLedger): ItemGroup[] {
 function groupTabLabel(label: string): string {
   if (label === "用户全局") return "全局";
   if (label === "系统 / 个人") return "系统";
-  if (label.startsWith("插件 · ")) return label.slice("插件 · ".length);
-  if (label === "项目") return "项目";
+  if (label === "用户级") return "用户";
   if (label.startsWith("项目 · ")) return label.slice("项目 · ".length);
   return label;
 }
@@ -504,9 +521,13 @@ function skillVersionBadge(path?: string): string | undefined {
   return path ? PLUGIN_VERSION_BADGE_RE.exec(path)?.[1] : undefined;
 }
 
-function DetailDrawer({item, agentId, onClose}: {
+function DetailDrawer({item, agentId, agentSkills, onSelectItem, onClose}: {
   item: DetailItem | undefined;
   agentId: string;
+  /** 当前 Agent 的技能台账(插件详情内列技能子表用)。 */
+  agentSkills: CapabilityLedgerItem[];
+  /** 弹窗内切换条目(插件 → 其技能)。 */
+  onSelectItem: (item: CapabilityLedgerItem) => void;
   onClose: () => void;
 }) {
   const [lookupTarget, setLookupTarget] = useState<{agentName: string; kind: "tool" | "skill"; name: string}>();
@@ -757,12 +778,14 @@ function DetailDrawer({item, agentId, onClose}: {
                   </div>
                 ))}
               </div>
-              {/* 截断必须明示(项目红线):行数与单行长度均受限。 */}
-              {diffData.hunks.length > 100 ? (
-                <p className="acaps-diff-truncated">预览受限:仅显示前 100 行差异,共 {diffData.hunks.length} 行;超长行已截断到 80 字符。</p>
-              ) : (
-                <p className="acaps-diff-truncated">超长行已截断到 80 字符。</p>
-              )}
+              {/* 截断必须明示(项目红线):差异数按非 ctx 行计(UI 复审 LOW-2,
+                  全 ctx 的"完全一致"不再误称差异行数);单行长度受限恒提示。 */}
+              {(() => {
+                const diffCount = diffData.hunks.filter(h => h.type !== "ctx").length;
+                return diffCount > 100
+                  ? <p className="acaps-diff-truncated">预览受限:仅显示前 100 行差异,共 {diffCount} 行;超长行已截断到 80 字符。</p>
+                  : <p className="acaps-diff-truncated">超长行已截断到 80 字符。</p>;
+              })()}
               {/* 合并方向与所选对比对象一致(2026-11-12 用户确认交互):双向显式按钮。 */}
               <div className="acaps-diff-actions">
                 <button type="button" onClick={() => void mergeDirectional(diffData.agentA, diffData.agentB)}
@@ -799,6 +822,25 @@ function DetailDrawer({item, agentId, onClose}: {
               <p className="mono">{item.paramNames}</p>
             </section>
           ) : null}
+
+          {/* 插件技能子表(2026-11-12 用户确认:插件技能在「插件」栏目呈现) */}
+          {item.kind === "plugin" ? (() => {
+            const skills = agentSkills.filter(s => (s.sourcePath ?? "").startsWith(item.sourcePath ?? "\u0000"));
+            if (skills.length === 0) return <p className="agent-caps-note">该插件未提供 Skills。</p>;
+            return (
+              <section>
+                <h5>技能（{skills.length}）</h5>
+                <div className="acaps-plugin-skills">
+                  {skills.map(s => (
+                    <button type="button" key={s.sourcePath ?? s.name} className="acaps-plugin-skill-row" title={s.sourcePath} onClick={() => onSelectItem(s)}>
+                      <b>{s.name.includes(":") ? s.name.split(":").pop() : s.name}{skillVersionBadge(s.sourcePath) ? <span className="acaps-ver-badge">{skillVersionBadge(s.sourcePath)}</span> : null}</b>
+                      {s.description ? <p>{s.description.slice(0, 90)}</p> : null}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            );
+          })() : null}
 
           {/* 来源路径 */}
           {item.sourcePath ? (

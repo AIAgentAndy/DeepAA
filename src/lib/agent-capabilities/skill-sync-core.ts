@@ -14,6 +14,8 @@ export interface SkillSyncParams {
   /** 源 skill 目录(必须含 SKILL.md)。 */
   sourcePath: string;
   confirm?: boolean;
+  /** 附加允许根(绝对路径,如清单池项目根)——项目内技能跨 Agent 同步的信任来源。 */
+  extraRoots?: string[];
 }
 
 export interface SkillSyncOutcome {
@@ -33,7 +35,7 @@ export const SYNC_UNSUPPORTED_REASONS: Record<string, string> = {
  */
 const SYNC_SOURCE_ROOTS = [".codex", ".claude", ".zcode", ".dsh", ".config/opencode", ".agents"];
 
-function sourcePathAllowed(home: string, sourcePath: string): boolean {
+function sourcePathAllowed(home: string, sourcePath: string, extraRoots?: string[]): boolean {
   const real = (p: string): string => {
     try { return realpathSync(p); } catch { return resolve(p); }
   };
@@ -41,6 +43,7 @@ function sourcePathAllowed(home: string, sourcePath: string): boolean {
   const roots = [
     ...SYNC_SOURCE_ROOTS.map(r => real(join(home, r))),
     real(join(home, "Documents", "UGit")),
+    ...(extraRoots ?? []).filter(r => typeof r === "string" && r.startsWith("/")).map(r => real(r)),
   ];
   return roots.some(r => src === r || src.startsWith(r + sep));
 }
@@ -76,7 +79,7 @@ export function performSkillSync(params: SkillSyncParams): SkillSyncOutcome {
     return {status: 400, body: {error: "INVALID_SKILL_NAME", message: "skillName 不能包含路径分隔符"}};
   }
   // 归属校验(验收审计 B HIGH-1):源必须位于本机已知 skill 根之下。
-  if (!sourcePathAllowed(home, sourcePath)) {
+  if (!sourcePathAllowed(home, sourcePath, params.extraRoots)) {
     return {status: 403, body: {error: "SOURCE_FORBIDDEN", message: "源目录不在允许的 skill 根范围内"}};
   }
   const targetPath = join(targetDir, targetName);

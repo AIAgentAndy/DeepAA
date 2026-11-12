@@ -13,8 +13,8 @@
  * 不进入任何导出/分享产物。
  */
 
-import {existsSync, readdirSync, readFileSync, statSync} from "node:fs";
-import {join} from "node:path";
+import {existsSync, readdirSync, readFileSync, realpathSync, statSync} from "node:fs";
+import {basename, dirname, join, sep} from "node:path";
 import {homedir} from "node:os";
 import {AGENT_REGISTRY, agentLabel} from "@/lib/agent-registry";
 
@@ -120,6 +120,171 @@ function compareDottedVersion(a: string, b: string): number {
   return 0;
 }
 
+/**
+ * 项目清单池(2026-11-12 用户拉齐方案):各 Agent 配置文件是项目清单的权威来源——
+ * codex config.toml [projects."path"] 段、claude ~/.claude.json projects 键、
+ * zcode 会话库 session.directory、dsh 会话目录名(路径编码,存在性回溯解码);
+ * UGit 两层扫描保留兜底。池内项目对每个 Agent 探测自身 skills 目录与共享
+ * .agents/skills(自身目录优先、同名去重)。
+ */
+export interface ProjectPoolEntry {
+  /** 展示名(basename;跨路径重名时带父段消歧,如 web/OPlusWeb)。 */
+  name: string;
+  /** realpath 绝对路径(同步白名单同样信任此集合)。 */
+  path: string;
+}
+
+const MAX_PROJECT_POOL = 60;
+/**
+ * 候选收集上限(过滤前):配置源(zcode DISTINCT≤200+codex+claude+dsh)与 UGit 兜底
+ * 合计留足余量(逻辑审计 MEDIUM:300 时 236 个无技能候选即可把 UGit 挤出候选集);
+ * 过滤(含 skills 目录)后 cap 到池上限。仅收集路径+stat,600 约几毫秒。
+ * 注:.opencode/skills 不在准入候选——opencode 无项目级 own 扫描,入池即"白名单
+ * 可见却无人可见"的不一致(逻辑审计 LOW)。
+ */
+const MAX_PROJECT_CANDIDATES = 600;
+/** 项目内任一 Agent 的 skills 目录(共享 + 各 Agent 自身)。 */
+const PROJECT_SKILL_DIR_CANDIDATES = [".agents/skills", ".codex/skills", ".claude/skills"];
+const PROJECT_POOL_TTL_MS = 60_000;
+const projectPoolCache = new Map<string, {pool: ProjectPoolEntry[]; expiresAt: number}>();
+
+/** 项目内该 Agent 自身的 skills 目录(共享 .agents/skills 对所有 Agent 另行探测)。 */
+const AGENT_PROJECT_SKILL_DIRS: Record<string, string[]> = {
+  codex: [".codex/skills"],
+  claude: [".claude/skills"],
+  zcode: [],
+  dsh: [],
+  opencode: [],
+};
+
+/**
+ * dsh 会话目录名解码:--Users-andy-...-deepaa-- → 存在性校验的绝对路径(段名可含 '-',回溯合并)。
+ * 防御(2026-11-12 逻辑审计 HIGH):① token 硬上界 16(会话名 255 字节,不设界时
+ * 已删项目的长名会全组合枚举,实测 26 token ≈117s 阻塞事件循环);② 每步合并后
+ * 即校验前缀目录存在——合法完整路径的每个前缀必是真实目录,剪枝使实际搜索
+ * 沿真实目录树下降,不再指数膨胀。
+ */
+const DSH_DECODE_MAX_TOKENS = 16;
+function decodeDshSessionDir(name: string, home: string): string | undefined {
+  if (!name.startsWith("--")) return undefined;
+  const tokens = name.replace(/^-+/, "").replace(/-+$/, "").split("-").filter(t => t.length > 0);
+  if (tokens.length < 2 || tokens.length > DSH_DECODE_MAX_TOKENS) return undefined;
+  const tryBuild = (start: number, acc: string[]): string | undefined => {
+    if (start >= tokens.length) {
+      const p = join(sep, ...acc);
+      if (!p.startsWith(home + sep)) return undefined;
+      return dirExists(p) ? p : undefined;
+    }
+    // 长段优先:真实目录名含 '-' 时(如 template-factory)需要合并相邻 token。
+    for (let end = tokens.length; end > start; end--) {
+      const merged = tokens.slice(start, end).join("-");
+      const prefix = join(sep, ...acc, merged);
+      if (!dirExists(prefix)) continue; // 前缀剪枝:合法路径的每级前缀必须是真实目录
+      const found = tryBuild(end, [...acc, merged]);
+      if (found) return found;
+    }
+    return undefined;
+  };
+  return tryBuild(0, []);
+}
+
+/** 有界读文本(≤maxBytes,超限/缺失返回 undefined)。 */
+function readBoundedText(path: string, maxBytes: number): string | undefined {
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile() || stat.size > maxBytes) return undefined;
+    return readFileSync(path, "utf8");
+  } catch { return undefined; }
+}
+
+export function collectProjectPool(home: string, options?: {noCache?: boolean}): ProjectPoolEntry[] {
+  if (!options?.noCache) {
+    const cached = projectPoolCache.get(home);
+    if (cached && cached.expiresAt > Date.now()) return cached.pool;
+  }
+  const byReal = new Map<string, string>();
+  // mkdtemp 等场景 home 自身是符号链接(macOS /var → /private/var):两个形态都接受。
+  let homeReal = home;
+  try { homeReal = realpathSync(home); } catch { /* 保持原样 */ }
+  const underHome = (p: string): boolean => p.startsWith(home + sep) || p.startsWith(homeReal + sep);
+  const add = (candidate: string): void => {
+    if (byReal.size >= MAX_PROJECT_CANDIDATES || typeof candidate !== "string" || !candidate.startsWith("/")) return;
+    let real: string;
+    try { real = realpathSync(candidate); } catch { return; }
+    if (!underHome(real)) return;
+    try { if (!statSync(real).isDirectory()) return; } catch { return; }
+    if (!byReal.has(real)) byReal.set(real, basename(real));
+  };
+
+  // ① codex:config.toml 的 [projects."<path>"] 段键。
+  const codexToml = readBoundedText(join(home, ".codex", "config.toml"), MAX_CONFIG_BYTES);
+  if (codexToml) {
+    for (const m of codexToml.matchAll(/^\[projects\."([^"]+)"\]/gm)) add(m[1]!);
+  }
+  // ② claude:~/.claude.json 顶层 projects 键(≤1 MiB 有界)。
+  const claudeJson = readBoundedText(join(home, ".claude.json"), MAX_CONFIG_BYTES);
+  if (claudeJson) {
+    try {
+      const parsed = JSON.parse(claudeJson) as {projects?: Record<string, unknown>};
+      for (const p of Object.keys(parsed.projects ?? {})) add(p);
+    } catch { /* 损坏降级 */ }
+  }
+  // ③ zcode:会话库 session.directory 去重(readonly 连接)。
+  try {
+    const {DeepaaDatabase: Db} = require("@/lib/db/sqlite-driver") as typeof import("@/lib/db/sqlite-driver");
+    const db = new Db(join(home, ".zcode", "cli", "db", "db.sqlite"), {readonly: true, timeout: 3_000});
+    try {
+      const rows = db.prepare(
+        "SELECT DISTINCT directory FROM session WHERE directory IS NOT NULL LIMIT 200",
+      ).all() as Array<{directory: string}>;
+      for (const row of rows) add(row.directory);
+    } finally { db.close(); }
+  } catch { /* 库缺失/锁定属正常 */ }
+  // ④ dsh:会话目录名解码。
+  try {
+    for (const dir of listBounded(join(home, ".dsh", "sessions")).names.slice(0, 40)) {
+      const decoded = decodeDshSessionDir(dir, home);
+      if (decoded) add(decoded);
+    }
+  } catch { /* 目录缺失属正常 */ }
+  // ⑤ UGit 两层扫描兜底(用户确认保留)。
+  try {
+    const workspaceRoot = join(home, "Documents", "UGit");
+    const walk = (dir: string, depth: number): void => {
+      if (byReal.size >= MAX_PROJECT_CANDIDATES || depth > 2) return;
+      let entries;
+      try { entries = readdirSync(dir, {withFileTypes: true}); } catch { return; }
+      for (const entry of entries) {
+        if (byReal.size >= MAX_PROJECT_CANDIDATES) break;
+        if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+        const projPath = join(dir, entry.name);
+        add(projPath);
+        if (depth < 2) walk(projPath, depth + 1);
+      }
+    };
+    walk(workspaceRoot, 0);
+  } catch { /* 工作区不存在属正常。 */ }
+
+  /* 过滤:只保留含任一 skills 目录的项目(会话/清单里的临时目录、深层子目录
+   * 不占池位——否则配置源几十个无技能路径把池塞满,UGit 兜底的真实项目被截断,
+   * deepseek-harness 等 24 个技能实测丢失)。 */
+  const skilled = [...byReal.keys()].filter(real =>
+    PROJECT_SKILL_DIR_CANDIDATES.some(rel => dirExists(join(real, rel))));
+  const chosen = skilled.slice(0, MAX_PROJECT_POOL);
+  // 重名消歧(在截断后的幸存集内计数):同名项目带父段(如 web/OPlusWeb)。
+  const nameCount = new Map<string, number>();
+  for (const real of chosen) nameCount.set(byReal.get(real)!, (nameCount.get(byReal.get(real)!) ?? 0) + 1);
+  const pool: ProjectPoolEntry[] = chosen.map(real => {
+    const base = byReal.get(real)!;
+    return {
+      name: (nameCount.get(base) ?? 0) > 1 ? `${basename(dirname(real))}/${base}` : base,
+      path: real,
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  projectPoolCache.set(home, {pool, expiresAt: Date.now() + PROJECT_POOL_TTL_MS});
+  return pool;
+}
+
 type SkillAgentRow = CrossAgentSkillEntry["agents"][number];
 
 /**
@@ -170,9 +335,10 @@ const SCAN_CACHE_TTL_MS = 60_000;
 
 const scanCache = new Map<string, {ledgers: AgentCapabilityLedger[]; expiresAt: number; crossAgentIndex: CrossAgentSkillIndex}>();
 
-/** 同步写盘后使扫描缓存立即失效,详情/索引反映最新内容。 */
+/** 同步写盘后使扫描缓存与项目清单池立即失效,详情/索引/白名单反映最新内容。 */
 export function invalidateCapabilityScanCache(): void {
   scanCache.clear();
+  projectPoolCache.clear();
 }
 
 /** 入口：五 Agent 台账（60s 缓存）；homeDir 供测试注入。 */
@@ -252,30 +418,32 @@ export function scanLocalCapabilities(options?: {
   // P0-4.3(2026-11-11):全局 ~/.agents/skills/(跨 Agent 共享)+ 项目级 .agents/skills/。
   const globalScan: AgentCapabilityLedger["scan"] = {candidateCount: 0, processedCount: 0, bytesRead: 0, limited: false, scannedAt: new Date().toISOString()};
   const globalAgentSkills = scanSkillsWithDesc(join(home, ".agents", "skills"), globalScan);
-  const projectSkillsList: Array<{project: string; items: CapabilityLedgerItem[]}> = [];
-  try {
-    const workspaceRoot = join(home, "Documents", "UGit");
-    // 修复(2026-11-11 双路审核):真实项目在两层深度(如 AIAgentAndy/EffiRoom、
-    // otherProject/helios),旧代码只扫一层 → 项目级恒 0。改为两层(每层有界)。
-    const scanProjectDir = (dir: string, depth: number): void => {
-      if (projectSkillsList.length >= 20 || depth > 2) return;
-      let entries;
-      try { entries = readdirSync(dir, {withFileTypes: true}); } catch { return; }
-      for (const entry of entries) {
-        if (projectSkillsList.length >= 20) break;
-        if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-        const projPath = join(dir, entry.name);
-        const projSkillsDir = join(projPath, ".agents", "skills");
-        if (dirExists(projSkillsDir)) {
-          const pScan: AgentCapabilityLedger["scan"] = {candidateCount: 0, processedCount: 0, bytesRead: 0, limited: false, scannedAt: new Date().toISOString()};
-          const items = scanSkillsWithDesc(projSkillsDir, pScan);
-          if (items.length > 0) projectSkillsList.push({project: entry.name, items});
-        }
-        if (depth < 2) scanProjectDir(projPath, depth + 1);
+  /* 2026-11-12 用户拉齐方案:项目技能来自清单池(collectProjectPool),
+   * 每项目探测各 Agent 自身 skills 目录 + 共享 .agents/skills(共享只扫一次)。
+   * 旧 UGit 两层扫描并入清单池兜底,不再独立成路。 */
+  const projectPool = collectProjectPool(home);
+  const projectSkillsList: Array<{project: string; items: CapabilityLedgerItem[]; ownByAgent: Map<string, CapabilityLedgerItem[]>}> = [];
+  for (const proj of projectPool) {
+    const ownByAgent = new Map<string, CapabilityLedgerItem[]>();
+    let shared: CapabilityLedgerItem[] = [];
+    const sharedDir = join(proj.path, ".agents", "skills");
+    if (dirExists(sharedDir)) {
+      const pScan: AgentCapabilityLedger["scan"] = {candidateCount: 0, processedCount: 0, bytesRead: 0, limited: false, scannedAt: new Date().toISOString()};
+      shared = scanSkillsWithDesc(sharedDir, pScan);
+    }
+    for (const ledger of ledgers) {
+      for (const rel of AGENT_PROJECT_SKILL_DIRS[ledger.agentId] ?? []) {
+        const ownDir = join(proj.path, rel);
+        if (!dirExists(ownDir)) continue;
+        const pScan: AgentCapabilityLedger["scan"] = {candidateCount: 0, processedCount: 0, bytesRead: 0, limited: false, scannedAt: new Date().toISOString()};
+        const items = scanSkillsWithDesc(ownDir, pScan);
+        if (items.length > 0) ownByAgent.set(ledger.agentId, [...(ownByAgent.get(ledger.agentId) ?? []), ...items]);
       }
-    };
-    scanProjectDir(workspaceRoot, 0);
-  } catch { /* 工作区不存在属正常。 */ }
+    }
+    if (shared.length > 0 || ownByAgent.size > 0) {
+      projectSkillsList.push({project: proj.name, items: shared, ownByAgent});
+    }
+  }
 
   // UI 重构(2026-11-10):集中填充规则与系统提示词(表驱动,无 agent 名条件分派)。
   const RULE_SOURCES: Record<string, Array<{label: string; path: string}>> = {
@@ -310,6 +478,13 @@ export function scanLocalCapabilities(options?: {
       }
     }
     for (const proj of projectSkillsList) {
+      // 该 Agent 自身项目目录优先(如 <项目>/.codex/skills),共享 .agents/skills 其次。
+      for (const item of proj.ownByAgent.get(ledger.agentId) ?? []) {
+        if (!existingNames.has(item.name)) {
+          extraSkills.push({...item, detail: `项目 · ${proj.project}`});
+          existingNames.add(item.name);
+        }
+      }
       for (const item of proj.items) {
         if (!existingNames.has(item.name)) {
           extraSkills.push({...item, detail: `项目 · ${proj.project}`});
@@ -599,7 +774,7 @@ function scanClaudeCode(home: string): AgentCapabilityLedger {
         for (const name of Object.keys(project.mcpServers ?? {})) {
           if (mcpNames.has(name)) continue;
           mcpNames.add(name);
-          mcpServers.push({kind: "mcp_server", name, detail: `项目级(${projectPath.split("/").pop()})`, sourcePath: join(home, ".claude.json")});
+          mcpServers.push({kind: "mcp_server", name, detail: `项目 · ${projectPath.split("/").pop()}`, sourcePath: join(home, ".claude.json")});
         }
       }
     } catch {

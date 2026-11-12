@@ -231,6 +231,21 @@ describe("跨 Agent skill 同步与一致性", () => {
     assert.ok(!existsSync(join(home, ".claude", "skills", "big")), "超预算不得落盘");
   });
 
+  test("清单池项目根纳入同步白名单(extraRoots,项目技能跨 Agent 同步)", () => {
+    const home = makeHome();
+    const proj = join(home, "Documents", "Work", "projX");
+    const srcDir = join(proj, ".codex", "skills", "proj-skill");
+    mkdirSync(srcDir, {recursive: true});
+    writeFileSync(join(srcDir, "SKILL.md"), "# proj");
+    const base = {home, skillName: "proj-skill", sourceAgent: "codex", targetAgent: "claude", sourcePath: srcDir};
+    // 无 extraRoots:白名单外 → 403。
+    assert.equal(performSkillSync(base).body.error, "SOURCE_FORBIDDEN");
+    // 带清单池项目根 → 放行并落盘。
+    const ok = performSkillSync({...base, extraRoots: [proj]});
+    assert.equal(ok.status, 200, String(ok.body.message));
+    assert.ok(existsSync(join(home, ".claude", "skills", "proj-skill", "SKILL.md")));
+  });
+
   test("源目录缺失/SKILL.md 缺失/不支持的目标", () => {
     const home = makeHome();
     // 白名单根内不存在 → SOURCE_NOT_FOUND(白名单外会先命中 SOURCE_FORBIDDEN,另有专测)。

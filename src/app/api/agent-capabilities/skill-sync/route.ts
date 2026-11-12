@@ -8,6 +8,7 @@ import {
   requireLaunchNonce,
 } from "@/lib/development-launch/security";
 import {performSkillSync} from "@/lib/agent-capabilities/skill-sync-core";
+import {collectProjectPool} from "@/lib/agent-capabilities/scanner";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -29,6 +30,8 @@ export async function POST(request: Request): Promise<Response> {
       targetAgent: typeof body.targetAgent === "string" ? body.targetAgent : "",
       sourcePath: typeof body.sourcePath === "string" ? body.sourcePath : "",
       confirm: body.confirm === true,
+      // 清单池项目根纳入同步白名单(项目内技能跨 Agent 同步)。
+      extraRoots: collectProjectPool(homedir()).map(p => p.path),
     });
     if (outcome.status === 200) return jsonResponse({...outcome.body, nonce: getLaunchNonceStore().issue()});
     return Response.json({...outcome.body, nonce: getLaunchNonceStore().issue()}, {status: outcome.status});

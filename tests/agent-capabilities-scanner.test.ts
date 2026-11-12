@@ -93,6 +93,56 @@ API_KEY = "redacted-name-only"
     assert.equal(opencode.skills.length, 0);
   });
 
+  test("项目清单池驱动项目技能(own 目录优先于共享,2026-11-12 用户拉齐方案)", () => {
+    const home = makeHome();
+    // 项目 A:codex config.toml 清单 + 自身 .codex/skills + 共享 .agents/skills。
+    const projA = join(home, "Documents", "Work", "projA");
+    mkdirSync(join(projA, ".codex", "skills", "own-skill"), {recursive: true});
+    writeFileSync(join(projA, ".codex", "skills", "own-skill", "SKILL.md"), "# own");
+    mkdirSync(join(projA, ".agents", "skills", "shared-skill"), {recursive: true});
+    writeFileSync(join(projA, ".agents", "skills", "shared-skill", "SKILL.md"), "# shared");
+    // 同名优先级:own 与 shared 同名,own 内容胜出。
+    mkdirSync(join(projA, ".agents", "skills", "own-skill"), {recursive: true});
+    writeFileSync(join(projA, ".agents", "skills", "own-skill", "SKILL.md"), "# shared-version");
+    mkdirSync(join(home, ".codex"), {recursive: true});
+    writeFileSync(join(home, ".codex", "config.toml"), `[projects."${projA}"]\ntrust_level = "trusted"\n`);
+
+    // 项目 B:claude 清单 + 自身 .claude/skills。
+    const projB = join(home, "Documents", "UGit", "x", "projB");
+    mkdirSync(join(projB, ".claude", "skills", "claude-only"), {recursive: true});
+    writeFileSync(join(projB, ".claude", "skills", "claude-only", "SKILL.md"), "# claude");
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({projects: {[projB]: {}}}));
+
+    // 项目 C:dsh 会话目录名编码(路径含 '-' 段)。
+    const projC = join(home, "Documents", "dsh-proj");
+    mkdirSync(join(projC, ".agents", "skills", "dsh-shared"), {recursive: true});
+    writeFileSync(join(projC, ".agents", "skills", "dsh-shared", "SKILL.md"), "# dsh");
+    mkdirSync(join(home, ".dsh", "sessions"), {recursive: true});
+    mkdirSync(join(home, ".dsh", "sessions", "--" + projC.split("/").join("-") + "--"), {recursive: true});
+
+    const ledgers = scanLocalCapabilities({homeDir: home, noCache: true});
+    const byId = new Map(ledgers.map(l => [l.agentId, l]));
+
+    // codex:A 项目 own + shared 都在,own 同名胜出(path 为 .codex/skills)。
+    const codexSkills = byId.get("codex")!.skills.filter(s => s.detail === "项目 · projA");
+    const names = codexSkills.map(s => s.name).sort();
+    assert.deepEqual(names, ["own-skill", "shared-skill"]);
+    const own = codexSkills.find(s => s.name === "own-skill")!;
+    assert.ok(own.sourcePath!.includes(join(".codex", "skills")), "own 目录优先");
+    // zcode/dsh:只见共享,不见 codex 自身目录技能。
+    const zcodeSkills = byId.get("zcode")!.skills.filter(s => s.detail === "项目 · projA");
+    assert.deepEqual(zcodeSkills.map(s => s.name).sort(), ["own-skill", "shared-skill"], "共享目录对全部 Agent 可见(含同名共享版)");
+    assert.ok(zcodeSkills.find(s => s.name === "own-skill")!.sourcePath!.includes(".agents"), "zcode 无 own 目录,取共享版");
+
+    // claude:B 项目自身目录;codex 只见 B 的共享(无)→ 不出现。
+    const claudeSkills = byId.get("claude")!.skills.filter(s => s.detail === "项目 · projB");
+    assert.deepEqual(claudeSkills.map(s => s.name), ["claude-only"]);
+    assert.equal(byId.get("codex")!.skills.filter(s => s.detail === "项目 · projB").length, 0, "无共享时其它 Agent 不出现");
+
+    // dsh 目录名解码:C 项目共享技能全员可见。
+    assert.ok(byId.get("dsh")!.skills.some(s => s.name === "dsh-shared" && s.detail === "项目 · dsh-proj"), "dsh 编码目录解码命中");
+  });
+
   test("60s 缓存命中与 noCache 穿透", () => {
     const home = makeHome();
     mkdirSync(join(home, ".codex", "skills", "cached-skill"), {recursive: true});
