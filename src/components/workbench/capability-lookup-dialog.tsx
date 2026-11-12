@@ -95,6 +95,13 @@ export function CapabilityLookupDialog({target, onClose, onNavigate}: {
       ) : null}
       {result ? (
         <div className="caps-lookup">
+          {/* 全零诚实说明(2026-11-12 用户反馈):不是坏数据,是"装了没用过"。 */}
+          {result.totals.declaredStepCount === 0 && result.totals.invokedCallCount === 0 ? (
+            <p className="caps-lookup-muted">
+              该{target.kind === "skill" ? " Skill 已安装但" : "能力"}在观测范围内没有任何调用或声明记录——
+              {target.kind === "skill" ? "即从未被加载使用。" : "即从未被调用。"}统计口径为全量历史(非时间窗口)。
+            </p>
+          ) : null}
           <div className="caps-lookup-totals">
             <span>声明出现 {result.totals.declaredStepCount} 步</span>
             <span>调用 {result.totals.invokedStepCount} 步 / {result.totals.invokedCallCount} 次</span>
@@ -122,7 +129,7 @@ export function CapabilityLookupDialog({target, onClose, onNavigate}: {
                 <button type="button" className="caps-lookup-more" onClick={() => void load(result.calls.nextCursor)}>加载更早 20 条…</button>
               ) : null}
             </div>
-          ) : <p className="caps-lookup-muted">未观察到调用。</p>}
+          ) : <p className="caps-lookup-muted">{target.kind === "skill" ? "未观察到调用——该 Skill 已安装但从未被加载。" : "未观察到调用。"}</p>}
 
           <h4>声明出现（最近 {result.declaredIn.processedCount}{result.declaredIn.hasMore ? `，共 ${result.declaredIn.candidateCount}（只显示首页）` : ""}）</h4>
           {result.declaredIn.items.length > 0 ? (
@@ -137,7 +144,7 @@ export function CapabilityLookupDialog({target, onClose, onNavigate}: {
                 </button>
               ))}
             </div>
-          ) : <p className="caps-lookup-muted">未观察到声明（可能仅作为调用出现）。</p>}
+          ) : <p className="caps-lookup-muted">未观察到声明（可能仅作为调用出现，或该 Agent 的声明观测不完整）。</p>}
         </div>
       ) : null}
 

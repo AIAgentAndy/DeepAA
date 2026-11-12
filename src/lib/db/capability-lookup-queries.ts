@@ -106,8 +106,15 @@ export function lookupCapability(
   // P2/v57：kind=skill 的「调用记录」语义 = Skill 激活记录（加载动作）。分支置于
   // tool 主查询之前（审计 P5:避免先跑 tool 窗口查询再整体丢弃）。
   if (kind === "skill") {
-    // P1:LIKE 转义(name 含 %/_ 时精确匹配);P2:cursor = activated_at keyset。
-    const pattern = `%:${escapeLike(name)}`;
+    /* 2026-11-12 用户反馈修复(双形态名匹配):完整名可能是插件前缀形(plugin:skill),
+       而 wire 声明(skills_json)与激活记录(skill_activations)可能分别使用裸名或
+       前缀名(实测 zcode 声明用裸名、激活记录用前缀名)——只匹配一种形态会造成
+       「声明出现恒 0」或跨形态调用漏计。两种形态全匹配。
+       P1:LIKE 转义(name 含 %/_ 时精确匹配);P2:cursor = activated_at keyset。 */
+    const bareName = name.includes(":") ? name.split(":").pop()! : name;
+    const nameForms = bareName !== name ? [name, bareName] : [name];
+    const actWhere = nameForms.map(() => "(a.skill_name = ? OR a.skill_name LIKE ? ESCAPE '\\')").join(" OR ");
+    const actParams = nameForms.flatMap(n => [n, `%:${escapeLike(n)}`]);
     const cursorClause = input.cursor ? "AND a.activated_at < ?" : "";
     const cursorParams = input.cursor ? [input.cursor] : [];
     const activationRows = db.prepare(
@@ -117,10 +124,10 @@ export function lookupCapability(
        FROM skill_activations a
        LEFT JOIN agent_steps s ON s.id = a.agent_step_id
        LEFT JOIN agent_sessions se ON se.id = s.agent_session_id
-       WHERE a.agent_name = ? AND (a.skill_name = ? OR a.skill_name LIKE ? ESCAPE '\\')
+       WHERE a.agent_name = ? AND (${actWhere})
          ${cursorClause}
        ORDER BY a.activated_at DESC, a.id DESC LIMIT ? + 1`,
-    ).all(agentName, name, pattern, ...cursorParams, limit + 1) as Array<{
+    ).all(agentName, ...actParams, ...cursorParams, limit + 1) as Array<{
       step_id: string | null; exchange_id: string; captured_at: string;
       session_id: string | null; thread_id: string | null; turn_id: string | null;
       step_index: number | null; agent_name: string | null; target_id: string | null;
@@ -130,13 +137,15 @@ export function lookupCapability(
     const actTotals = db.prepare(
       `SELECT COUNT(*) AS total, COUNT(DISTINCT a.agent_step_id) AS steps
        FROM skill_activations a
-       WHERE a.agent_name = ? AND (a.skill_name = ? OR a.skill_name LIKE ? ESCAPE '\\')`,
-    ).get(agentName, name, pattern) as {total: number; steps: number};
-    // P3:声明出现 = 快照命中 hash 集合的真实步数(与 tool 分支同口径)。
+       WHERE a.agent_name = ? AND (${actWhere})`,
+    ).get(agentName, ...actParams) as {total: number; steps: number};
+    // P3:声明出现 = 快照命中 hash 集合的真实步数(与 tool 分支同口径;双形态匹配)。
+    const skillLikeSql = nameForms.map(() => `skills_json LIKE ? ESCAPE '\\'`).join(" OR ");
+    const skillLikeParams = nameForms.map(n => `%"name":"${escapeLike(n)}"%`);
     const skillHashes = (db.prepare(
       `SELECT snapshot_hash FROM harness_snapshots
-       WHERE agent_name = ? AND skills_json LIKE ? ESCAPE '\\'`,
-    ).all(agentName, `%"name":"${escapeLike(name)}"%`) as Array<{snapshot_hash: string}>)
+       WHERE agent_name = ? AND (${skillLikeSql})`,
+    ).all(agentName, ...skillLikeParams) as Array<{snapshot_hash: string}>)
       .map(row => row.snapshot_hash);
     const placeholders = skillHashes.map(() => "?").join(",");
     const declaredStepCountSkill = skillHashes.length > 0
@@ -144,6 +153,33 @@ export function lookupCapability(
           `SELECT COUNT(*) AS c FROM agent_steps WHERE harness_snapshot_hash IN (${placeholders})`,
         ).get(...skillHashes) as {c: number}).c
       : 0;
+    // 声明列表对齐 tool 分支(此前恒空导致「声明出现(最近 0)」);首页 limit 条。
+    const declaredRowsSkill = skillHashes.length > 0
+      ? (db.prepare(
+          `SELECT s.id AS step_id, s.exchange_id, s.agent_session_id AS session_id,
+                  s.agent_thread_id AS thread_id, s.agent_turn_id AS turn_id,
+                  s.step_index, r.captured_at
+           FROM agent_steps s JOIN raw_exchange_refs r ON r.exchange_id = s.exchange_id
+           WHERE s.harness_snapshot_hash IN (${placeholders})
+           ORDER BY r.captured_at DESC LIMIT ?`,
+        ).all(...skillHashes, limit) as Array<{
+          step_id: string; exchange_id: string; session_id: string; thread_id: string;
+          turn_id: string; step_index: number; captured_at: string;
+        }>)
+      : [];
+    const declaredItemsSkill: CapabilityLookupDeclaredRow[] = declaredRowsSkill.map(row => ({
+      stepId: row.step_id,
+      exchangeId: row.exchange_id,
+      sessionId: row.session_id,
+      threadId: row.thread_id,
+      turnId: row.turn_id,
+      stepIndex: row.step_index,
+      capturedAt: row.captured_at,
+      invokedThisStep: (db.prepare(
+        `SELECT COUNT(*) AS c FROM skill_activations a
+         WHERE a.agent_step_id = ? AND (${actWhere})`,
+      ).get(row.step_id, ...actParams) as {c: number}).c,
+    }));
     return {
       identity: {kind, name, agentName, coverage: "name-level"},
       totals: {
@@ -172,11 +208,11 @@ export function lookupCapability(
         limited: actHasMore,
       },
       declaredIn: {
-        items: [],
+        items: declaredItemsSkill,
         candidateCount: declaredStepCountSkill,
-        processedCount: 0,
-        hasMore: false,
-        limited: false,
+        processedCount: declaredItemsSkill.length,
+        hasMore: declaredStepCountSkill > declaredItemsSkill.length,
+        limited: declaredStepCountSkill > declaredItemsSkill.length,
       },
     };
   }

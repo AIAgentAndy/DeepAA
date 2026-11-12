@@ -14077,6 +14077,26 @@ html[data-theme="dark"] .acaps-usage-row .num { color: #a3b1bd; }
 .acaps-ver-badge { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--line-2); border-radius: 999px; font-size: 10.5px; font-weight: 500; color: var(--ink-300); vertical-align: 1px; }
 .acaps-variant-note { margin-left: 4px; font-size: 11px; color: var(--ink-300); }
 .acaps-diff-truncated { margin: 4px 0 0; font-size: 11.5px; color: var(--ink-300); }
+
+/* 居中详情弹窗(2026-11-12 用户确认:对齐模型价格中心视觉)。 */
+.acaps-detail-dialog { width: min(880px, 100%); }
+.acaps-detail-dialog .acaps-detail-body { min-height: 0; }
+.acaps-modal-head-main { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.acaps-modal-head-main .acaps-card-icon { width: 44px; height: 44px; font-size: 20px; flex: none; }
+.acaps-detail-title h2 { margin: 0; font-size: 17px; line-height: 1.35; word-break: break-all; }
+.acaps-detail-title p { margin: 3px 0 0; font-size: 12px; color: var(--ink-400); }
+/* 反查弹窗叠层(z 1002):修复被详情遮罩吞掉点击的层级事故。 */
+.acaps-lookup-layer { position: fixed; inset: 0; z-index: 1002; pointer-events: none; }
+/* 暗色详情弹窗次要文字提亮(UI 复审 LOW:4.18:1 → AA 4.5+)。 */
+html[data-theme="dark"] .acaps-detail-title p,
+html[data-theme="dark"] .acaps-detail-body p { color: #9aa6b2; }
+.acaps-lookup-layer > * { pointer-events: auto; }
+/* Diff 对比对象双下拉(2026-11-12 用户确认交互)。 */
+.acaps-diff-picker { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; font-size: 12.5px; }
+.acaps-diff-picker-label { font-weight: 600; font-size: 12px; color: var(--ink-400); }
+.acaps-diff-picker select { max-width: 190px; padding: 4px 8px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--surface); color: var(--ink); font-size: 12.5px; }
+.acaps-diff-picker select:focus { outline: 2px solid var(--pine, #0f7d6e); outline-offset: 1px; }
+.acaps-diff-picker button:disabled { opacity: 0.45; cursor: not-allowed; }
 /* 暗色小字提亮(UI 回归复审 LOW:截断提示与卡片描述 borderline 可读)。 */
 html[data-theme="dark"] .acaps-diff-truncated,
 html[data-theme="dark"] .acaps-card-desc,
@@ -14099,47 +14119,8 @@ html[data-theme="dark"] .acaps-ver-badge { color: #9aa6b2; }
   font-family: var(--font-mono, monospace); color: var(--ink-300);
 }
 
-/* 详情抽屉(2026-11-11) */
-.acaps-detail-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.25);
-  z-index: 998;
-}
-
-.acaps-detail {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: min(480px, 90vw);
-  background: var(--surface);
-  border-left: 1px solid var(--line-strong);
-  z-index: 999;
-  display: flex;
-  flex-direction: column;
-  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.12);
-  animation: acaps-detail-in 0.18s ease-out;
-}
-
-@keyframes acaps-detail-in {
-  from { transform: translateX(40px); opacity: 0; }
-  to { transform: translateX(0); opacity: 1; }
-}
-
-.acaps-detail-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--line-2);
-}
-
-.acaps-detail-head .acaps-card-icon { width: 44px; height: 44px; font-size: 20px; }
-
+/* 详情弹窗(2026-11-12 居中模态;标题/关闭按钮样式仍复用) */
 .acaps-detail-title { flex: 1; min-width: 0; }
-.acaps-detail-title b { display: block; font-size: 16px; }
-.acaps-detail-title span { font-size: 12px; color: var(--ink-400); }
 
 .acaps-detail-close {
   border: none;
@@ -14186,21 +14167,6 @@ html[data-theme="dark"] .acaps-ver-badge { color: #9aa6b2; }
   border-radius: 6px;
 }
 
-.acaps-detail-lookup {
-  display: block;
-  width: 100%;
-  padding: 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  background: var(--surface-2);
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  text-align: center;
-  margin-top: auto;
-}
-.acaps-detail-lookup:hover { background: var(--surface-3); }
 
 /* 可点击卡片 */
 .acaps-card-clickable { cursor: pointer; }

@@ -8,6 +8,7 @@
 
 import Image from "next/image";
 import {useCallback, useEffect, useRef, useState} from "react";
+import {createPortal} from "react-dom";
 import {agentLabel} from "@/lib/agent-registry";
 import {CapabilityLookupDialog} from "@/components/workbench/capability-lookup-dialog";
 import type {AgentCapabilityLedger, CapabilityLedgerItem} from "@/lib/agent-capabilities/scanner";
@@ -481,14 +482,32 @@ function DetailDrawer({item, agentId, onClose}: {
   const [pendingOverwrite, setPendingOverwrite] = useState<{targetAgent: string; source: {agentId: string; path: string}}>();
   const [syncNonce, setSyncNonce] = useState<string>();
   const [diffError, setDiffError] = useState("");
+  const [diffA, setDiffA] = useState<string>();
+  const [diffB, setDiffB] = useState<string>();
   const isSkill = item?.kind === "skill";
+  /* 详情请求序号守卫(复审 MEDIUM):快速连点两个 skill 时,冷缓存慢响应后到
+     会把旧条目数据覆盖到新条目弹窗下——过期响应一律丢弃。 */
+  const detailSeqRef = useRef(0);
+
+  /* 切换条目时清理会话态:旧 diff/确认框/状态文案/反查目标不跨条目残留。 */
+  useEffect(() => {
+    setDiffData(undefined);
+    setDiffError("");
+    setSyncStatus("");
+    setPendingOverwrite(undefined);
+    setDiffA(undefined);
+    setDiffB(undefined);
+    setLookupTarget(undefined);
+  }, [item?.kind, item?.name]);
 
   useEffect(() => {
     if (!isSkill || !item) return;
+    const seq = ++detailSeqRef.current;
     setSkillDetail(undefined);
     fetch(`/api/agent-capabilities/skill-detail?name=${encodeURIComponent(item.name)}`, {cache: "no-store"})
       .then(r => r.ok ? r.json() : undefined)
       .then(d => {
+        if (seq !== detailSeqRef.current) return;
         setSkillDetail(d);
         if (typeof d?.nonce === "string") setSyncNonce(d.nonce);
       })
@@ -535,13 +554,23 @@ function DetailDrawer({item, agentId, onClose}: {
 
   const refreshSkillDetail = async () => {
     if (!item) return;
+    const seq = ++detailSeqRef.current;
     fetch(`/api/agent-capabilities/skill-detail?name=${encodeURIComponent(item.name)}`, {cache: "no-store"})
       .then(r => r.ok ? r.json() : undefined)
       .then(d => {
+        if (seq !== detailSeqRef.current) return;
         if (d) setSkillDetail(d);
         if (typeof d?.nonce === "string") setSyncNonce(d.nonce);
       })
       .catch(() => {});
+  };
+
+  /** 按所选方向合并:源 = fromAgent 的 skill 目录,目标 = toAgent(409 覆盖确认复用 doSync)。 */
+  const mergeDirectional = async (fromAgent: string, toAgent: string) => {
+    if (!skillDetail) return;
+    const src = skillDetail.agents.find(a => a.agentId === fromAgent);
+    if (!src?.path) { setSyncStatus(`❌ 找不到 ${agentLabel(fromAgent)} 侧的 skill 目录`); return; }
+    await doSync(toAgent, {agentId: src.agentId, path: src.path});
   };
 
   const openDiff = async (agentA: string, agentB: string) => {
@@ -568,19 +597,25 @@ function DetailDrawer({item, agentId, onClose}: {
 
   return (
     <>
-      <div className="acaps-detail-backdrop" onClick={onClose} role="presentation" />
-      <aside className="acaps-detail" role="dialog" aria-label={`${kindLabel}详情`}>
-        <header className="acaps-detail-head">
-          <div className="acaps-card-icon" data-kind={item.kind}>
-            {item.kind === "skill" ? "◆" : item.kind === "mcp_server" ? "⬡" : item.kind === "plugin" ? "▣" : item.kind === "rule" ? "☰" : item.kind === "system_prompt" ? "✎" : "⚙"}
-          </div>
-          <div className="acaps-detail-title">
-            <b>{item.name}</b>
-            <span>{kindLabel}{item.detail ? ` · ${item.detail}` : ""}</span>
-          </div>
-          <button type="button" className="acaps-detail-close" onClick={onClose} aria-label="关闭">✕</button>
-        </header>
-        <div className="acaps-detail-body">
+      {createPortal(
+        <div className="settings-modal-backdrop" role="presentation" onClick={onClose}>
+          <section className="settings-dialog acaps-detail-dialog" role="dialog" aria-modal="true" aria-label={`${kindLabel}详情`} onClick={event => event.stopPropagation()}>
+          <header className="settings-header">
+            <div className="acaps-modal-head-main">
+              <div className="acaps-card-icon" data-kind={item.kind}>
+                {item.kind === "skill" ? "◆" : item.kind === "mcp_server" ? "⬡" : item.kind === "plugin" ? "▣" : item.kind === "rule" ? "☰" : item.kind === "system_prompt" ? "✎" : "⚙"}
+              </div>
+              <div className="acaps-detail-title">
+                <h2>
+                  {item.name}
+                  {skillVersionBadge(item.sourcePath) ? <span className="acaps-ver-badge">{skillVersionBadge(item.sourcePath)}</span> : null}
+                </h2>
+                <p>{kindLabel}{item.detail ? ` · ${item.detail}` : ""}</p>
+              </div>
+            </div>
+            <button type="button" className="acaps-detail-close" onClick={onClose} aria-label="关闭">✕</button>
+          </header>
+          <div className="acaps-detail-body">
           {/* 描述 */}
           {item.description ? (
             <section>
@@ -645,22 +680,32 @@ function DetailDrawer({item, agentId, onClose}: {
                   </div>
                 </div>
               ) : null}
-              {!skillDetail.allConsistent ? (
-                <div className="acaps-diff-actions">
-                  {(() => {
-                    /* 配对 = 基准 Agent(首个有效 hash)× 首个 hash 不同的**其它** Agent。
-                       验收审计 A HIGH-1:按对象身份比较会让同 Agent 多副本自比
-                       (「ZCode ↔ ZCode」空 diff);索引侧已按 (name, agentId) 收敛,
-                       此处再按 agentId 防御性去重,无跨 Agent 分歧时不渲染入口。 */
-                    const withHash = skillDetail.agents.filter(a => a.contentHash !== "unknown");
-                    const baseline = withHash[0];
-                    const divergent = withHash.find(a => baseline && a.agentId !== baseline.agentId && a.contentHash !== baseline.contentHash);
-                    return baseline && divergent
-                      ? <button type="button" onClick={() => void openDiff(baseline.agentId, divergent.agentId)}>查看 Diff ({agentLabel(baseline.agentId)} ↔ {agentLabel(divergent.agentId)})</button>
-                      : null;
-                  })()}
-                </div>
-              ) : null}
+              {(() => {
+                /* Diff 对比对象可选(2026-11-12 用户确认交互):双下拉任选两个
+                   在场且可校验内容的 Agent;默认 = 基准 × 首个不一致 Agent。
+                   同 Agent 多副本已在索引层收敛,此处选项天然按 agentId 去重。 */
+                const selectable = skillDetail.agents.filter(a => a.contentHash !== "unknown");
+                if (selectable.length < 2) return null;
+                const baseline = selectable[0]!;
+                const divergent = selectable.find(a => a.agentId !== baseline.agentId && a.contentHash !== baseline.contentHash);
+                const effectiveA = diffA ?? baseline.agentId;
+                const effectiveB = diffB ?? divergent?.agentId ?? selectable.find(a => a.agentId !== effectiveA)!.agentId;
+                const optionLabel = (a: typeof selectable[number]) =>
+                  `${agentLabel(a.agentId)}${a.consistent ? " · 一致" : " · 不同"}${a.variants && a.variants > 1 ? ` ×${a.variants}` : ""}`;
+                return (
+                  <div className="acaps-diff-picker">
+                    <span className="acaps-diff-picker-label">Diff 对比</span>
+                    <select value={effectiveA} onChange={e => setDiffA(e.target.value)} aria-label="对比对象 A">
+                      {selectable.map(a => <option key={a.agentId} value={a.agentId}>{optionLabel(a)}</option>)}
+                    </select>
+                    <span aria-hidden="true">↔</span>
+                    <select value={effectiveB} onChange={e => setDiffB(e.target.value)} aria-label="对比对象 B">
+                      {selectable.map(a => <option key={a.agentId} value={a.agentId}>{optionLabel(a)}</option>)}
+                    </select>
+                    <button type="button" disabled={effectiveA === effectiveB} onClick={() => void openDiff(effectiveA, effectiveB)}>对比</button>
+                  </div>
+                );
+              })()}
             </section>
           ) : null}
 
@@ -684,15 +729,16 @@ function DetailDrawer({item, agentId, onClose}: {
               ) : (
                 <p className="acaps-diff-truncated">超长行已截断到 80 字符。</p>
               )}
-              {/* 一键合并 */}
+              {/* 合并方向与所选对比对象一致(2026-11-12 用户确认交互):双向显式按钮。 */}
               <div className="acaps-diff-actions">
-                <button type="button" onClick={() => {
-                  const src = skillDetail?.agents.find(a => a.agentId === diffData!.agentA);
-                  if (src) void doSync(diffData!.agentB, {agentId: src.agentId, path: src.path});
-                }} title={`用 ${diffData.agentA} 的内容覆盖 ${diffData.agentB}`}>
-                  以 {diffData.agentA} → {diffData.agentB} 合并
+                <button type="button" onClick={() => void mergeDirectional(diffData.agentA, diffData.agentB)}
+                  title={`用 ${agentLabel(diffData.agentA)} 的内容覆盖 ${agentLabel(diffData.agentB)}`}>
+                  以 {agentLabel(diffData.agentA)} → {agentLabel(diffData.agentB)} 合并
                 </button>
-                <button type="button" onClick={() => void openDiff(diffData!.agentB, diffData.agentA)}>反向合并</button>
+                <button type="button" onClick={() => void mergeDirectional(diffData.agentB, diffData.agentA)}
+                  title={`用 ${agentLabel(diffData.agentB)} 的内容覆盖 ${agentLabel(diffData.agentA)}`}>
+                  以 {agentLabel(diffData.agentB)} → {agentLabel(diffData.agentA)} 合并
+                </button>
               </div>
             </section>
           ) : null}
@@ -728,23 +774,38 @@ function DetailDrawer({item, agentId, onClose}: {
             </section>
           ) : null}
 
-          {/* 反查链接 */}
-          {item.kind === "tool" || item.kind === "skill" ? (
-            <button
-              type="button"
-              className="acaps-detail-lookup"
-              onClick={() => setLookupTarget({agentName: agentId, kind: item.kind === "skill" ? "skill" : "tool", name: item.name})}
-            >
-              查看调用记录与使用分析 →
-            </button>
-          ) : null}
         </div>
-      </aside>
-      <CapabilityLookupDialog
-        target={lookupTarget}
-        onClose={() => setLookupTarget(undefined)}
-        onNavigate={() => {}}
-      />
+          <footer className="settings-actions">
+            {item.kind === "tool" || item.kind === "skill" ? (
+              <button
+                type="button"
+                className="comp-link"
+                onClick={() => setLookupTarget({agentName: agentId, kind: item.kind === "skill" ? "skill" : "tool", name: item.name})}
+              >
+                查看调用记录与使用分析 →
+              </button>
+            ) : <span aria-hidden="true" />}
+            <button type="button" className="ghost-btn" onClick={onClose}>关闭</button>
+          </footer>
+        </section>
+      </div>,
+        document.body,
+      )}
+      {/* 层级修复(2026-11-12 用户反馈「点击就消失」根因):反查弹窗 SimpleDialog
+          z-index 70 低于旧抽屉 998 被压在遮罩下。现详情已是同级居中弹窗,
+          再以独立 portal 层(z 1002)渲染反查弹窗,确保叠于详情之上且可交互。 */}
+      {lookupTarget
+        ? createPortal(
+            <div className="acaps-lookup-layer">
+              <CapabilityLookupDialog
+                target={lookupTarget}
+                onClose={() => setLookupTarget(undefined)}
+                onNavigate={() => {}}
+              />
+            </div>,
+            document.body,
+          )
+        : null}
     </>
   );
 }

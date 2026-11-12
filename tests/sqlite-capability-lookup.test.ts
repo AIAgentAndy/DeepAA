@@ -164,6 +164,83 @@ describe("SQLite 能力双向反查（P1-4）", () => {
     assert.equal(lite.totals.declaredStepCount, 2);
   });
 
+  test("skill 反查双形态名(2026-11-12):插件前缀名 ↔ 裸名声明/激活互认,声明列表非空", async () => {
+    const fixture = await createSqliteFixture();
+    fixtures.push(fixture);
+    // 直接播种最小读路径(lookupCapability 只读这四张表):
+    // wire 声明用裸名(skills_json),激活记录用插件前缀名(skill_activations)。
+    const db = fixture.db;
+    const srcId = db.prepare(
+      `INSERT INTO ingestion_sources(relative_path, file_id, file_size, updated_at)
+       VALUES('captures/v2/skill-dual.jsonl', 'f', 4096, ?) RETURNING id`,
+    ).pluck().get(BASE_TIME) as number;
+    db.prepare(
+      `INSERT INTO agent_sessions(id, target_id, target_name, agent_fingerprint_id, agent_name,
+         source, confidence, start_time, end_time)
+       VALUES('asess-s', 'tg', 'T', 'fp', 'zcode', 'fixture', 'exact', ?, ?)`,
+    ).run(BASE_TIME, BASE_TIME);
+    db.prepare(
+      `INSERT INTO agent_threads(id, agent_session_id, source, display_name, confidence,
+         is_root, start_time, end_time)
+       VALUES('athread-s', 'asess-s', 'fixture', 't', 'exact', 1, ?, ?)`,
+    ).run(BASE_TIME, BASE_TIME);
+    db.prepare(
+      `INSERT INTO agent_turns(id, agent_session_id, agent_thread_id, source, confidence, status,
+         segment_index, start_exchange_id, start_time, end_time, step_count)
+       VALUES('aturn-s', 'asess-s', 'athread-s', 'fixture', 'exact', 'closed', 0, 'ex-s1', ?, ?, 2)`,
+    ).run(BASE_TIME, BASE_TIME);
+    db.prepare(
+      `INSERT INTO harness_snapshots(snapshot_hash, agent_name, skill_count, skills_json, first_seen_at, last_seen_at)
+       VALUES('hs-s1', 'zcode', 1, ?, ?, ?)`,
+    ).run(JSON.stringify([{name: "control-browser", schemaTokensEst: 10}]), BASE_TIME, BASE_TIME);
+    let stepId = 1;
+    for (const ex of ["ex-s1", "ex-s2"]) {
+      db.prepare(
+        `INSERT INTO raw_exchange_refs(
+           exchange_id, capture_session_id, source_id, byte_offset, line_length_bytes,
+           captured_at, completed_at, target_id, target_name, agent_name,
+           agent_fingerprint_id, model, status, is_streaming,
+           request_body_bytes, response_body_bytes
+         ) VALUES(?, 'cap', ?, 0, 128, ?, ?, 'tg', 'T', 'zcode', 'fp', 'm', 200, 0, 16, 16)`,
+      ).run(ex, srcId, BASE_TIME, BASE_TIME);
+      db.prepare(
+        `INSERT INTO agent_steps(
+           id, exchange_id, agent_session_id, agent_thread_id, agent_turn_id,
+           step_index, timestamp, phase, request_action, response_action, harness_snapshot_hash
+         ) VALUES(?, ?, 'asess-s', 'athread-s', 'aturn-s', ?, ?, 'model', 'model_request', 'model_response', 'hs-s1')`,
+      ).run(`astep-s${stepId}`, ex, stepId - 1, BASE_TIME);
+      stepId += 1;
+    }
+    db.prepare(
+      `INSERT INTO skill_activations(id, agent_name, skill_name, exchange_id, agent_step_id, agent_turn_id, activated_at)
+       VALUES('sa-1', 'zcode', 'browser-use:control-browser', 'ex-s1', 'astep-s1', 'aturn-s', ?)`,
+    ).run(BASE_TIME);
+
+    // 前缀名反查:声明(裸名)与激活(前缀名)都命中;声明列表非空且带步级激活计数。
+    const prefixed = lookupCapability(db, {agentName: "zcode", kind: "skill", name: "browser-use:control-browser"});
+    assert.ok(prefixed);
+    assert.equal(prefixed.totals.declaredStepCount, 2, "裸名声明必须被前缀名反查命中");
+    assert.equal(prefixed.declaredIn.items.length, 2, "声明列表非空(修复前恒空)");
+    assert.equal(prefixed.totals.invokedCallCount, 1);
+    assert.equal(prefixed.totals.invokedStepCount, 1);
+    const actRow = prefixed.declaredIn.items.find(row => row.invokedThisStep > 0);
+    assert.ok(actRow, "声明行必须带步级激活计数");
+    assert.equal(actRow!.invokedThisStep, 1);
+    assert.equal(prefixed.calls.items.length, 1);
+
+    // 裸名反查:激活(前缀名存储)经 LIKE 回认,声明同样命中。
+    const bare = lookupCapability(db, {agentName: "zcode", kind: "skill", name: "control-browser"});
+    assert.ok(bare);
+    assert.equal(bare.totals.invokedCallCount, 1, "裸名反查命中前缀名激活记录");
+    assert.equal(bare.totals.declaredStepCount, 2);
+
+    // 跨 Agent 隔离:其它 Agent 查同名零命中。
+    const other = lookupCapability(db, {agentName: "codex", kind: "skill", name: "browser-use:control-browser"});
+    assert.ok(other);
+    assert.equal(other.totals.invokedCallCount, 0);
+    assert.equal(other.totals.declaredStepCount, 0);
+  });
+
   test("跨 Agent 隔离：只命中指定 Agent 的记录", async () => {
     const fixture = await createSqliteFixture();
     fixtures.push(fixture);
