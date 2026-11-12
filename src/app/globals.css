@@ -14039,7 +14039,8 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
 }
 
 /* 跨 Agent 状态网格 */
-.acaps-cross-grid { display: flex; flex-direction: column; gap: 4px; }
+/* 宽弹窗下多列铺满(视觉评估:右半留白偏多),窄时自动回落单列。 */
+.acaps-cross-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 18px; }
 .acaps-cross-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
 .acaps-cross-agent { font-size: 12px; font-weight: 600; min-width: 80px; color: var(--ink); }
 .acaps-cross-status { font-size: 11px; padding: 2px 8px; border-radius: 4px; }
@@ -14047,16 +14048,14 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
 .acaps-cross-status.diff { background: rgba(245, 158, 11, 0.1); color: #d97706; }
 .acaps-cross-status.missing { color: var(--ink-400); }
 .acaps-sync-btn {
-  font-size: 11px; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 4px;
-  background: none; color: var(--pine-600); cursor: pointer;
+  font-size: 11.5px; padding: 3px 10px; border: 1px solid var(--accent); border-radius: 6px;
+  background: var(--surface); color: var(--accent); cursor: pointer; transition: background 120ms ease, color 120ms ease;
 }
-.acaps-sync-btn:hover { background: var(--surface-2); }
+.acaps-sync-btn:hover { background: var(--accent); color: #fff; }
 .acaps-sync-status { font-size: 12px; margin: 6px 0 0; }
 .acaps-overwrite-confirm { margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--border-warning, #d4a017); border-radius: 8px; background: var(--bg-warning-subtle, rgba(212,160,23,.08)); }
 .acaps-overwrite-confirm p { margin: 0 0 8px; font-size: 12.5px; line-height: 1.55; }
 .acaps-overwrite-confirm .acaps-diff-actions { margin: 0; }
-.acaps-diff-actions button.danger { border-color: #b3532c; color: #b3532c; }
-.acaps-diff-actions button.danger:hover { background: rgba(179,83,44,.08); }
 
 /* Diff 视图 */
 .acaps-diff-view {
@@ -14079,7 +14078,9 @@ html[data-theme="dark"] .acaps-usage-row .num { color: #a3b1bd; }
 .acaps-diff-truncated { margin: 4px 0 0; font-size: 11.5px; color: var(--ink-300); }
 
 /* 居中详情弹窗(2026-11-12 用户确认:对齐模型价格中心视觉)。 */
-.acaps-detail-dialog { width: min(880px, 100%); }
+/* 尺寸与模型价格中心弹窗保持一致(2026-11-12 用户确认;仅借尺寸,
+   不复用 pricing-dialog 的四段 grid——本弹窗是 header/body/footer 三段)。 */
+.acaps-detail-dialog { width: min(var(--page-max-width), 96vw); height: calc(100dvh - 101px); max-height: none; min-height: 0; }
 .acaps-detail-dialog .acaps-detail-body { min-height: 0; }
 .acaps-modal-head-main { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .acaps-modal-head-main .acaps-card-icon { width: 44px; height: 44px; font-size: 20px; flex: none; }
@@ -14091,6 +14092,14 @@ html[data-theme="dark"] .acaps-usage-row .num { color: #a3b1bd; }
 html[data-theme="dark"] .acaps-detail-title p,
 html[data-theme="dark"] .acaps-detail-body p { color: #9aa6b2; }
 .acaps-lookup-layer > * { pointer-events: auto; }
+/* 来源 pill 页签(2026-11-12 用户确认:对齐 Codex 桌面端目录页签)。 */
+.acaps-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 12px; scrollbar-width: thin; }
+.acaps-tab { flex: none; padding: 6px 14px; border: none; border-radius: 999px; background: transparent; color: var(--ink-400); font-size: 12.5px; cursor: pointer; white-space: nowrap; transition: background 150ms ease, color 150ms ease; }
+.acaps-tab small { margin-left: 3px; font-size: 10.5px; opacity: 0.75; }
+.acaps-tab:hover { background: var(--surface-2); color: var(--ink); }
+.acaps-tab.on { background: var(--surface-3, #f2f2f2); color: var(--ink); font-weight: 600; }
+html[data-theme="dark"] .acaps-tab.on { background: #2b313b; color: #e7ecf3; }
+
 /* Diff 对比对象双下拉(2026-11-12 用户确认交互)。 */
 .acaps-diff-picker { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; font-size: 12.5px; }
 .acaps-diff-picker-label { font-weight: 600; font-size: 12px; color: var(--ink-400); }
@@ -14102,12 +14111,15 @@ html[data-theme="dark"] .acaps-diff-truncated,
 html[data-theme="dark"] .acaps-card-desc,
 html[data-theme="dark"] .acaps-variant-note,
 html[data-theme="dark"] .acaps-ver-badge { color: #9aa6b2; }
-.acaps-diff-actions { display: flex; gap: 8px; margin-top: 8px; }
+/* 弹窗内操作按钮族(2026-11-12 用户确认:弃灰色,对齐全站按钮视觉)。 */
+.acaps-diff-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .acaps-diff-actions button {
-  font-size: 12px; padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 6px;
-  background: var(--surface-2); color: var(--ink); cursor: pointer;
+  min-height: 32px; font-size: 12.5px; padding: 5px 14px; border: 1px solid var(--accent); border-radius: 6px;
+  background: var(--surface); color: var(--accent); cursor: pointer; transition: background 120ms ease, color 120ms ease;
 }
-.acaps-diff-actions button:hover { background: var(--surface-3); }
+.acaps-diff-actions button:hover { background: var(--accent); color: #fff; }
+.acaps-diff-actions button.danger { border-color: #b3532c; color: #b3532c; }
+.acaps-diff-actions button.danger:hover { background: #b3532c; color: #fff; }
 
 /* SKILL.md 全文 */
 .acaps-skill-md {

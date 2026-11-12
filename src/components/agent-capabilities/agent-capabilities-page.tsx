@@ -186,12 +186,12 @@ export function AgentCapabilitiesPage({mechanismProfiles}: {
           {loading && !data ? <p className="agent-caps-note">正在读取本机台账…</p> : null}
           {category === "mechanisms" ? <MechanismPanel profiles={mechanismProfiles} agentId={agentId} /> : null}
           {category === "usage" ? <UsagePanel agentId={agentId} /> : null}
-          {category === "skills" ? <CategoryPanel title="Skills" groups={groupSkills(agent)} emptyText="无 Skills 目录" onSelectItem={setDetailTarget} /> : null}
-          {category === "mcp" ? <CategoryPanel title="MCP 服务" groups={groupMcp(agent)} emptyText="未配置 MCP 服务" onSelectItem={setDetailTarget} /> : null}
-          {category === "tools" ? <CategoryPanel title="工具（wire 观测）" groups={groupTools(agent)} emptyText="暂无已捕获的工具清单" onSelectItem={setDetailTarget} /> : null}
-          {category === "plugins" ? <CategoryPanel title={agent?.pluginsLabel ?? "插件"} groups={groupPlugins(agent)} emptyText="无" onSelectItem={setDetailTarget} /> : null}
-          {category === "rules" ? <CategoryPanel title="内置规则" groups={groupRules(agent)} emptyText="未发现规则文件" onSelectItem={setDetailTarget} /> : null}
-          {category === "prompts" ? <CategoryPanel title="系统提示词" groups={groupPrompts(agent)} emptyText="未发现系统提示词文件" onSelectItem={setDetailTarget} /> : null}
+          {category === "skills" ? <CategoryPanel key={agentId + ":" + category} title="Skills" groups={groupSkills(agent)} emptyText="无 Skills 目录" onSelectItem={setDetailTarget} /> : null}
+          {category === "mcp" ? <CategoryPanel key={agentId + ":" + category} title="MCP 服务" groups={groupMcp(agent)} emptyText="未配置 MCP 服务" onSelectItem={setDetailTarget} /> : null}
+          {category === "tools" ? <CategoryPanel key={agentId + ":" + category} title="工具（wire 观测）" groups={groupTools(agent)} emptyText="暂无已捕获的工具清单" onSelectItem={setDetailTarget} /> : null}
+          {category === "plugins" ? <CategoryPanel key={agentId + ":" + category} title={agent?.pluginsLabel ?? "插件"} groups={groupPlugins(agent)} emptyText="无" onSelectItem={setDetailTarget} /> : null}
+          {category === "rules" ? <CategoryPanel key={agentId + ":" + category} title="内置规则" groups={groupRules(agent)} emptyText="未发现规则文件" onSelectItem={setDetailTarget} /> : null}
+          {category === "prompts" ? <CategoryPanel key={agentId + ":" + category} title="系统提示词" groups={groupPrompts(agent)} emptyText="未发现系统提示词文件" onSelectItem={setDetailTarget} /> : null}
         </main>
       </div>
 
@@ -288,22 +288,54 @@ function groupPrompts(agent?: AgentCapabilityLedger): ItemGroup[] {
 }
 
 /** 右侧通用分类面板:按来源分组,两列卡片网格。 */
+/** 页签短名:全局(默认)/系统/插件名/项目——对齐 Codex 桌面端的目录页签呈现。 */
+function groupTabLabel(label: string): string {
+  if (label === "用户全局") return "全局";
+  if (label === "系统 / 个人") return "系统";
+  if (label.startsWith("插件 · ")) return label.slice("插件 · ".length);
+  if (label === "项目") return "项目";
+  if (label.startsWith("项目 · ")) return label.slice("项目 · ".length);
+  return label;
+}
+
 function CategoryPanel({title, groups, emptyText, onSelectItem}: {
   title: string;
   groups: ItemGroup[];
   emptyText: string;
   onSelectItem: (item: CapabilityLedgerItem) => void;
 }) {
+  /* 2026-11-12 用户确认交互:分组不再纵向堆叠,改为顶部 pill 页签
+     (全局默认 / 系统 / 各识别目录名),下方仅呈现所选页签的内容。 */
+  const [activeLabel, setActiveLabel] = useState<string | undefined>(undefined);
+  /* 不用 effect 重置:groups 每次父渲染都是新数组,依赖它会把选中页签
+     打回第一组(开详情弹窗即触发)。切换 Agent/分类由调用点 key 重挂载承担。 */
+  const active = groups.find(g => g.label === activeLabel) ?? groups[0];
   return (
     <div className="acaps-category">
       <h3 className="acaps-category-title">{title} <span>{groups.reduce((sum, g) => sum + g.items.length, 0)} 项</span></h3>
       {groups.length === 0 ? (
         <p className="agent-caps-note">{emptyText}</p>
-      ) : groups.map(group => (
-        <section key={group.label} className="acaps-group-section">
-          <h4 className="acaps-group-label">{group.label} <small>{group.items.length}</small></h4>
-          <div className="acaps-card-grid">
-            {group.items.map(item => (
+      ) : (
+        <>
+          <div className="acaps-tabs" role="tablist" aria-label={`${title}来源`}>
+            {groups.map(group => (
+              <button
+                type="button"
+                key={group.label}
+                role="tab"
+                aria-selected={active?.label === group.label}
+                className={`acaps-tab${active?.label === group.label ? " on" : ""}`}
+                onClick={() => setActiveLabel(group.label)}
+              >
+                {groupTabLabel(group.label)} <small>{group.items.length}</small>
+              </button>
+            ))}
+          </div>
+          {active ? (
+            <section className="acaps-group-section">
+              <h4 className="acaps-group-label">{active.label} <small>{active.items.length}</small></h4>
+              <div className="acaps-card-grid">
+                {active.items.map(item => (
               <button type="button" key={`${item.kind}:${item.name}:${item.sourcePath ?? ""}`} className="acaps-card acaps-card-clickable" title={item.sourcePath} onClick={() => onSelectItem(item)}>
                 <div className="acaps-card-icon" data-kind={item.kind}>
                   {item.kind === "skill" ? "◆" : item.kind === "mcp_server" ? "⬡" : item.kind === "plugin" ? "▣" : item.kind === "rule" ? "☰" : item.kind === "system_prompt" ? "✎" : "⚙"}
@@ -316,11 +348,13 @@ function CategoryPanel({title, groups, emptyText, onSelectItem}: {
                   {item.description ? <p className="acaps-card-desc">{item.description.slice(0, 80)}</p> : null}
                   {item.detail && !item.description ? <p className="acaps-card-desc">{item.detail}</p> : null}
                 </div>
-              </button>
-            ))}
-          </div>
-        </section>
-      ))}
+                </button>
+              ))}
+              </div>
+            </section>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
@@ -598,7 +632,7 @@ function DetailDrawer({item, agentId, onClose}: {
   return (
     <>
       {createPortal(
-        <div className="settings-modal-backdrop" role="presentation" onClick={onClose}>
+        <div className="settings-modal-backdrop pricing-modal-backdrop" role="presentation" onClick={onClose}>
           <section className="settings-dialog acaps-detail-dialog" role="dialog" aria-modal="true" aria-label={`${kindLabel}详情`} onClick={event => event.stopPropagation()}>
           <header className="settings-header">
             <div className="acaps-modal-head-main">
@@ -702,7 +736,7 @@ function DetailDrawer({item, agentId, onClose}: {
                     <select value={effectiveB} onChange={e => setDiffB(e.target.value)} aria-label="对比对象 B">
                       {selectable.map(a => <option key={a.agentId} value={a.agentId}>{optionLabel(a)}</option>)}
                     </select>
-                    <button type="button" disabled={effectiveA === effectiveB} onClick={() => void openDiff(effectiveA, effectiveB)}>对比</button>
+                    <button type="button" className="primary-button" disabled={effectiveA === effectiveB} onClick={() => void openDiff(effectiveA, effectiveB)}>对比</button>
                   </div>
                 );
               })()}
@@ -785,7 +819,7 @@ function DetailDrawer({item, agentId, onClose}: {
                 查看调用记录与使用分析 →
               </button>
             ) : <span aria-hidden="true" />}
-            <button type="button" className="ghost-btn" onClick={onClose}>关闭</button>
+            <button type="button" className="secondary-button" onClick={onClose}>关闭</button>
           </footer>
         </section>
       </div>,
