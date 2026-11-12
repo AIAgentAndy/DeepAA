@@ -1,5 +1,5 @@
-import {cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync} from "node:fs";
-import {basename, join} from "node:path";
+import {cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync} from "node:fs";
+import {basename, join, resolve, sep} from "node:path";
 import {createHash} from "node:crypto";
 import {invalidateCapabilityScanCache, skillSyncTargetDir} from "./scanner";
 
@@ -19,6 +19,30 @@ export interface SkillSyncParams {
 export interface SkillSyncOutcome {
   status: number;
   body: Record<string, unknown>;
+}
+
+/** 不支持目录同步的 Agent 的用户可读原因(UI 与 API 共用一份)。 */
+export const SYNC_UNSUPPORTED_REASONS: Record<string, string> = {
+  zcode: "zcode 通过插件市场管理 Skill,不支持目录同步",
+  dsh: "dsh 无文件化 Skill 目录,不支持目录同步",
+};
+
+/**
+ * sourcePath 白名单根(相对 home):只允许从本机 Agent 配置目录、共享 skill 根
+ * 与项目工作区拷入——sourcePath 来自请求体,不做归属校验等于任意目录读入写盘。
+ */
+const SYNC_SOURCE_ROOTS = [".codex", ".claude", ".zcode", ".dsh", ".config/opencode", ".agents"];
+
+function sourcePathAllowed(home: string, sourcePath: string): boolean {
+  const real = (p: string): string => {
+    try { return realpathSync(p); } catch { return resolve(p); }
+  };
+  const src = real(sourcePath);
+  const roots = [
+    ...SYNC_SOURCE_ROOTS.map(r => real(join(home, r))),
+    real(join(home, "Documents", "UGit")),
+  ];
+  return roots.some(r => src === r || src.startsWith(r + sep));
 }
 
 function md5Of(path: string): string {
@@ -43,9 +67,19 @@ export function performSkillSync(params: SkillSyncParams): SkillSyncOutcome {
   }
   const targetDir = skillSyncTargetDir(home, targetAgent);
   if (!targetDir) {
-    return {status: 400, body: {error: "TARGET_NOT_SUPPORTED", message: `${targetAgent} 不支持 skill 同步`}};
+    return {status: 400, body: {error: "TARGET_NOT_SUPPORTED", message: SYNC_UNSUPPORTED_REASONS[targetAgent] ?? `${targetAgent} 不支持 skill 同步`}};
   }
-  const targetPath = join(targetDir, skillName);
+  // 插件命名空间名(plugin:skill)落目标时剥前缀——目标 Agent 只识别裸目录名,
+  // 冒号目录是扫描盲区(纯垃圾落盘)。
+  const targetName = skillName.includes(":") ? skillName.split(":").pop()! : skillName;
+  if (!targetName || basename(targetName) !== targetName || targetName === "." || targetName === "..") {
+    return {status: 400, body: {error: "INVALID_SKILL_NAME", message: "skillName 不能包含路径分隔符"}};
+  }
+  // 归属校验(验收审计 B HIGH-1):源必须位于本机已知 skill 根之下。
+  if (!sourcePathAllowed(home, sourcePath)) {
+    return {status: 403, body: {error: "SOURCE_FORBIDDEN", message: "源目录不在允许的 skill 根范围内"}};
+  }
+  const targetPath = join(targetDir, targetName);
 
   // 安全检查:源必须存在且是目录。
   if (!existsSync(sourcePath) || !statSync(sourcePath).isDirectory()) {

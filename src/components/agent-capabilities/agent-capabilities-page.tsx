@@ -303,12 +303,15 @@ function CategoryPanel({title, groups, emptyText, onSelectItem}: {
           <h4 className="acaps-group-label">{group.label} <small>{group.items.length}</small></h4>
           <div className="acaps-card-grid">
             {group.items.map(item => (
-              <button type="button" key={`${item.kind}:${item.name}`} className="acaps-card acaps-card-clickable" title={item.sourcePath} onClick={() => onSelectItem(item)}>
+              <button type="button" key={`${item.kind}:${item.name}:${item.sourcePath ?? ""}`} className="acaps-card acaps-card-clickable" title={item.sourcePath} onClick={() => onSelectItem(item)}>
                 <div className="acaps-card-icon" data-kind={item.kind}>
                   {item.kind === "skill" ? "◆" : item.kind === "mcp_server" ? "⬡" : item.kind === "plugin" ? "▣" : item.kind === "rule" ? "☰" : item.kind === "system_prompt" ? "✎" : "⚙"}
                 </div>
                 <div className="acaps-card-body">
-                  <b className="acaps-card-name">{item.name}</b>
+                  <b className="acaps-card-name">
+                    {item.name}
+                    {skillVersionBadge(item.sourcePath) ? <span className="acaps-ver-badge">{skillVersionBadge(item.sourcePath)}</span> : null}
+                  </b>
                   {item.description ? <p className="acaps-card-desc">{item.description.slice(0, 80)}</p> : null}
                   {item.detail && !item.description ? <p className="acaps-card-desc">{item.detail}</p> : null}
                 </div>
@@ -460,6 +463,12 @@ interface UsageData {
  * Skill 显示 SKILL.md 全文 + 跨 Agent 状态 + 一键同步;
  * 工具显示描述 + 参数 + 调用链接。
  */
+/** 插件缓存多版本 skill 的版本徽标(消解同名副本的"重复条目"观感,验收审计 A M-2)。 */
+const PLUGIN_VERSION_BADGE_RE = /\/plugins\/cache\/[^/]+\/[^/]+\/([^/]+)\/skills\//;
+function skillVersionBadge(path?: string): string | undefined {
+  return path ? PLUGIN_VERSION_BADGE_RE.exec(path)?.[1] : undefined;
+}
+
 function DetailDrawer({item, agentId, onClose}: {
   item: DetailItem | undefined;
   agentId: string;
@@ -470,6 +479,8 @@ function DetailDrawer({item, agentId, onClose}: {
   const [diffData, setDiffData] = useState<DiffData>();
   const [syncStatus, setSyncStatus] = useState("");
   const [pendingOverwrite, setPendingOverwrite] = useState<{targetAgent: string; source: {agentId: string; path: string}}>();
+  const [syncNonce, setSyncNonce] = useState<string>();
+  const [diffError, setDiffError] = useState("");
   const isSkill = item?.kind === "skill";
 
   useEffect(() => {
@@ -477,7 +488,10 @@ function DetailDrawer({item, agentId, onClose}: {
     setSkillDetail(undefined);
     fetch(`/api/agent-capabilities/skill-detail?name=${encodeURIComponent(item.name)}`, {cache: "no-store"})
       .then(r => r.ok ? r.json() : undefined)
-      .then(d => setSkillDetail(d))
+      .then(d => {
+        setSkillDetail(d);
+        if (typeof d?.nonce === "string") setSyncNonce(d.nonce);
+      })
       .catch(() => {});
   }, [isSkill, item?.name]);
 
@@ -494,9 +508,16 @@ function DetailDrawer({item, agentId, onClose}: {
       const res = await fetch("/api/agent-capabilities/skill-sync", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({skillName: item.name, sourceAgent: source.agentId, targetAgent, sourcePath: source.path, confirm: force}),
+        body: JSON.stringify({skillName: item.name, sourceAgent: source.agentId, targetAgent, sourcePath: source.path, confirm: force, nonce: syncNonce}),
       });
       const data = await res.json();
+      // nonce 逐次轮换:任何通过闸门的响应都携带新值。
+      if (typeof data.nonce === "string") setSyncNonce(data.nonce);
+      if (res.status === 403 && data.error === "LAUNCH_NONCE_INVALID") {
+        setSyncStatus("操作凭证已失效,已自动刷新,请重试");
+        void refreshSkillDetail();
+        return;
+      }
       if (res.status === 409 && data.error === "CONFIRM_REQUIRED") {
         setSyncStatus("");
         setPendingOverwrite({targetAgent, source: {agentId: source.agentId, path: source.path}});
@@ -516,17 +537,24 @@ function DetailDrawer({item, agentId, onClose}: {
     if (!item) return;
     fetch(`/api/agent-capabilities/skill-detail?name=${encodeURIComponent(item.name)}`, {cache: "no-store"})
       .then(r => r.ok ? r.json() : undefined)
-      .then(d => { if (d) setSkillDetail(d); })
+      .then(d => {
+        if (d) setSkillDetail(d);
+        if (typeof d?.nonce === "string") setSyncNonce(d.nonce);
+      })
       .catch(() => {});
   };
 
   const openDiff = async (agentA: string, agentB: string) => {
     if (!item) return;
     setDiffData(undefined);
+    setDiffError("");
     fetch(`/api/agent-capabilities/skill-diff?name=${encodeURIComponent(item.name)}&agentA=${agentA}&agentB=${agentB}`)
       .then(r => r.ok ? r.json() : undefined)
-      .then(d => setDiffData(d))
-      .catch(() => {});
+      .then(d => {
+        if (d) setDiffData(d);
+        else setDiffError("Diff 加载失败,请重试");
+      })
+      .catch(() => setDiffError("Diff 加载失败,请重试"));
   };
 
   if (!item) return null;
@@ -537,7 +565,6 @@ function DetailDrawer({item, agentId, onClose}: {
     : item.kind === "system_prompt" ? "系统提示词" : "工具";
   const allAgents = ["codex", "claude", "zcode", "dsh", "opencode"] as const;
   const presence = new Map(skillDetail?.agents.map(a => [a.agentId, a]) ?? []);
-  if (item.kind === "skill" && item.detail === "用户全局") presence.set("__global", {agentId: "__global", path: item.sourcePath ?? "", contentHash: "", consistent: true});
 
   return (
     <>
@@ -565,27 +592,44 @@ function DetailDrawer({item, agentId, onClose}: {
           {/* 跨 Agent 状态(核心竞争力) */}
           {isSkill && skillDetail ? (
             <section>
-              <h5>跨 Agent 状态 {skillDetail.allConsistent ? "· 内容一致 ✅" : "· 内容不一致 ⚠️"}</h5>
+              <h5>
+                跨 Agent 状态 · {skillDetail.agents.length} Agent{" "}
+                {skillDetail.allConsistent
+                  ? (skillDetail.contentKnown === false ? "· 内容未知" : "· 内容一致 ✅")
+                  : "· 内容不一致 ⚠️"}
+              </h5>
               <div className="acaps-cross-grid">
                 {allAgents.map(agent => {
                   const found = presence.get(agent);
+                  // 同步按钮只对支持目录同步的 Agent 渲染(zcode/dsh 等盲区目标诚实拒绝)。
+                  const syncable = skillDetail.syncTargets?.includes(agent) ?? false;
                   return (
                     <div key={agent} className="acaps-cross-row">
-                      <span className="acaps-cross-agent">{agentLabel(agent)}</span>
+                      <span className="acaps-cross-agent">
+                        {agentLabel(agent)}
+                        {found?.variants && found.variants > 1 ? <small className="acaps-variant-note"> ×{found.variants}</small> : null}
+                      </span>
                       {found ? (
-                        <span className={`acaps-cross-status ${found.consistent ? "ok" : "diff"}`}>
-                          {found.consistent ? "✅ 一致" : "⚠️ 不同"}
-                        </span>
-                      ) : (
+                        found.contentHash === "unknown" ? (
+                          <span className="acaps-cross-status missing">— 未知</span>
+                        ) : (
+                          <span className={`acaps-cross-status ${found.consistent ? "ok" : "diff"}`}>
+                            {found.consistent ? "✅ 一致" : "⚠️ 不同"}
+                          </span>
+                        )
+                      ) : syncable ? (
                         <>
                           <span className="acaps-cross-status missing">— 无</span>
                           <button type="button" className="acaps-sync-btn" onClick={() => void doSync(agent)}>同步 →</button>
                         </>
+                      ) : (
+                        <span className="acaps-cross-status missing" title="该 Agent 不支持目录同步">— 无</span>
                       )}
                     </div>
                   );
                 })}
               </div>
+              {diffError ? <p className="acaps-sync-status">{diffError}</p> : null}
               {syncStatus ? <p className="acaps-sync-status">{syncStatus}</p> : null}
               {/* 覆盖二次确认:目标已存在且内容不同时弹出 */}
               {pendingOverwrite ? (
@@ -604,12 +648,13 @@ function DetailDrawer({item, agentId, onClose}: {
               {!skillDetail.allConsistent ? (
                 <div className="acaps-diff-actions">
                   {(() => {
-                    /* M-1 修复:配对 = 基准 Agent(首个有效 hash)× 首个 hash 不同的 Agent。
-                       只取「前两个在场 Agent」会在 codex/claude 一致、第三方不同时打开空 diff,
-                       且不一致 Agent 无其它入口消解分歧。 */
+                    /* 配对 = 基准 Agent(首个有效 hash)× 首个 hash 不同的**其它** Agent。
+                       验收审计 A HIGH-1:按对象身份比较会让同 Agent 多副本自比
+                       (「ZCode ↔ ZCode」空 diff);索引侧已按 (name, agentId) 收敛,
+                       此处再按 agentId 防御性去重,无跨 Agent 分歧时不渲染入口。 */
                     const withHash = skillDetail.agents.filter(a => a.contentHash !== "unknown");
                     const baseline = withHash[0];
-                    const divergent = withHash.find(a => baseline && a !== baseline && a.contentHash !== baseline.contentHash);
+                    const divergent = withHash.find(a => baseline && a.agentId !== baseline.agentId && a.contentHash !== baseline.contentHash);
                     return baseline && divergent
                       ? <button type="button" onClick={() => void openDiff(baseline.agentId, divergent.agentId)}>查看 Diff ({agentLabel(baseline.agentId)} ↔ {agentLabel(divergent.agentId)})</button>
                       : null;
@@ -622,17 +667,23 @@ function DetailDrawer({item, agentId, onClose}: {
           {/* Diff 视图 */}
           {diffData ? (
             <section>
-              <h5>Diff · {diffData.agentA} ↔ {diffData.agentB}</h5>
+              <h5>Diff · {agentLabel(diffData.agentA)} ↔ {agentLabel(diffData.agentB)}</h5>
               <div className="acaps-diff-view">
                 {diffData.hunks.filter(h => h.type !== "ctx").length === 0 ? (
                   <p className="agent-caps-note">内容完全一致。</p>
                 ) : diffData.hunks.slice(0, 100).map((h, i) => (
                   <div key={i} className={`acaps-diff-line ${h.type}`}>
                     <span className="mono">{h.type === "add" ? `+${h.bLine ?? ""}` : h.type === "del" ? `-${h.aLine ?? ""}` : " "}</span>
-                    <span className="mono">{h.text.slice(0, 80)}</span>
+                    <span className="mono">{h.text.length > 80 ? `${h.text.slice(0, 80)}…` : h.text}</span>
                   </div>
                 ))}
               </div>
+              {/* 截断必须明示(项目红线):行数与单行长度均受限。 */}
+              {diffData.hunks.length > 100 ? (
+                <p className="acaps-diff-truncated">预览受限:仅显示前 100 行差异,共 {diffData.hunks.length} 行;超长行已截断到 80 字符。</p>
+              ) : (
+                <p className="acaps-diff-truncated">超长行已截断到 80 字符。</p>
+              )}
               {/* 一键合并 */}
               <div className="acaps-diff-actions">
                 <button type="button" onClick={() => {
@@ -644,6 +695,11 @@ function DetailDrawer({item, agentId, onClose}: {
                 <button type="button" onClick={() => void openDiff(diffData!.agentB, diffData.agentA)}>反向合并</button>
               </div>
             </section>
+          ) : null}
+
+          {/* 正文缺失/超限的诚实提示(验收审计 B LOW-4) */}
+          {isSkill && skillDetail && !skillDetail.content ? (
+            <p className="agent-caps-note">SKILL.md 不可读或超过 100 KiB 上限,未展示全文。</p>
           ) : null}
 
           {/* SKILL.md 全文 */}
@@ -695,9 +751,14 @@ function DetailDrawer({item, agentId, onClose}: {
 
 interface SkillDetailData {
   name: string;
-  agents: Array<{agentId: string; path: string; contentHash: string; consistent: boolean; description?: string}>;
+  agents: Array<{agentId: string; path: string; contentHash: string; consistent: boolean; description?: string; variants?: number}>;
   allConsistent: boolean;
+  contentKnown?: boolean;
   content?: string;
+  /** 支持目录同步的 Agent 列表(服务端下发,决定同步按钮渲染)。 */
+  syncTargets?: string[];
+  /** 同步写操作的单次 nonce(服务端下发,逐次轮换)。 */
+  nonce?: string;
 }
 
 interface DiffData {

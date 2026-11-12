@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {createHash} from "node:crypto";
 import {mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -76,6 +77,45 @@ describe("跨 Agent skill 同步与一致性", () => {
     assert.ok(ledgers.crossAgentIndex?.inconsistentNames.includes("s"));
   });
 
+  test("索引收敛:同 Agent 插件多版本收敛单行,取最新版 hash(验收审计 HIGH-2)", () => {
+    const home = makeHome();
+    const mk = (ver: string, body: string) => {
+      const dir = join(home, ".zcode", "cli", "plugins", "cache", "zcode-plugins-official", "browser-use", ver, "skills", "control-browser");
+      mkdirSync(dir, {recursive: true});
+      writeFileSync(join(dir, "SKILL.md"), body);
+    };
+    mk("0.4.0", "# old");
+    mk("0.4.2", "# mid");
+    mk("0.5.1", "# new");
+    const ledgers = scanLocalCapabilities({homeDir: home, noCache: true}) as
+      Awaited<ReturnType<typeof scanLocalCapabilities>> & {crossAgentIndex?: {skills: Array<{name: string; agents: Array<{agentId: string; contentHash: string; consistent: boolean; variants?: number}>; allConsistent: boolean; contentKnown: boolean}>; inconsistentNames: string[]}};
+    const entry = ledgers.crossAgentIndex?.skills.find(s => s.name === "browser-use:control-browser");
+    assert.ok(entry, "索引条目");
+    assert.equal(entry.agents.length, 1, "同 Agent 收敛为单行");
+    assert.equal(entry.agents[0]!.agentId, "zcode");
+    assert.equal(entry.agents[0]!.variants, 3, "副本数如实记录");
+    assert.equal(entry.agents[0]!.contentHash, createHash("md5").update("# new").digest("hex"), "取最新版 0.5.1 内容");
+    assert.equal(entry.allConsistent, true, "单 Agent 不再产生假「不一致」");
+    assert.equal(entry.contentKnown, true);
+    assert.ok(!ledgers.crossAgentIndex!.inconsistentNames.includes("browser-use:control-browser"), "不污染不一致清单");
+  });
+
+  test("全部 hash unknown:contentKnown=false(不冒充「内容一致」)", () => {
+    const home = makeHome();
+    const big = "x".repeat(101 * 1024);
+    for (const agent of [".codex", ".claude"]) {
+      const dir = join(home, agent, "skills", "huge");
+      mkdirSync(dir, {recursive: true});
+      writeFileSync(join(dir, "SKILL.md"), big);
+    }
+    const ledgers = scanLocalCapabilities({homeDir: home, noCache: true}) as
+      Awaited<ReturnType<typeof scanLocalCapabilities>> & {crossAgentIndex?: {skills: Array<{name: string; allConsistent: boolean; contentKnown: boolean}>}};
+    const entry = ledgers.crossAgentIndex?.skills.find(s => s.name === "huge");
+    assert.ok(entry);
+    assert.equal(entry.contentKnown, false, "无可校验内容");
+    assert.equal(entry.allConsistent, true, "一致性判断中立");
+  });
+
   test("同步全链路:409 确认 → 覆盖成功 → 内容真实落盘", () => {
     const home = makeHome();
     const srcDir = join(home, ".codex", "skills", "demo");
@@ -109,9 +149,54 @@ describe("跨 Agent skill 同步与一致性", () => {
     const srcDir = join(home, ".codex", "skills", "fresh");
     mkdirSync(srcDir, {recursive: true});
     writeFileSync(join(srcDir, "SKILL.md"), "# fresh");
-    const out = performSkillSync({home, skillName: "fresh", sourceAgent: "codex", targetAgent: "zcode", sourcePath: srcDir});
+    const out = performSkillSync({home, skillName: "fresh", sourceAgent: "codex", targetAgent: "opencode", sourcePath: srcDir});
     assert.equal(out.status, 200);
-    assert.ok(existsSync(join(home, ".zcode", "skills", "fresh", "SKILL.md")));
+    assert.ok(existsSync(join(home, ".config", "opencode", "skills", "fresh", "SKILL.md")));
+  });
+
+  test("盲区目标诚实拒绝:zcode/dsh 不支持目录同步(带可读原因)", () => {
+    const home = makeHome();
+    const srcDir = join(home, ".codex", "skills", "s");
+    mkdirSync(srcDir, {recursive: true});
+    writeFileSync(join(srcDir, "SKILL.md"), "# s");
+    for (const agent of ["zcode", "dsh"]) {
+      const out = performSkillSync({home, skillName: "s", sourceAgent: "codex", targetAgent: agent, sourcePath: srcDir});
+      assert.equal(out.status, 400, agent);
+      assert.equal(out.body.error, "TARGET_NOT_SUPPORTED", agent);
+      assert.ok(String(out.body.message).includes("不支持目录同步"), `${agent} 原因文案`);
+      // 落盘必须不存在(同步目标目录连建都不建)。
+      assert.ok(!existsSync(join(home, agent === "zcode" ? ".zcode" : ".dsh", "skills")), agent);
+    }
+  });
+
+  test("插件冒号名落点剥前缀(目标 Agent 只识别裸目录名)", () => {
+    const home = makeHome();
+    const srcDir = join(home, ".codex", "skills", "browser-use:control-browser");
+    mkdirSync(srcDir, {recursive: true});
+    writeFileSync(join(srcDir, "SKILL.md"), "# plugin skill");
+    const out = performSkillSync({home, skillName: "browser-use:control-browser", sourceAgent: "codex", targetAgent: "claude", sourcePath: srcDir});
+    assert.equal(out.status, 200);
+    assert.ok(existsSync(join(home, ".claude", "skills", "control-browser", "SKILL.md")), "落在裸名目录");
+    assert.ok(!existsSync(join(home, ".claude", "skills", "browser-use:control-browser")), "绝不落冒号目录");
+  });
+
+  test("源白名单:仅允许本机 Agent 配置根/.agents/项目工作区", () => {
+    const home = makeHome();
+    // home 外目录拒绝。
+    const outside = mkdtempSync(join(tmpdir(), "deepaa-outside-"));
+    try {
+      mkdirSync(join(outside, "evil"), {recursive: true});
+      writeFileSync(join(outside, "evil", "SKILL.md"), "# evil");
+      const out1 = performSkillSync({home, skillName: "evil", sourceAgent: "codex", targetAgent: "claude", sourcePath: join(outside, "evil")});
+      assert.equal(out1.status, 403);
+      assert.equal(out1.body.error, "SOURCE_FORBIDDEN");
+    } finally { rmSync(outside, {recursive: true, force: true}); }
+    // home 内但不在任何白名单根下同样拒绝。
+    mkdirSync(join(home, "loose"), {recursive: true});
+    writeFileSync(join(home, "loose", "SKILL.md"), "# loose");
+    const out2 = performSkillSync({home, skillName: "loose", sourceAgent: "codex", targetAgent: "claude", sourcePath: join(home, "loose")});
+    assert.equal(out2.status, 403);
+    assert.equal(out2.body.error, "SOURCE_FORBIDDEN");
   });
 
   test("MEDIUM-3: 路径遍历 skillName 拒绝", () => {
@@ -148,7 +233,8 @@ describe("跨 Agent skill 同步与一致性", () => {
 
   test("源目录缺失/SKILL.md 缺失/不支持的目标", () => {
     const home = makeHome();
-    assert.equal(performSkillSync({home, skillName: "s", sourceAgent: "codex", targetAgent: "claude", sourcePath: join(home, "nope")}).body.error, "SOURCE_NOT_FOUND");
+    // 白名单根内不存在 → SOURCE_NOT_FOUND(白名单外会先命中 SOURCE_FORBIDDEN,另有专测)。
+    assert.equal(performSkillSync({home, skillName: "s", sourceAgent: "codex", targetAgent: "claude", sourcePath: join(home, ".codex", "skills", "nope")}).body.error, "SOURCE_NOT_FOUND");
     // 有目录无 SKILL.md:同步本身按目录复制,但一致性 hash 会是 unknown;此处校验目标不支持分支。
     assert.equal(performSkillSync({home, skillName: "s", sourceAgent: "codex", targetAgent: "unknown-agent", sourcePath: home}).body.error, "TARGET_NOT_SUPPORTED");
     assert.equal(performSkillSync({home, skillName: "", sourceAgent: "codex", targetAgent: "claude", sourcePath: home}).body.error, "MISSING_PARAMS");

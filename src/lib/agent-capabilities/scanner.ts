@@ -41,7 +41,7 @@ export type LedgerAvailability =
  */
 export interface CrossAgentSkillEntry {
   name: string;
-  /** 各 Agent 上的存在性与内容标识。 */
+  /** 各 Agent 上的存在性与内容标识(同 Agent 同名多副本已收敛为单行)。 */
   agents: Array<{
     agentId: string;
     path: string;
@@ -51,9 +51,13 @@ export interface CrossAgentSkillEntry {
     consistent: boolean;
     detail?: string;
     description?: string;
+    /** 该 Agent 侧同名物理副本数(插件多版本、系统+全局+项目并存时 >1)。 */
+    variants?: number;
   }>;
   /** 内容是否跨 Agent 一致(所有存在的 hash 相同)。 */
   allConsistent: boolean;
+  /** 是否存在任一可校验内容(全部 unknown 时 false,UI 显示「内容未知」而非「一致」)。 */
+  contentKnown: boolean;
 }
 
 /** 扫描结果附加跨 Agent Skill 索引。 */
@@ -63,14 +67,19 @@ export interface CrossAgentSkillIndex {
   inconsistentNames: string[];
 }
 
-/** Agent 的 skill 同步目标目录(表驱动,无 agent 名条件分派)。 */
+/**
+ * Agent 的 skill 同步目标目录(表驱动,无 agent 名条件分派)。
+ * 2026-11-12 双验收审计收窄:zcode 经插件市场管理 Skill(不读 ~/.zcode/skills)、
+ * dsh 无文件化 Skill 目录——两者同步落点是扫描盲区(假成功),诚实移出支持列表。
+ */
 const SKILL_SYNC_TARGETS: Record<string, string> = {
   codex: "skills",
   claude: "skills",
-  zcode: "skills",
-  dsh: "skills",
   opencode: "skills",
 };
+
+/** 支持目录同步的 Agent 列表(UI 渲染同步按钮的唯一依据)。 */
+export const SKILL_SYNC_AGENT_IDS: readonly string[] = Object.keys(SKILL_SYNC_TARGETS);
 
 const SKILL_SYNC_BASE_DIRS: Record<string, string[]> = {
   codex: [".codex"],
@@ -85,6 +94,48 @@ export function skillSyncTargetDir(home: string, agentId: string): string | unde
   const base = SKILL_SYNC_BASE_DIRS[agentId];
   if (!subDir || !base) return undefined;
   return join(home, ...base, subDir);
+}
+
+/** 插件缓存路径的版本段:.../plugins/cache/<market>/<plugin>/<version>/skills/... */
+const PLUGIN_VERSION_RE = /[\\/]plugins[\\/]cache[\\/][^\\/]+[\\/][^\\/]+[\\/]([^\\/]+)[\\/]skills[\\/]/;
+
+function pluginVersionOf(path: string): string | undefined {
+  return PLUGIN_VERSION_RE.exec(path)?.[1];
+}
+
+/** 点分版本比较,>0 表示 a 更新;数字段数值比较,非数字段退化为字符串比较。 */
+function compareDottedVersion(a: string, b: string): number {
+  const pa = a.split(".");
+  const pb = b.split(".");
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const sa = pa[i] ?? "";
+    const sb = pb[i] ?? "";
+    const na = Number(sa);
+    const nb = Number(sb);
+    const cmp = sa !== "" && sb !== "" && Number.isFinite(na) && Number.isFinite(nb)
+      ? na - nb
+      : sa.localeCompare(sb);
+    if (cmp !== 0) return cmp;
+  }
+  return 0;
+}
+
+type SkillAgentRow = CrossAgentSkillEntry["agents"][number];
+
+/**
+ * 同一 Agent 同名副本择一(HIGH-2 修复):插件多版本取最新版;
+ * 带版本层的新布局优先于旧无版本布局;其余稳定保留首见。
+ * 注意:「系统+全局」同名并存不会走到这里——全局/项目合并层已按名去重
+ * (Agent 自身目录优先,见 scanLocalCapabilities 合并逻辑),到达索引层的
+ * 同 Agent 多副本基本只有插件缓存多版本与双市场 legacy 布局两种形态。
+ */
+function pickSkillVariantRow(prev: SkillAgentRow, next: Omit<SkillAgentRow, "variants">): Omit<SkillAgentRow, "variants"> {
+  const pv = pluginVersionOf(prev.path);
+  const nv = pluginVersionOf(next.path);
+  if (pv === undefined && nv === undefined) return prev;
+  if (pv === undefined) return next;
+  if (nv === undefined) return prev;
+  return compareDottedVersion(nv, pv) > 0 ? next : prev;
 }
 
 export interface AgentCapabilityLedger {
@@ -280,7 +331,7 @@ export function scanLocalCapabilities(options?: {
     for (const skill of ledger.skills) {
       let entry = skillByName.get(skill.name);
       if (!entry) {
-        entry = {name: skill.name, agents: [], allConsistent: true};
+        entry = {name: skill.name, agents: [], allConsistent: true, contentKnown: false};
         skillByName.set(skill.name, entry);
       }
       // 计算 SKILL.md 内容 hash(有界读取 ≤100KiB)。
@@ -295,20 +346,32 @@ export function scanLocalCapabilities(options?: {
           }
         } catch { /* 不可读保持 unknown */ }
       }
-      // Fix MEDIUM-2: 以第一个有效 hash(非 unknown)为基准,后续与基准比较,
-      // 不回溯改写历史条目;unknown 视为不参与一致性判断。
-      const baseline = entry.agents.find(a => a.contentHash !== "unknown");
-      const consistent = contentHash === "unknown" || !baseline || baseline.contentHash === contentHash;
-      entry.agents.push({
+      // HIGH-2 修复:同一 Agent 同名多副本收敛为单行(择一规则见 pickSkillVariantRow),
+      // 一致性推迟到终态统一计算——避免 zcode 插件多版本自比污染跨 Agent 判定。
+      const row = {
         agentId: ledger.agentId,
         path: skill.sourcePath ?? "",
         contentHash,
-        consistent,
+        consistent: true,
         ...(skill.detail ? {detail: skill.detail} : {}),
         ...(skill.description ? {description: skill.description} : {}),
-      });
-      if (!consistent) entry.allConsistent = false;
+      };
+      const idx = entry.agents.findIndex(a => a.agentId === ledger.agentId);
+      if (idx === -1) entry.agents.push({...row, variants: 1});
+      else {
+        const prev = entry.agents[idx]!;
+        entry.agents[idx] = {...pickSkillVariantRow(prev, row), variants: (prev.variants ?? 1) + 1};
+      }
     }
+  }
+  // 一致性终态计算:基准 = agents 顺序上首个非 unknown hash;unknown 不参与判断。
+  for (const entry of skillByName.values()) {
+    const baseline = entry.agents.find(a => a.contentHash !== "unknown");
+    entry.contentKnown = baseline !== undefined;
+    for (const a of entry.agents) {
+      a.consistent = a.contentHash === "unknown" || !baseline || a.contentHash === baseline.contentHash;
+    }
+    entry.allConsistent = entry.agents.every(a => a.consistent);
   }
   const crossAgentIndex: CrossAgentSkillIndex = {
     skills: [...skillByName.values()].sort((a, b) => a.name.localeCompare(b.name)),

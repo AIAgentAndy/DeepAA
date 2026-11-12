@@ -4,6 +4,11 @@ import {homedir} from "node:os";
 import {resolveDeepaaDataDir} from "@/lib/data-paths";
 import {join} from "node:path";
 import {scanLocalCapabilities} from "@/lib/agent-capabilities/scanner";
+import {
+  assertLocalReadRequest,
+  DevelopmentLaunchError,
+  developmentLaunchErrorResponse,
+} from "@/lib/development-launch/security";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -35,6 +40,7 @@ function lineDiff(a: string[], b: string[]): Array<{type: "ctx" | "add" | "del";
 
 export async function GET(request: Request): Promise<Response> {
   try {
+    assertLocalReadRequest(request);
     const params = new URL(request.url).searchParams;
     const name = params.get("name")?.trim() || "";
     const agentA = params.get("agentA")?.trim() || "";
@@ -60,6 +66,7 @@ export async function GET(request: Request): Promise<Response> {
     const hunks = lineDiff(textA.split("\n"), textB.split("\n"));
     return jsonResponse({name, agentA, agentB, pathA, pathB, hunks});
   } catch (error) {
+    if (error instanceof DevelopmentLaunchError) return developmentLaunchErrorResponse(error);
     return Response.json({error: "DIFF_FAILED", message: (error as Error).message}, {status: 500});
   }
 }

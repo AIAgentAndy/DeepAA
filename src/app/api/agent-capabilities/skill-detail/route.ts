@@ -4,7 +4,13 @@ import {readFileSync, statSync} from "node:fs";
 import {homedir} from "node:os";
 import {join} from "node:path";
 import {resolveDeepaaDataDir} from "@/lib/data-paths";
-import {scanLocalCapabilities} from "@/lib/agent-capabilities/scanner";
+import {scanLocalCapabilities, SKILL_SYNC_AGENT_IDS} from "@/lib/agent-capabilities/scanner";
+import {
+  assertLocalReadRequest,
+  DevelopmentLaunchError,
+  developmentLaunchErrorResponse,
+  getLaunchNonceStore,
+} from "@/lib/development-launch/security";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -13,6 +19,7 @@ const MAX_SKILL_MD_BYTES = 100 * 1024;
 
 export async function GET(request: Request): Promise<Response> {
   try {
+    assertLocalReadRequest(request);
     const params = new URL(request.url).searchParams;
     const name = params.get("name")?.trim() || "";
     if (!name) return Response.json({error: "MISSING_PARAMS"}, {status: 400});
@@ -36,8 +43,15 @@ export async function GET(request: Request): Promise<Response> {
         } catch { /* try next */ }
       }
     }
-    return jsonResponse({...entry, ...(content ? {content} : {})});
+    // nonce 供后续同步写操作消费;syncTargets 告知 UI 哪些 Agent 支持目录同步。
+    return jsonResponse({
+      ...entry,
+      ...(content ? {content} : {}),
+      syncTargets: SKILL_SYNC_AGENT_IDS,
+      nonce: getLaunchNonceStore().issue(),
+    });
   } catch (error) {
+    if (error instanceof DevelopmentLaunchError) return developmentLaunchErrorResponse(error);
     return Response.json({error: "DETAIL_FAILED", message: (error as Error).message}, {status: 500});
   }
 }

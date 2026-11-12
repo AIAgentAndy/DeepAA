@@ -13915,7 +13915,7 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
   border-radius: 10px;
   background: var(--surface);
   cursor: default;
-  transition: border-color 0.12s, box-shadow 0.12s;
+  transition: border-color 0.12s, box-shadow 0.12s, background-color 0.12s;
 }
 
 .acaps-card:hover {
@@ -14068,6 +14068,20 @@ html[data-theme="dark"] .sqlite-workbench .fullscreen-section-shell {
 .acaps-diff-line.del { background: rgba(239, 68, 68, 0.06); color: #991b1b; }
 .acaps-diff-line.ctx { color: var(--ink-400); }
 .acaps-diff-line .mono { font-family: var(--font-mono, monospace); white-space: pre-wrap; word-break: break-all; }
+/* 暗色主题 diff 提亮(验收审计 A MEDIUM-1:浅色深字在深底上对比度仅 1.6~2:1)。 */
+html[data-theme="dark"] .acaps-diff-line.add { background: rgba(74, 222, 128, 0.10); color: #4ade80; }
+html[data-theme="dark"] .acaps-diff-line.del { background: rgba(248, 113, 113, 0.10); color: #f87171; }
+/* 暗色使用分析数字对比度(验收审计 A LOW-2)。 */
+html[data-theme="dark"] .acaps-usage-row .num { color: #a3b1bd; }
+/* 插件多版本徽标(验收审计 A MEDIUM-2:同名副本需可区分)。 */
+.acaps-ver-badge { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--line-2); border-radius: 999px; font-size: 10.5px; font-weight: 500; color: var(--ink-300); vertical-align: 1px; }
+.acaps-variant-note { margin-left: 4px; font-size: 11px; color: var(--ink-300); }
+.acaps-diff-truncated { margin: 4px 0 0; font-size: 11.5px; color: var(--ink-300); }
+/* 暗色小字提亮(UI 回归复审 LOW:截断提示与卡片描述 borderline 可读)。 */
+html[data-theme="dark"] .acaps-diff-truncated,
+html[data-theme="dark"] .acaps-card-desc,
+html[data-theme="dark"] .acaps-variant-note,
+html[data-theme="dark"] .acaps-ver-badge { color: #9aa6b2; }
 .acaps-diff-actions { display: flex; gap: 8px; margin-top: 8px; }
 .acaps-diff-actions button {
   font-size: 12px; padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 6px;
