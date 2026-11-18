@@ -14,7 +14,7 @@
  */
 
 import {existsSync, readdirSync, readFileSync, realpathSync, statSync} from "node:fs";
-import {basename, dirname, join, sep} from "node:path";
+import {basename, dirname, isAbsolute, join, sep} from "node:path";
 import {homedir} from "node:os";
 import {AGENT_REGISTRY, agentLabel} from "@/lib/agent-registry";
 
@@ -208,7 +208,8 @@ export function collectProjectPool(home: string, options?: {noCache?: boolean}):
   try { homeReal = realpathSync(home); } catch { /* 保持原样 */ }
   const underHome = (p: string): boolean => p.startsWith(home + sep) || p.startsWith(homeReal + sep);
   const add = (candidate: string): void => {
-    if (byReal.size >= MAX_PROJECT_CANDIDATES || typeof candidate !== "string" || !candidate.startsWith("/")) return;
+    // isAbsolute 而非 startsWith("/"):Windows 候选(C:\... 盘符路径)同样入池。
+    if (byReal.size >= MAX_PROJECT_CANDIDATES || typeof candidate !== "string" || !isAbsolute(candidate)) return;
     let real: string;
     try { real = realpathSync(candidate); } catch { return; }
     if (!underHome(real)) return;
@@ -774,7 +775,8 @@ function scanClaudeCode(home: string): AgentCapabilityLedger {
         for (const name of Object.keys(project.mcpServers ?? {})) {
           if (mcpNames.has(name)) continue;
           mcpNames.add(name);
-          mcpServers.push({kind: "mcp_server", name, detail: `项目 · ${projectPath.split("/").pop()}`, sourcePath: join(home, ".claude.json")});
+          // basename 而非 split("/").pop():Windows 反斜杠路径同样取到末段项目名。
+          mcpServers.push({kind: "mcp_server", name, detail: `项目 · ${basename(projectPath)}`, sourcePath: join(home, ".claude.json")});
         }
       }
     } catch {

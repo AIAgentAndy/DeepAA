@@ -113,12 +113,17 @@ API_KEY = "redacted-name-only"
     writeFileSync(join(projB, ".claude", "skills", "claude-only", "SKILL.md"), "# claude");
     writeFileSync(join(home, ".claude.json"), JSON.stringify({projects: {[projB]: {}}}));
 
-    // 项目 C:dsh 会话目录名编码(路径含 '-' 段)。
+    // 项目 C:dsh 会话目录名编码(路径含 '-' 段)。该编码(--路径--)仅实证于 POSIX:
+    // Windows 文件系统禁 ':' 且 dsh 的 Windows 编码未真机验收,不虚构 fixture(AGENTS.md
+    // 「Windows 真实可用性必须在 Windows 环境验收」),POSIX 外跳过 dsh 段,其余断言照跑。
+    const isPosix = process.platform !== "win32";
     const projC = join(home, "Documents", "dsh-proj");
     mkdirSync(join(projC, ".agents", "skills", "dsh-shared"), {recursive: true});
     writeFileSync(join(projC, ".agents", "skills", "dsh-shared", "SKILL.md"), "# dsh");
-    mkdirSync(join(home, ".dsh", "sessions"), {recursive: true});
-    mkdirSync(join(home, ".dsh", "sessions", "--" + projC.split("/").join("-") + "--"), {recursive: true});
+    if (isPosix) {
+      mkdirSync(join(home, ".dsh", "sessions"), {recursive: true});
+      mkdirSync(join(home, ".dsh", "sessions", "--" + projC.split("/").join("-") + "--"), {recursive: true});
+    }
 
     const ledgers = scanLocalCapabilities({homeDir: home, noCache: true});
     const byId = new Map(ledgers.map(l => [l.agentId, l]));
@@ -139,8 +144,10 @@ API_KEY = "redacted-name-only"
     assert.deepEqual(claudeSkills.map(s => s.name), ["claude-only"]);
     assert.equal(byId.get("codex")!.skills.filter(s => s.detail === "项目 · projB").length, 0, "无共享时其它 Agent 不出现");
 
-    // dsh 目录名解码:C 项目共享技能全员可见。
-    assert.ok(byId.get("dsh")!.skills.some(s => s.name === "dsh-shared" && s.detail === "项目 · dsh-proj"), "dsh 编码目录解码命中");
+    // dsh 目录名解码:C 项目共享技能全员可见(仅 POSIX;Windows 编码未验收,见上方 fixture 注释)。
+    if (isPosix) {
+      assert.ok(byId.get("dsh")!.skills.some(s => s.name === "dsh-shared" && s.detail === "项目 · dsh-proj"), "dsh 编码目录解码命中");
+    }
   });
 
   test("60s 缓存命中与 noCache 穿透", () => {

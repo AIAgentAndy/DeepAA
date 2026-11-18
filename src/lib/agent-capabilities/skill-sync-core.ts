@@ -1,5 +1,5 @@
 import {cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync} from "node:fs";
-import {basename, join, resolve, sep} from "node:path";
+import {basename, isAbsolute, join, resolve, sep} from "node:path";
 import {createHash} from "node:crypto";
 import {invalidateCapabilityScanCache, skillSyncTargetDir} from "./scanner";
 
@@ -43,7 +43,8 @@ function sourcePathAllowed(home: string, sourcePath: string, extraRoots?: string
   const roots = [
     ...SYNC_SOURCE_ROOTS.map(r => real(join(home, r))),
     real(join(home, "Documents", "UGit")),
-    ...(extraRoots ?? []).filter(r => typeof r === "string" && r.startsWith("/")).map(r => real(r)),
+    // isAbsolute 而非 startsWith("/"):Windows 盘符绝对路径(C:\...)同样放行,相对路径仍拒绝。
+    ...(extraRoots ?? []).filter(r => typeof r === "string" && isAbsolute(r)).map(r => real(r)),
   ];
   return roots.some(r => src === r || src.startsWith(r + sep));
 }

@@ -171,7 +171,9 @@ describe("跨 Agent skill 同步与一致性", () => {
 
   test("插件冒号名落点剥前缀(目标 Agent 只识别裸目录名)", () => {
     const home = makeHome();
-    const srcDir = join(home, ".codex", "skills", "browser-use:control-browser");
+    // 源目录用裸名:真实场景里 zcode 插件缓存的 sourcePath 本就是裸名目录,冒号只在
+    // 扫描条目名;且含 ':' 的目录名在 Windows/NTFS 上无法创建,跨平台 fixture 不虚构。
+    const srcDir = join(home, ".codex", "skills", "browser-use");
     mkdirSync(srcDir, {recursive: true});
     writeFileSync(join(srcDir, "SKILL.md"), "# plugin skill");
     const out = performSkillSync({home, skillName: "browser-use:control-browser", sourceAgent: "codex", targetAgent: "claude", sourcePath: srcDir});
