@@ -2,7 +2,7 @@
 
 **统一接入多家模型供应商，追踪 Agent 调用，看清用量与成本。**
 
-DeepAA（Deep Agent Analytics）是开源免费、本地运行的 **AI Agent 网关与可观测分析工具**。它统一管理模型供应商、模型、密钥与 Agent 配置，追踪 Agent 与模型之间的调用链路，把用量、费用和计算依据关联到具体请求；支持配置模型故障转移，降低模型或通道异常对工作会话的影响。
+DeepAA（Deep Agent Analytics）是开源免费、本地运行的 **AI Agent 网关与可观测分析工具**。它统一管理模型供应商、模型、密钥与 Agent 配置，追踪 Agent 与模型之间的调用链路，把用量、费用和计算依据关联到具体请求；盘点各 Agent 本机的 Skills、MCP 服务与工具等能力，支持跨 Agent 对比与同步；支持配置模型故障转移，降低模型或通道异常对工作会话的影响。
 
 [官网与产品预览](https://deepaa.dev/zh-CN) · [安装与接入指南](https://deepaa.dev/zh-CN/docs) · [English](./README_en.md) · [MIT 许可证](./LICENSE)
 
@@ -21,7 +21,8 @@ DeepAA（Deep Agent Analytics）是开源免费、本地运行的 **AI Agent 网
 | --- | --- |
 | **统一供应商与 Agent 接入** | 集中管理官方与中转站的模型服务、模型和密钥；启用配置同步后，在同一 Agent 中使用多家供应商的兼容模型，减少手动配置。 |
 | **Agent 调用链路追踪** | 沿任务、子线程、轮次与步骤查看调用关系，将提示词、模型输出、工具交互、Token 和耗时关联起来。 |
-| **上下文与能力证据** | 查看请求携带的工具、MCP、Skills 与规则注入，检查上下文构成估算、步间变化和压缩证据。 |
+| **上下文与能力证据** | 查看请求携带的工具、MCP、Skills 与规则注入，以及每一步实际使用了哪些能力；检查上下文构成估算、步间变化和压缩证据。 |
+| **Agent 能力盘点与跨 Agent 复用** | 盘点各 Agent 本机的 Skills、MCP 服务、插件、规则与系统提示词，以及请求中观测到的工具；对比同一 Skill 在不同 Agent 间的内容差异并一键同步；按工具与 Skill 查看声明、调用、覆盖率与执行耗时，反查到对应对话步骤。 |
 | **逐请求的成本透明** | 拆解输入、缓存读写与输出费用，查看单价、倍率、优惠规则和计算依据；按模型、供应商、Agent 与时间比较用量和成本。 |
 | **供应商状态与规则更新** | 查看支持的供应商余额与套餐余量，了解已发布目录中的新模型，以及价格、套餐、活动与能力规则变更。 |
 | **模型级故障转移** | 为模型配置有序备份链，在符合条件且尚未返回响应内容时切换可用模型，降低模型或通道异常对编码工作的影响。 |
@@ -38,6 +39,13 @@ DeepAA（Deep Agent Analytics）是开源免费、本地运行的 **AI Agent 网
 
 <p align="center">
   <a href="docs/screenshots/dashboard.png"><img src="docs/screenshots/dashboard-preview.png" alt="DeepAA 仪表盘" width="960"></a>
+</p>
+<p align="center"><sub>点击可查看完整大图</sub></p>
+
+**Agent 能力** —— 盘点本机各 Agent 的 Skills、MCP 服务、工具、插件与规则，按来源分组查看；对比同一 Skill 在不同 Agent 间的内容差异并同步；结合调用记录查看使用与覆盖率。
+
+<p align="center">
+  <a href="docs/screenshots/agent-capabilities.png"><img src="docs/screenshots/agent-capabilities.png" width="960" alt="DeepAA Agent 能力"></a>
 </p>
 <p align="center"><sub>点击可查看完整大图</sub></p>
 
@@ -143,6 +151,7 @@ deepaa service install # 注册系统服务——开机自启 + 崩溃自动恢�
 - **会话追踪**：沿任务与步骤查看调用过程、上下文和工具交互。
 - **交互内容**：查看提示词、模型输出与工具结果。
 - **Token 价格**：查看每次请求的 Token、费用及计算依据。
+- **Agent 能力**：盘点各 Agent 的 Skills、MCP 服务、工具与规则，对比和同步 Skill，查看使用分析、调用反查与底层机制剖析。
 
 ## 更多文档
 

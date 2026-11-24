@@ -2,7 +2,7 @@
 
 **Unify access to model providers. Trace agent calls. Understand usage and costs.**
 
-DeepAA (Deep Agent Analytics) is a free, open source **AI agent gateway and observability tool** that runs locally. It brings model providers, models, API keys, and agent configuration into one place, traces calls between agents and models, and connects usage, costs, and calculation details to individual requests. Configurable model failover helps reduce disruptions caused by model or service failures.
+DeepAA (Deep Agent Analytics) is a free, open source **AI agent gateway and observability tool** that runs locally. It brings model providers, models, API keys, and agent configuration into one place, traces calls between agents and models, and connects usage, costs, and calculation details to individual requests. It also inventories the skills, MCP servers, and tools each agent has locally, so capabilities can be compared and synced across agents. Configurable model failover helps reduce disruptions caused by model or service failures.
 
 [Website & product preview](https://deepaa.dev/en-US) · [Installation & setup](https://deepaa.dev/en-US/docs) · [中文文档](./README.md) · [MIT license](./LICENSE)
 
@@ -21,7 +21,8 @@ When you use multiple agents, models, and providers, you need to know how to man
 | --- | --- |
 | **Unified provider and agent access** | Manage official and relay model services, models, and API keys centrally. Enable configuration sync to use compatible models from multiple providers in the same agent with less manual setup. |
 | **Agent call tracing** | Follow call relationships across tasks, child threads, turns, and steps, with prompts, model outputs, tool interactions, token usage, and latency shown together. |
-| **Context and capability evidence** | Inspect the tools, MCP tools, skills, and injected rules carried in a request, along with estimated context composition, changes between steps, and compaction evidence. |
+| **Context and capability evidence** | Inspect the tools, MCP tools, skills, and injected rules carried in a request and which of them each step actually used, along with estimated context composition, changes between steps, and compaction evidence. |
+| **Agent capability inventory and cross-agent reuse** | Inventory each agent's local skills, MCP servers, plugins, rules, and system prompts, plus the tools observed in requests. Compare how the same skill differs across agents and sync it in one click. See declarations, calls, coverage, and execution time for each tool and skill, and trace them back to the conversation steps. |
 | **Cost transparency for each request** | Break down input, cache read/write, and output charges. Inspect rates, multipliers, promotions, and calculation details; compare usage and costs by model, provider, agent, and time. |
 | **Provider status and rule updates** | View balances and remaining plan quotas for supported providers, and learn about new models and changes to prices, plans, promotions, and capabilities in the published catalog. |
 | **Model failover** | Configure an ordered chain of backup models. When the required conditions are met and no response content has been returned yet, switch to an available model to reduce coding disruptions from model or service failures. |
@@ -38,6 +39,13 @@ Observability and analytics data is kept strictly on your machine and never uplo
 
 <p align="center">
   <a href="docs/screenshots/dashboard.png"><img src="docs/screenshots/dashboard-preview.png" alt="DeepAA dashboard" width="960"></a>
+</p>
+<p align="center"><sub>Click to view the full-size image</sub></p>
+
+**Agent capabilities** — inventory each agent's local skills, MCP servers, tools, plugins, and rules, grouped by source; compare how a skill differs across agents and sync it; see usage and coverage based on call records.
+
+<p align="center">
+  <a href="docs/screenshots/agent-capabilities.png"><img src="docs/screenshots/agent-capabilities.png" width="960" alt="DeepAA agent capabilities"></a>
 </p>
 <p align="center"><sub>Click to view the full-size image</sub></p>
 
@@ -143,6 +151,7 @@ Then start a normal conversation in your agent (select a DeepAA gateway model). 
 - **Session tracking**: follow tasks and steps to inspect calls, context, and tool interactions.
 - **Interaction content**: inspect prompts, model outputs, and tool results.
 - **Token pricing**: inspect token usage, costs, and calculation details for each request.
+- **Agent capabilities**: inventory each agent's skills, MCP servers, tools, and rules; compare and sync skills; view usage analysis, call tracing, and mechanism profiles.
 
 ## More Documentation
 

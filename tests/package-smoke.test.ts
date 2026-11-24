@@ -37,6 +37,9 @@ describe("npm 发布包", () => {
     // 安装模式下品牌 Logo 与 Agent 徽标全部 404——源码模式因 public/ 在仓库里而不可见）。
     expect(packageJson.files).toContain("public/agent-logos");
     expect(packageJson.files).toContain("public/deepaa-mark.png");
+    // Agent 能力页「机制剖析」运行时经 fs 从包根读取（mechanism-profiles.ts），不进
+    // Next 打包：白名单漏掉时安装模式静默降级为「剖面暂不可用」，源码模式不可见。
+    expect(packageJson.files).toContain("config/agents/harness/mechanism-profiles.json");
     expect(packageJson.scripts["data:reset"]).toBe("tsx ./scripts/data-reset.ts");
     expect(existsSync(join(rootDir, "bin", "development-launch.mjs"))).toBe(true);
   });
